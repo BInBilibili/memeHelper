@@ -1,0 +1,13 @@
+[package]
+name = "vswhom-sys"
+version = "0.1.3"
+edition = "2021"
+license = "MIT"
+description = "No-probe compatibility shim for portable MemeHelper builds"
+
+[lib]
+name = "vswhom_sys"
+path = "src/lib.rs"
+
+[dependencies]
+libc = "0.2"

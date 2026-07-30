@@ -1,0 +1,76 @@
+[
+  {
+    "id": "e81bff17-14a1-4dfb-a9c7-9652f53d41b6",
+    "name": "上班状态",
+    "width": 800,
+    "height": 800,
+    "createdAt": 1785251880461,
+    "updatedAt": 1785281522224,
+    "layers": [
+      {
+        "id": "750bebf4-514c-45fc-a605-8cce76134956",
+        "name": "底图与文字",
+        "type": "static",
+        "src": "data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22800%22%20height%3D%22800%22%3E%3Crect%20width%3D%22800%22%20height%3D%22800%22%20fill%3D%22%23f3efe3%22%2F%3E%3Crect%20x%3D%2230%22%20y%3D%2230%22%20width%3D%22740%22%20height%3D%22740%22%20rx%3D%2218%22%20fill%3D%22none%22%20stroke%3D%22%231c1b19%22%20stroke-width%3D%2212%22%2F%3E%3Ctext%20x%3D%22400%22%20y%3D%22105%22%20text-anchor%3D%22middle%22%20font-family%3D%22Arial%2Csans-serif%22%20font-size%3D%2254%22%20font-weight%3D%22700%22%20fill%3D%22%231c1b19%22%3E%E4%BB%8A%E5%A4%A9%E4%B9%9F%E8%A6%81%E5%8A%AA%E5%8A%9B%E5%B7%A5%E4%BD%9C%3C%2Ftext%3E%3Crect%20x%3D%2274%22%20y%3D%22590%22%20width%3D%22652%22%20height%3D%22132%22%20rx%3D%2212%22%20fill%3D%22%23f2c94c%22%2F%3E%3Ctext%20x%3D%22400%22%20y%3D%22675%22%20text-anchor%3D%22middle%22%20font-family%3D%22Arial%2Csans-serif%22%20font-size%3D%2248%22%20font-weight%3D%22700%22%20fill%3D%22%231c1b19%22%3E%EF%BC%88%E5%81%87%E8%A3%85%E5%BE%88%E6%9C%89%E7%B2%BE%E7%A5%9E%EF%BC%89%3C%2Ftext%3E%3C%2Fsvg%3E",
+        "x": 0,
+        "y": 0,
+        "width": 800,
+        "height": 800,
+        "rotation": 0,
+        "visible": true,
+        "fit": "fill"
+      },
+      {
+        "id": "2aa63360-1774-46e4-a692-9daab7a51a9d",
+        "name": "人物照片",
+        "type": "slot",
+        "shape": "rect",
+        "src": "",
+        "x": 116,
+        "y": 150,
+        "width": 568,
+        "height": 400,
+        "rotation": 0,
+        "visible": true,
+        "fit": "fill"
+      }
+    ]
+  },
+  {
+    "id": "f626ff1c-c021-4149-b54a-eae0ead4a457",
+    "name": "需求来了",
+    "width": 900,
+    "height": 600,
+    "createdAt": 1785251880461,
+    "updatedAt": 1785251880461,
+    "layers": [
+      {
+        "id": "5e98a700-09ac-4778-8995-210aa9e70f11",
+        "name": "黑色边框",
+        "type": "static",
+        "src": "data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22900%22%20height%3D%22600%22%3E%3Crect%20width%3D%22900%22%20height%3D%22600%22%20fill%3D%22%23171716%22%2F%3E%3Crect%20x%3D%2226%22%20y%3D%2226%22%20width%3D%22848%22%20height%3D%22548%22%20rx%3D%2212%22%20fill%3D%22none%22%20stroke%3D%22%23f8f7f2%22%20stroke-width%3D%228%22%2F%3E%3Ctext%20x%3D%22450%22%20y%3D%2292%22%20text-anchor%3D%22middle%22%20font-family%3D%22Arial%2Csans-serif%22%20font-size%3D%2248%22%20font-weight%3D%22700%22%20fill%3D%22%23fff%22%3E%E5%BD%93%E6%88%91%E7%9C%8B%E5%88%B0%E7%BE%A4%E9%87%8C%E7%9A%84%E6%96%B0%E9%9C%80%E6%B1%82%3C%2Ftext%3E%3Ctext%20x%3D%22450%22%20y%3D%22548%22%20text-anchor%3D%22middle%22%20font-family%3D%22Arial%2Csans-serif%22%20font-size%3D%2242%22%20font-weight%3D%22700%22%20fill%3D%22%23f2c94c%22%3E%E5%85%88%E4%BF%9D%E6%8C%81%E5%BE%AE%E7%AC%91%3C%2Ftext%3E%3C%2Fsvg%3E",
+        "x": 0,
+        "y": 0,
+        "width": 900,
+        "height": 600,
+        "rotation": 0,
+        "visible": true,
+        "fit": "fill"
+      },
+      {
+        "id": "f195e7a1-6f67-4e01-9a85-8c209d460684",
+        "name": "反应照片",
+        "type": "slot",
+        "shape": "rect",
+        "src": "",
+        "x": 92,
+        "y": 125,
+        "width": 716,
+        "height": 350,
+        "rotation": 0,
+        "visible": true,
+        "fit": "cover"
+      }
+    ]
+  }
+]

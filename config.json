@@ -1,0 +1,11 @@
+{
+  "theme": "system",
+  "autoCopy": true,
+  "templatesFile": "templates.json",
+  "window": {
+    "width": 1320,
+    "height": 860,
+    "minWidth": 1024,
+    "minHeight": 680
+  }
+}
