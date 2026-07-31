@@ -4,5 +4,6 @@ release/
 release-tauri/
 src-tauri/target/
 src-tauri/gen/
+autosave.json
 *.log
 .DS_Store

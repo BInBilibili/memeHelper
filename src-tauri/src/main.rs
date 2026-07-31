@@ -128,11 +128,21 @@ fn write_templates(path: &Path, templates: &[Value]) -> Result<(), String> {
     fs::write(path, json).map_err(|error| error.to_string())
 }
 
-fn decode_png_data_url(data_url: &str) -> Result<Vec<u8>, String> {
-    let encoded = data_url
-        .strip_prefix("data:image/png;base64,")
-        .ok_or_else(|| "只支持 PNG 图片数据".to_string())?;
-    STANDARD.decode(encoded).map_err(|error| error.to_string())
+fn editor_drafts_path() -> PathBuf {
+    app_directory().join("autosave.json")
+}
+
+fn decode_image_data_url(data_url: &str) -> Result<(&str, Vec<u8>), String> {
+    let (header, encoded) = data_url
+        .split_once(',')
+        .ok_or_else(|| "图片数据格式无效".to_string())?;
+    let mime = header
+        .strip_prefix("data:")
+        .and_then(|value| value.strip_suffix(";base64"))
+        .filter(|value| matches!(*value, "image/png" | "image/jpeg" | "image/webp"))
+        .ok_or_else(|| "只支持 PNG、JPEG 或 WebP 图片数据".to_string())?;
+    let bytes = STANDARD.decode(encoded).map_err(|error| error.to_string())?;
+    Ok((mime, bytes))
 }
 
 #[tauri::command]
@@ -166,6 +176,25 @@ fn save_templates(templates: Vec<Value>) -> Result<bool, String> {
 }
 
 #[tauri::command]
+fn load_editor_drafts() -> Value {
+    fs::read_to_string(editor_drafts_path())
+        .ok()
+        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
+}
+
+#[tauri::command]
+fn save_editor_drafts(drafts: Value) -> Result<bool, String> {
+    if !drafts.is_object() {
+        return Err("自动保存数据格式无效".to_string());
+    }
+    let json = serde_json::to_string_pretty(&drafts).map_err(|error| error.to_string())?;
+    fs::write(editor_drafts_path(), json).map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
 fn publish_templates(templates: Vec<Value>) -> Result<String, String> {
     let path = templates_path();
     write_templates(&path, &templates)?;
@@ -174,7 +203,10 @@ fn publish_templates(templates: Vec<Value>) -> Result<String, String> {
 
 #[tauri::command]
 fn copy_image(data_url: String) -> Result<bool, String> {
-    let bytes = decode_png_data_url(&data_url)?;
+    let (mime, bytes) = decode_image_data_url(&data_url)?;
+    if mime != "image/png" {
+        return Err("剪贴板图片必须为 PNG 格式".to_string());
+    }
     let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
         .map_err(|error| error.to_string())?
         .to_rgba8();
@@ -202,15 +234,20 @@ fn copy_image(data_url: String) -> Result<bool, String> {
 
 #[tauri::command]
 fn save_image(data_url: String, suggested_name: String) -> Result<Option<String>, String> {
-    let bytes = decode_png_data_url(&data_url)?;
+    let (mime, bytes) = decode_image_data_url(&data_url)?;
+    let (label, extensions, fallback) = match mime {
+        "image/jpeg" => ("JPEG 图片", &["jpg", "jpeg"][..], "meme.jpg"),
+        "image/webp" => ("WebP 图片", &["webp"][..], "meme.webp"),
+        _ => ("PNG 图片", &["png"][..], "meme.png"),
+    };
     let safe_name = Path::new(&suggested_name)
         .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
-        .unwrap_or("meme.png");
+        .unwrap_or(fallback);
     let Some(path) = rfd::FileDialog::new()
         .set_file_name(safe_name)
-        .add_filter("PNG 图片", &["png"])
+        .add_filter(label, extensions)
         .save_file()
     else {
         return Ok(None);
@@ -248,6 +285,8 @@ fn main() {
             load_config,
             load_templates,
             save_templates,
+            load_editor_drafts,
+            save_editor_drafts,
             publish_templates,
             copy_image,
             save_image
