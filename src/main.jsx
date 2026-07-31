@@ -96,11 +96,57 @@ function snapLayerPosition(layer, position, template, threshold, excludedIds = [
     return best;
   };
 
-  const xSnap = findSnap(position.x, layer.width, xTargets);
-  const ySnap = findSnap(position.y, layer.height, yTargets);
+  const findDistributionSnap = (value, size, axis) => {
+    const startOf = (item) => axis === 'x' ? item.x : item.y;
+    const sizeOf = (item) => axis === 'x' ? item.width : item.height;
+    const sorted = [...otherLayers].sort((a, b) => startOf(a) - startOf(b));
+    const candidates = [];
+    for (let index = 0; index < sorted.length - 1; index += 1) {
+      const first = sorted[index];
+      const second = sorted[index + 1];
+      const firstStart = startOf(first);
+      const firstEnd = firstStart + sizeOf(first);
+      const secondStart = startOf(second);
+      const secondEnd = secondStart + sizeOf(second);
+      const existingGap = secondStart - firstEnd;
+      if (existingGap >= 0) {
+        candidates.push(firstStart - existingGap - size, secondEnd + existingGap);
+        if (existingGap >= size) candidates.push(firstEnd + (existingGap - size) / 2);
+      }
+    }
+    return candidates.reduce((best, target) => {
+      const delta = target - value;
+      return Math.abs(delta) <= threshold && (!best || Math.abs(delta) < Math.abs(best.delta))
+        ? { delta, guide: target + size / 2 }
+        : best;
+    }, null);
+  };
+
+  const chooseCloser = (alignment, distribution) => !alignment || (distribution && Math.abs(distribution.delta) < Math.abs(alignment.delta)) ? distribution : alignment;
+  const xSnap = chooseCloser(findSnap(position.x, layer.width, xTargets), findDistributionSnap(position.x, layer.width, 'x'));
+  const ySnap = chooseCloser(findSnap(position.y, layer.height, yTargets), findDistributionSnap(position.y, layer.height, 'y'));
   return {
     x: position.x + (xSnap?.delta || 0),
     y: position.y + (ySnap?.delta || 0),
+    guides: [
+      ...(xSnap ? [{ axis: 'x', value: xSnap.guide }] : []),
+      ...(ySnap ? [{ axis: 'y', value: ySnap.guide }] : [])
+    ]
+  };
+}
+
+function snapCropPosition(layer, placement, position, threshold) {
+  const xTargets = [0, (layer.width - placement.width) / 2, layer.width - placement.width];
+  const yTargets = [0, (layer.height - placement.height) / 2, layer.height - placement.height];
+  const nearest = (value, targets) => targets.reduce((best, target) => {
+    const delta = target - value;
+    return Math.abs(delta) <= threshold && (!best || Math.abs(delta) < Math.abs(best.delta)) ? { delta, guide: target } : best;
+  }, null);
+  const xSnap = nearest(position.x, xTargets);
+  const ySnap = nearest(position.y, yTargets);
+  return {
+    x: clamp(position.x + (xSnap?.delta || 0), layer.width - placement.width, 0),
+    y: clamp(position.y + (ySnap?.delta || 0), layer.height - placement.height, 0),
     guides: [
       ...(xSnap ? [{ axis: 'x', value: xSnap.guide }] : []),
       ...(ySnap ? [{ axis: 'y', value: ySnap.guide }] : [])
@@ -1071,7 +1117,7 @@ function EditorStage({ template, selectedIds, setSelectedIds, selectLayer, updat
   return <Stage width={template.width * zoom} height={template.height * zoom} scaleX={zoom} scaleY={zoom} onMouseDown={(event) => { if (event.target === event.target.getStage() || event.target.name() === 'editor-background') { setSelectedIds([]); onPanStart(event); } }}><Layer><Rect name="editor-background" width={template.width} height={template.height} fill="#fff"/>{template.layers.map((layer) => <EditorLayer key={layer.id} layer={layer} interactive={!layer.locked} selectable setRef={(node) => nodeRefs.current[layer.id] = node} onSelect={(event) => selectLayer(layer.id, event.evt)} onContextMenu={(event) => onLayerContextMenu(layer.id, event.evt)} onChange={(patch) => updateLayer(layer.id, patch)} onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)} onTransformEnd={false}/>)}{template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}{guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94e37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }<Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled enabledAnchors={['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10 / zoom} borderStrokeWidth={2 / zoom} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/></Layer></Stage>;
 }
 
-function EditorLayer({ layer, setRef, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, source, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform }) {
+function EditorLayer({ layer, setRef, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, source, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
   const image = useHtmlImage(source ?? layer.src);
   const crop = image && layer.fit === 'cover' ? getCoverCrop(image, layer.width, layer.height) : undefined;
   const placement = image && layer.type === 'slot' && source ? getPhotoPlacement(image, layer, photoTransform) : null;
@@ -1092,7 +1138,7 @@ function EditorLayer({ layer, setRef, onSelect, onContextMenu, onChange, onDragS
   const clipFunc = (ctx) => traceLayerShape(ctx, layer);
   const placeholderProps = { fill: highlight ? 'rgba(233,78,55,.14)' : '#eceae4', stroke: highlight ? '#e94e37' : '#77746d', strokeWidth: highlight ? 5 : 2, dash: [12, 8] };
   return <Group {...common} clipFunc={layer.type === 'slot' ? clipFunc : undefined}>
-    {image ? <KonvaImage image={image} x={placement?.x || 0} y={placement?.y || 0} width={placement?.width || layer.width} height={placement?.height || layer.height} crop={placement ? undefined : crop} draggable={cropMode} onDragMove={cropMode && placement ? (event) => event.target.position({ x: clamp(event.target.x(), layer.width - placement.width, 0), y: clamp(event.target.y(), layer.height - placement.height, 0) }) : undefined} onDragEnd={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); event.target.position({ x, y }); onPhotoTransform?.({ offsetX: x - placement.centeredX, offsetY: y - placement.centeredY }); } : undefined}/> : shapeOf(layer) === 'circle' ? <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={layer.width / 2} radiusY={layer.height / 2} {...placeholderProps}/> : <Rect width={layer.width} height={layer.height} cornerRadius={shapeOf(layer) === 'rounded' ? Math.min(36, layer.width / 4, layer.height / 4) : 0} {...placeholderProps}/>}
+    {image ? <KonvaImage image={image} x={placement?.x || 0} y={placement?.y || 0} width={placement?.width || layer.width} height={placement?.height || layer.height} crop={placement ? undefined : crop} draggable={cropMode} onDragMove={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); onPhotoTransformMove ? onPhotoTransformMove({ event, x, y, placement }) : event.target.position({ x, y }); } : undefined} onDragEnd={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); event.target.position({ x, y }); if (onPhotoTransformEnd) onPhotoTransformEnd({ event, x, y, placement }); else onPhotoTransform?.({ offsetX: x - placement.centeredX, offsetY: y - placement.centeredY }); } : undefined}/> : shapeOf(layer) === 'circle' ? <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={layer.width / 2} radiusY={layer.height / 2} {...placeholderProps}/> : <Rect width={layer.width} height={layer.height} cornerRadius={shapeOf(layer) === 'rounded' ? Math.min(36, layer.width / 4, layer.height / 4) : 0} {...placeholderProps}/>}
     {cropMode && <Rect x={1} y={1} width={Math.max(0, layer.width - 2)} height={Math.max(0, layer.height - 2)} stroke="#e94e37" strokeWidth={3} dash={[10, 7]} listening={false}/>}
   </Group>;
 }
@@ -1157,7 +1203,9 @@ function UseStage({ composition, slotSources, slotTransforms, selectedId, setSel
   const hostRef = useRef();
   const transformerRef = useRef();
   const nodeRefs = useRef({});
+  const dragRef = useRef(null);
   const [hostSize, setHostSize] = useState({ width: 0, height: 0 });
+  const [guides, setGuides] = useState([]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -1182,6 +1230,46 @@ function UseStage({ composition, slotSources, slotTransforms, selectedId, setSel
     }
   }, [composition.layers, cropModeId, scale, selectedId, slotSources]);
 
+  const startSlotDrag = (layer) => {
+    dragRef.current = { id: layer.id, x: layer.x, y: layer.y };
+  };
+  const moveSlotDrag = (layer, event) => {
+    const drag = dragRef.current;
+    if (!drag || drag.id !== layer.id) return;
+    let position = { x: event.target.x(), y: event.target.y() };
+    if (event.evt.shiftKey) {
+      const snapped = snapLayerPosition(layer, position, composition, 10 / scale, [layer.id]);
+      position = { x: snapped.x, y: snapped.y };
+      setGuides(snapped.guides);
+    } else if (guides.length) setGuides([]);
+    event.target.position(position);
+  };
+  const finishSlotDrag = (layer, event) => {
+    moveSlotDrag(layer, event);
+    const drag = dragRef.current;
+    if (!drag || drag.id !== layer.id) return;
+    updateLayer(layer.id, { x: Math.round(event.target.x()), y: Math.round(event.target.y()) });
+    dragRef.current = null;
+    setGuides([]);
+  };
+  const moveCropPhoto = (layer, payload) => {
+    const { event, x, y, placement } = payload;
+    let position = { x, y };
+    if (event.evt.shiftKey) {
+      const snapped = snapCropPosition(layer, placement, position, 8 / scale);
+      position = { x: snapped.x, y: snapped.y };
+      setGuides(snapped.guides.map((guide) => ({ ...guide, value: guide.axis === 'x' ? guide.value + layer.x : guide.value + layer.y })));
+    } else if (guides.length) setGuides([]);
+    event.target.position(position);
+  };
+  const finishCropPhoto = (layer, payload) => {
+    moveCropPhoto(layer, payload);
+    const x = payload.event.target.x();
+    const y = payload.event.target.y();
+    updatePhotoTransform(layer.id, { offsetX: x - payload.placement.centeredX, offsetY: y - payload.placement.centeredY });
+    setGuides([]);
+  };
+
   return <div className={`result-canvas-host pan-viewport ${panning ? 'panning' : ''}`} ref={hostRef} onMouseDown={(event) => { if (event.target === event.currentTarget) onPanStart(event); }}>
     {hostSize.width > 0 && <div className={`result-canvas-frame ${transparent ? 'transparent' : ''}`} style={{ width: composition.width * scale, height: composition.height * scale, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}>
       <Stage width={composition.width * scale} height={composition.height * scale} scaleX={scale} scaleY={scale} onMouseDown={(event) => { if (event.target === event.target.getStage() || event.target.name() === 'result-background') { setSelectedId(null); setCropModeId(null); onPanStart(event); } }}>
@@ -1198,10 +1286,16 @@ function UseStage({ composition, slotSources, slotTransforms, selectedId, setSel
             highlight={layer.type === 'slot' && !slotSources[layer.id]}
             setRef={(node) => { if (layer.type === 'slot') nodeRefs.current[layer.id] = node; }}
             onSelect={() => { setSelectedId(layer.id); if (!slotSources[layer.id]) onRequestSlot(layer.id); }}
-            onEnterCrop={(event) => { if (!slotSources[layer.id]) return; event.cancelBubble = true; setSelectedId(layer.id); setCropModeId(layer.id); }}
-            onPhotoTransform={(patch) => updatePhotoTransform(layer.id, patch)}
-            onChange={(patch) => updateLayer(layer.id, patch)}
-          />)}
+             onEnterCrop={(event) => { if (!slotSources[layer.id]) return; event.cancelBubble = true; setSelectedId(layer.id); setCropModeId(layer.id); }}
+             onDragStart={() => startSlotDrag(layer)}
+             onDragMove={(event) => moveSlotDrag(layer, event)}
+             onDragEnd={(event) => finishSlotDrag(layer, event)}
+             onPhotoTransformMove={(payload) => moveCropPhoto(layer, payload)}
+             onPhotoTransformEnd={(payload) => finishCropPhoto(layer, payload)}
+             onPhotoTransform={(patch) => updatePhotoTransform(layer.id, patch)}
+             onChange={(patch) => updateLayer(layer.id, patch)}
+           />)}
+          {guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, composition.height] : [0, guide.value, composition.width, guide.value]} stroke="#e94e37" strokeWidth={1.5 / scale} dash={[6 / scale, 4 / scale]} listening={false}/>) }
           <Transformer
             ref={transformerRef}
             rotateEnabled={false}
@@ -1243,6 +1337,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
   const pendingSlot = useRef(null);
   const initialHandled = useRef(false);
   const renderRequest = useRef(0);
+  const copyAfterRenderRef = useRef(false);
   const slots = composition.layers.filter((layer) => layer.type === 'slot');
   const cropLayer = composition.layers.find((layer) => layer.id === cropModeId && layer.type === 'slot');
   const cropTransform = cropLayer ? (slotTransforms[cropLayer.id] || { zoom: 1, offsetX: 0, offsetY: 0 }) : null;
@@ -1307,11 +1402,12 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
     renderTemplate(composition, slotSources, slotTransforms, { transparent }).then(async (dataUrl) => {
       if (cancelled || request !== renderRequest.current) return;
       setResult(dataUrl);
-      if (!autoCopy) {
+      if (!copyAfterRenderRef.current || !autoCopy) {
+        copyAfterRenderRef.current = false;
         setCopied(false);
-        notify('结果已更新');
         return;
       }
+      copyAfterRenderRef.current = false;
       try {
         await desktop.copyImage(dataUrl);
         if (!cancelled && request === renderRequest.current) {
@@ -1334,6 +1430,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
       const slotId = targetId || selectedId || composition.layers.find((layer) => layer.type === 'slot')?.id;
       if (!slotId) return notify('模板中没有可替换照片图层', 'error');
       const dataUrl = await fileToDataUrl(file);
+      copyAfterRenderRef.current = autoCopy;
       commitSession((previous) => ({
         ...previous,
         slotSources: { ...previous.slotSources, [slotId]: dataUrl },
@@ -1342,7 +1439,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
       }));
       setSelectedId(slotId);
     } catch (error) { notify(error.message, 'error'); }
-  }, [commitSession, composition.layers, notify, selectedId]);
+  }, [autoCopy, commitSession, composition.layers, notify, selectedId]);
 
   const requestSlotImage = useCallback((slotId) => {
     pendingSlot.current = slotId;
@@ -1399,6 +1496,25 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
     acceptFile(file, target.id);
   };
 
+  const handleResultWheel = (event) => {
+    if (cropModeId && cropLayer && slotSources[cropModeId]) {
+      const frame = event.currentTarget.querySelector('.result-canvas-frame');
+      const rect = frame?.getBoundingClientRect();
+      if (rect) {
+        const x = (event.clientX - rect.left) * composition.width / rect.width;
+        const y = (event.clientY - rect.top) * composition.height / rect.height;
+        if (pointInLayer(x, y, cropLayer)) {
+          event.preventDefault();
+          event.stopPropagation();
+          const nextZoom = wheelZoom(cropTransform.zoom, event.deltaY, 1, 5);
+          if (nextZoom !== cropTransform.zoom) updatePhotoTransform(cropLayer.id, { zoom: nextZoom });
+          return;
+        }
+      }
+    }
+    zoomAtPointer(event);
+  };
+
   const openContextMenu = (event) => {
     if (!result) return;
     event.preventDefault();
@@ -1433,7 +1549,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
       </section>
       <section className="result-area">
         <div className="result-heading"><div><p className="eyebrow">第 2 步</p><h2>生成结果</h2></div><div className="result-heading-actions"><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>{result && <div className="result-actions"><button className="secondary-button" onClick={save}><Download size={17}/>保存 {exportFormat.toUpperCase()}</button><button className="primary-button" onClick={copyAgain}>{copied ? <Check size={17}/> : <Copy size={17}/>}复制图片</button></div>}</div></div>
-        <div className="result-stage has-result" onWheel={zoomAtPointer} onContextMenu={openContextMenu} onDragStart={(event) => event.preventDefault()} onDragOver={(event) => { if (Array.from(event.dataTransfer.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropOnSlot}>
+        <div className="result-stage has-result" onWheel={handleResultWheel} onContextMenu={openContextMenu} onDragStart={(event) => event.preventDefault()} onDragOver={(event) => { if (Array.from(event.dataTransfer.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropOnSlot}>
           <UseStage composition={composition} slotSources={slotSources} slotTransforms={slotTransforms} selectedId={selectedId} setSelectedId={setSelectedId} updateLayer={updateLayer} cropModeId={cropModeId} setCropModeId={setCropModeId} updatePhotoTransform={updatePhotoTransform} onRequestSlot={requestSlotImage} zoom={zoom} pan={pan} panning={panning} onPanStart={beginPan} transparent={transparent}/>
           {working && <div className="generating result-overlay"><Sparkles size={30}/><strong>正在更新...</strong></div>}
         </div>
