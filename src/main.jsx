@@ -28,8 +28,8 @@ const browserDesktop = {
     URL.revokeObjectURL(url);
     return 'bundled-templates.json';
   },
-  copyImage: async (dataUrl) => {
-    const blob = await (await fetch(dataUrl)).blob();
+  copyImage: async (dataUrl, clipboardDataUrl) => {
+    const blob = await (await fetch(clipboardDataUrl || dataUrl)).blob();
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
   },
   readClipboardImage: async () => {
@@ -64,7 +64,7 @@ const desktop = window.__TAURI_INTERNALS__ ? {
   loadEditorDrafts: () => invoke('load_editor_drafts'),
   saveEditorDrafts: (drafts) => invoke('save_editor_drafts', { drafts }),
   publishTemplates: (templates) => invoke('publish_templates', { templates }),
-  copyImage: (dataUrl) => invoke('copy_image', { dataUrl }),
+  copyImage: (dataUrl, clipboardDataUrl) => invoke('copy_image', { dataUrl, clipboardDataUrl }),
   readClipboardImage: () => invoke('read_clipboard_image'),
   saveImage: (dataUrl, suggestedName) => invoke('save_image', { dataUrl, suggestedName })
 } : (window.memeDesktop || browserDesktop);
@@ -1407,6 +1407,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
   const slots = composition.layers.filter((layer) => layer.type === 'slot');
   const cropLayer = composition.layers.find((layer) => layer.id === cropModeId && layer.type === 'slot');
   const cropTransform = cropLayer ? (slotTransforms[cropLayer.id] || { zoom: 1, offsetX: 0, offsetY: 0 }) : null;
+  const outputMime = exportFormat === 'jpg' ? 'image/jpeg' : `image/${exportFormat}`;
 
   const updateLayer = useCallback((id, patch) => {
     commitSession((previous) => ({
@@ -1537,7 +1538,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
     let cancelled = false;
     setWorking(true);
     setCopied(false);
-    renderTemplate(composition, slotSources, slotTransforms, { transparent }).then(async (dataUrl) => {
+    renderTemplate(composition, slotSources, slotTransforms, { transparent, mime: outputMime }).then(async (dataUrl) => {
       if (cancelled || request !== renderRequest.current) return;
       setResult(dataUrl);
       if (!copyAfterRenderRef.current || !autoCopy) {
@@ -1547,7 +1548,10 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
       }
       copyAfterRenderRef.current = false;
       try {
-        await desktop.copyImage(dataUrl);
+        const clipboardDataUrl = outputMime === 'image/png'
+          ? undefined
+          : await renderTemplate(composition, slotSources, slotTransforms, { transparent, mime: 'image/png' });
+        await desktop.copyImage(dataUrl, clipboardDataUrl);
         if (!cancelled && request === renderRequest.current) {
           setCopied(true);
           notify('结果已更新并复制到剪贴板');
@@ -1561,7 +1565,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
       if (!cancelled && request === renderRequest.current) setWorking(false);
     });
     return () => { cancelled = true; };
-  }, [autoCopy, composition, slotSources, slotTransforms, transparent, notify]);
+  }, [autoCopy, composition, outputMime, slotSources, slotTransforms, transparent, notify]);
 
   const acceptFile = useCallback(async (file, targetId) => {
     try {
@@ -1587,27 +1591,33 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
   const currentResult = useCallback(async () => {
     if (!Object.keys(slotSources).length) return '';
     if (working || !result) {
-      const dataUrl = await renderTemplate(composition, slotSources, slotTransforms, { transparent });
+      const dataUrl = await renderTemplate(composition, slotSources, slotTransforms, { transparent, mime: outputMime });
       setResult(dataUrl);
       return dataUrl;
     }
     return result;
-  }, [composition, result, slotSources, slotTransforms, transparent, working]);
+  }, [composition, outputMime, result, slotSources, slotTransforms, transparent, working]);
 
   const copyAgain = useCallback(async () => {
     const dataUrl = await currentResult();
     if (!dataUrl) return;
-    try { await desktop.copyImage(dataUrl); setCopied(true); notify('已复制，可粘贴到聊天窗口或文件夹'); }
+    try {
+      const clipboardDataUrl = outputMime === 'image/png'
+        ? undefined
+        : await renderTemplate(composition, slotSources, slotTransforms, { transparent, mime: 'image/png' });
+      await desktop.copyImage(dataUrl, clipboardDataUrl);
+      setCopied(true);
+      notify('已复制，可粘贴到聊天窗口或文件夹');
+    }
     catch { setCopied(false); notify('剪贴板不可用，请保存 PNG', 'error'); }
-  }, [currentResult, notify]);
+  }, [composition, currentResult, notify, outputMime, slotSources, slotTransforms, transparent]);
 
   const resetCrop = () => { if (cropModeId) updatePhotoTransform(cropModeId, { zoom: 1, offsetX: 0, offsetY: 0 }); };
 
   const save = async () => {
     if (!Object.keys(slotSources).length) return;
     try {
-      const mime = exportFormat === 'jpg' ? 'image/jpeg' : `image/${exportFormat}`;
-      const dataUrl = await renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, mime, transparent });
+      const dataUrl = await renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, mime: outputMime, transparent });
       const path = await desktop.saveImage(dataUrl, `${template.name}-${Date.now()}.${exportFormat}`);
       if (path) notify(`图片已保存为 ${exportFormat.toUpperCase()}`);
     } catch (error) { notify(`保存失败：${error.message}`, 'error'); }

@@ -203,18 +203,26 @@ fn publish_templates(templates: Vec<Value>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn copy_image(data_url: String) -> Result<bool, String> {
+fn copy_image(data_url: String, clipboard_data_url: Option<String>) -> Result<bool, String> {
     let (mime, bytes) = decode_image_data_url(&data_url)?;
-    if mime != "image/png" {
-        return Err("剪贴板图片必须为 PNG 格式".to_string());
+    let extension = match mime {
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "image/png" => "png",
+        _ => return Err("仅支持 PNG、JPEG 和 WebP 图片".to_string()),
+    };
+    let clipboard_source = clipboard_data_url.as_deref().unwrap_or(&data_url);
+    let (clipboard_mime, clipboard_bytes) = decode_image_data_url(clipboard_source)?;
+    if clipboard_mime != "image/png" {
+        return Err("剪贴板预览必须为 PNG 格式".to_string());
     }
-    let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+    let image = image::load_from_memory_with_format(&clipboard_bytes, image::ImageFormat::Png)
         .map_err(|error| error.to_string())?
         .to_rgba8();
     let (width, height) = image.dimensions();
     let clipboard_directory = env::temp_dir().join("MemeHelper");
     fs::create_dir_all(&clipboard_directory).map_err(|error| error.to_string())?;
-    let clipboard_file = clipboard_directory.join("MemeHelper-copy.png");
+    let clipboard_file = clipboard_directory.join(format!("MemeHelper-copy.{extension}"));
     fs::write(&clipboard_file, &bytes).map_err(|error| error.to_string())?;
 
     let mut clipboard = Clipboard::new().map_err(|error| error.to_string())?;
