@@ -1493,6 +1493,22 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
     setSelectedId(slotId);
   }, [autoCopy, commitSession]);
 
+  const removeSlotSource = useCallback((slotId) => {
+    copyAfterRenderRef.current = false;
+    commitSession((previous) => {
+      if (!previous.slotSources[slotId]) return previous;
+      const slotSources = { ...previous.slotSources };
+      const slotNames = { ...previous.slotNames };
+      const slotTransforms = { ...previous.slotTransforms };
+      delete slotSources[slotId];
+      delete slotNames[slotId];
+      delete slotTransforms[slotId];
+      return { ...previous, slotSources, slotNames, slotTransforms };
+    });
+    setSelectedId(slotId);
+    setCropModeId((current) => current === slotId ? null : current);
+  }, [commitSession]);
+
   const pasteClipboardImage = useCallback(async (targetId) => {
     const slotId = targetId || selectedId || composition.layers.find((layer) => layer.type === 'slot')?.id;
     if (!slotId) return notify('模板中没有可替换照片图层', 'error');
@@ -1735,7 +1751,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
     setSlotContextMenu({
       id: slotId,
       x: Math.min(event.clientX, window.innerWidth - 166),
-      y: Math.min(event.clientY, window.innerHeight - 52)
+      y: Math.max(6, Math.min(event.clientY, window.innerHeight - 90))
     });
   };
 
@@ -1772,7 +1788,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
       </section>
     </div>
     {contextMenu && <div className="result-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setContextMenu(null); copyAgain(); }}><Copy size={16}/>复制图片</button></div>}
-    {slotContextMenu && <div className="result-context-menu" style={{ left: slotContextMenu.x, top: slotContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); pasteClipboardImage(slotId); }}><Clipboard size={16}/>粘贴图片</button></div>}
+    {slotContextMenu && <div className="result-context-menu" style={{ left: slotContextMenu.x, top: slotContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); pasteClipboardImage(slotId); }}><Clipboard size={16}/>粘贴图片</button><button className="danger" disabled={!slotSources[slotContextMenu.id]} onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); removeSlotSource(slotId); }}><Trash2 size={16}/>删除图片</button></div>}
   </main>;
 }
 
