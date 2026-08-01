@@ -1,7 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use arboard::{Clipboard, ImageData};
+use arboard::{Clipboard, Error as ClipboardError, ImageData};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use image::ImageEncoder;
 use serde_json::{json, Value};
 use std::{
     borrow::Cow,
@@ -233,6 +234,29 @@ fn copy_image(data_url: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
+fn read_clipboard_image() -> Result<Option<String>, String> {
+    let mut clipboard = Clipboard::new().map_err(|error| error.to_string())?;
+    let clipboard_image = match clipboard.get_image() {
+        Ok(image) => image,
+        Err(ClipboardError::ContentNotAvailable) => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(
+            clipboard_image.bytes.as_ref(),
+            clipboard_image.width as u32,
+            clipboard_image.height as u32,
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(Some(format!(
+        "data:image/png;base64,{}",
+        STANDARD.encode(png)
+    )))
+}
+
+#[tauri::command]
 fn save_image(data_url: String, suggested_name: String) -> Result<Option<String>, String> {
     let (mime, bytes) = decode_image_data_url(&data_url)?;
     let (label, extensions, fallback) = match mime {
@@ -289,6 +313,7 @@ fn main() {
             save_editor_drafts,
             publish_templates,
             copy_image,
+            read_clipboard_image,
             save_image
         ])
         .run(tauri::generate_context!())

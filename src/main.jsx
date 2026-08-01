@@ -32,6 +32,25 @@ const browserDesktop = {
     const blob = await (await fetch(dataUrl)).blob();
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
   },
+  readClipboardImage: async () => {
+    if (!navigator.clipboard?.read) return null;
+    try {
+      const items = await navigator.clipboard.read();
+      const item = items.find((candidate) => candidate.types.some((type) => type.startsWith('image/')));
+      const type = item?.types.find((candidate) => candidate.startsWith('image/'));
+      if (!item || !type) return null;
+      const blob = await item.getType(type);
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error || new Error('无法读取剪贴板图片'));
+        reader.readAsDataURL(blob);
+      });
+    } catch (error) {
+      if (['NotAllowedError', 'NotFoundError'].includes(error?.name)) return null;
+      throw error;
+    }
+  },
   saveImage: async (dataUrl, name) => {
     const a = document.createElement('a'); a.href = dataUrl; a.download = name; a.click(); return name;
   }
@@ -46,6 +65,7 @@ const desktop = window.__TAURI_INTERNALS__ ? {
   saveEditorDrafts: (drafts) => invoke('save_editor_drafts', { drafts }),
   publishTemplates: (templates) => invoke('publish_templates', { templates }),
   copyImage: (dataUrl) => invoke('copy_image', { dataUrl }),
+  readClipboardImage: () => invoke('read_clipboard_image'),
   saveImage: (dataUrl, suggestedName) => invoke('save_image', { dataUrl, suggestedName })
 } : (window.memeDesktop || browserDesktop);
 
@@ -70,7 +90,9 @@ const wheelZoom = (current, deltaY, min, max) => deltaY === 0
   : clamp(Math.round(current * (deltaY < 0 ? 1.1 : .9) * 100) / 100, min, max);
 
 const isTextEditingTarget = (target) => target instanceof HTMLElement && (
-  target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+  target.isContentEditable
+  || ['TEXTAREA', 'SELECT'].includes(target.tagName)
+  || (target.tagName === 'INPUT' && !['button', 'checkbox', 'radio', 'file', 'hidden'].includes(target.type))
 );
 
 function snapLayerPosition(layer, position, template, threshold, excludedIds = [layer.id]) {
@@ -768,6 +790,27 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     updateDraft((previous) => ({ ...previous, layers: previous.layers.filter((layer) => !removableIds.includes(layer.id)) }));
     setSelectedIds((current) => current.filter((id) => !removableIds.includes(id)));
   }, [draft.layers, notify, selectedIds, updateDraft]);
+  const nudgeSelectedLayers = useCallback((key, distance) => {
+    const requestedX = key === 'ArrowLeft' ? -distance : key === 'ArrowRight' ? distance : 0;
+    const requestedY = key === 'ArrowUp' ? -distance : key === 'ArrowDown' ? distance : 0;
+    updateDraft((previous) => {
+      const selectedUnlocked = previous.layers.filter((layer) => selectedIds.includes(layer.id) && !layer.locked);
+      if (!selectedUnlocked.length) return previous;
+      const minX = Math.min(...selectedUnlocked.map((layer) => layer.x));
+      const minY = Math.min(...selectedUnlocked.map((layer) => layer.y));
+      const maxX = Math.max(...selectedUnlocked.map((layer) => layer.x + layer.width));
+      const maxY = Math.max(...selectedUnlocked.map((layer) => layer.y + layer.height));
+      const dx = clamp(requestedX, -minX, previous.width - maxX);
+      const dy = clamp(requestedY, -minY, previous.height - maxY);
+      if (!dx && !dy) return previous;
+      return {
+        ...previous,
+        layers: previous.layers.map((layer) => selectedIds.includes(layer.id) && !layer.locked
+          ? { ...layer, x: layer.x + dx, y: layer.y + dy }
+          : layer)
+      };
+    });
+  }, [selectedIds, updateDraft]);
   const tryBack = useCallback(async () => {
     if (dirty && !confirm('尚未保存，确定离开编辑器吗？')) return;
     if (dirty) await onClearDraft(draftKey).catch(() => undefined);
@@ -815,6 +858,11 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
         removeSelectedLayers();
         return;
       }
+      if (event.key.startsWith('Arrow') && !event.ctrlKey && !event.metaKey && !event.altKey && !isTextEditingTarget(event.target) && selectedIds.length) {
+        event.preventDefault();
+        nudgeSelectedLayers(event.key, event.shiftKey ? 10 : 1);
+        return;
+      }
       if (event.key === 'Escape' && !event.repeat) {
         event.preventDefault();
         tryBack();
@@ -824,7 +872,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('pointerdown', closeMenus);
     return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('pointerdown', closeMenus); };
-  }, [copySelectedLayers, pasteLayers, redoDraft, removeSelectedLayers, selectedIds.length, tryBack, undoDraft]);
+  }, [copySelectedLayers, nudgeSelectedLayers, pasteLayers, redoDraft, removeSelectedLayers, selectedIds.length, tryBack, undoDraft]);
 
   useEffect(() => {
     const available = new Set(draft.layers.map((layer) => layer.id));
@@ -1199,7 +1247,7 @@ function pointInLayer(x, y, layer) {
   return nx * nx + ny * ny <= 1;
 }
 
-function UseStage({ composition, slotSources, slotTransforms, selectedId, setSelectedId, updateLayer, cropModeId, setCropModeId, updatePhotoTransform, onRequestSlot, zoom, pan, panning, onPanStart, transparent }) {
+function UseStage({ composition, slotSources, slotTransforms, selectedId, setSelectedId, updateLayer, cropModeId, setCropModeId, updatePhotoTransform, onRequestSlot, zoom, pan, panning, onPanStart, transparent, lockAspectRatio }) {
   const hostRef = useRef();
   const transformerRef = useRef();
   const nodeRefs = useRef({});
@@ -1299,9 +1347,11 @@ function UseStage({ composition, slotSources, slotTransforms, selectedId, setSel
           <Transformer
             ref={transformerRef}
             rotateEnabled={false}
-            keepRatio={false}
+            keepRatio={lockAspectRatio}
             flipEnabled={false}
-            enabledAnchors={['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']}
+            enabledAnchors={lockAspectRatio
+              ? ['top-left','top-right','bottom-left','bottom-right']
+              : ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']}
             borderStroke="#e24b35"
             anchorFill="#fff"
             anchorStroke="#e24b35"
@@ -1333,6 +1383,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
   const [exportFormat, setExportFormat] = useState('png');
   const [exportScale, setExportScale] = useState(1);
   const [transparent, setTransparent] = useState(false);
+  const [lockAspectRatio, setLockAspectRatio] = useState(true);
   const input = useRef();
   const pendingSlot = useRef(null);
   const initialHandled = useRef(false);
@@ -1364,6 +1415,70 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
     if (!canUndo || confirm('当前生成结果有未保存的修改，确定返回模板库吗？')) onBack();
   }, [canUndo, onBack]);
 
+  const replaceSlotSource = useCallback((slotId, dataUrl, name) => {
+    copyAfterRenderRef.current = autoCopy;
+    commitSession((previous) => ({
+      ...previous,
+      slotSources: { ...previous.slotSources, [slotId]: dataUrl },
+      slotNames: { ...previous.slotNames, [slotId]: name },
+      slotTransforms: { ...previous.slotTransforms, [slotId]: { zoom: 1, offsetX: 0, offsetY: 0 } }
+    }));
+    setSelectedId(slotId);
+  }, [autoCopy, commitSession]);
+
+  const pasteClipboardImage = useCallback(async () => {
+    const slotId = selectedId || composition.layers.find((layer) => layer.type === 'slot')?.id;
+    if (!slotId) return notify('模板中没有可替换照片图层', 'error');
+    try {
+      const dataUrl = await desktop.readClipboardImage();
+      if (!dataUrl) return notify('剪贴板中没有图片', 'error');
+      replaceSlotSource(slotId, dataUrl, '剪贴板图片');
+    } catch (error) {
+      notify(`读取剪贴板失败：${error?.message || error}`, 'error');
+    }
+  }, [composition.layers, notify, replaceSlotSource, selectedId]);
+
+  const nudgeSelectedPhoto = useCallback((key, distance) => {
+    const layer = composition.layers.find((item) => item.id === selectedId && item.type === 'slot');
+    if (!layer) return;
+    const dx = key === 'ArrowLeft' ? -distance : key === 'ArrowRight' ? distance : 0;
+    const dy = key === 'ArrowUp' ? -distance : key === 'ArrowDown' ? distance : 0;
+    if (cropModeId === layer.id && slotSources[layer.id]) {
+      loadImage(slotSources[layer.id]).then((image) => {
+        commitSession((previous) => {
+          const currentLayer = previous.composition.layers.find((item) => item.id === selectedId && item.type === 'slot');
+          if (!currentLayer || !previous.slotSources[selectedId]) return previous;
+          const placement = getPhotoPlacement(image, currentLayer, previous.slotTransforms[selectedId]);
+          const x = clamp(placement.x + dx, currentLayer.width - placement.width, 0);
+          const y = clamp(placement.y + dy, currentLayer.height - placement.height, 0);
+          if (x === placement.x && y === placement.y) return previous;
+          return {
+            ...previous,
+            slotTransforms: {
+              ...previous.slotTransforms,
+              [selectedId]: { zoom: placement.zoom, offsetX: x - placement.centeredX, offsetY: y - placement.centeredY }
+            }
+          };
+        });
+      }).catch((error) => notify(`无法微调照片：${error.message}`, 'error'));
+      return;
+    }
+    commitSession((previous) => {
+      const currentLayer = previous.composition.layers.find((item) => item.id === selectedId && item.type === 'slot');
+      if (!currentLayer) return previous;
+      const x = clamp(currentLayer.x + dx, 0, Math.max(0, previous.composition.width - currentLayer.width));
+      const y = clamp(currentLayer.y + dy, 0, Math.max(0, previous.composition.height - currentLayer.height));
+      if (x === currentLayer.x && y === currentLayer.y) return previous;
+      return {
+        ...previous,
+        composition: {
+          ...previous.composition,
+          layers: previous.composition.layers.map((item) => item.id === selectedId ? { ...item, x, y } : item)
+        }
+      };
+    });
+  }, [commitSession, composition.layers, cropModeId, notify, selectedId, slotSources]);
+
   useEffect(() => {
     const handleKeyDown = (event) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey) {
@@ -1372,6 +1487,14 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
       }
       if ((event.ctrlKey || event.metaKey) && ((event.key.toLowerCase() === 'z' && event.shiftKey) || event.key.toLowerCase() === 'y')) {
         event.preventDefault(); redo();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'v' && !isTextEditingTarget(event.target)) {
+        event.preventDefault(); pasteClipboardImage();
+        return;
+      }
+      if (event.key.startsWith('Arrow') && !event.ctrlKey && !event.metaKey && !event.altKey && !isTextEditingTarget(event.target)) {
+        event.preventDefault(); nudgeSelectedPhoto(event.key, event.shiftKey ? 10 : 1);
         return;
       }
       if (event.key === 'Escape' && !event.repeat) {
@@ -1387,7 +1510,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('pointerdown', closeMenu);
     };
-  }, [cropModeId, redo, tryBack, undo]);
+  }, [cropModeId, nudgeSelectedPhoto, pasteClipboardImage, redo, tryBack, undo]);
 
   useEffect(() => {
     if (cropModeId && !slotSources[cropModeId]) setCropModeId(null);
@@ -1430,16 +1553,9 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
       const slotId = targetId || selectedId || composition.layers.find((layer) => layer.type === 'slot')?.id;
       if (!slotId) return notify('模板中没有可替换照片图层', 'error');
       const dataUrl = await fileToDataUrl(file);
-      copyAfterRenderRef.current = autoCopy;
-      commitSession((previous) => ({
-        ...previous,
-        slotSources: { ...previous.slotSources, [slotId]: dataUrl },
-        slotNames: { ...previous.slotNames, [slotId]: file.name },
-        slotTransforms: { ...previous.slotTransforms, [slotId]: { zoom: 1, offsetX: 0, offsetY: 0 } }
-      }));
-      setSelectedId(slotId);
+      replaceSlotSource(slotId, dataUrl, file.name);
     } catch (error) { notify(error.message, 'error'); }
-  }, [autoCopy, commitSession, composition.layers, notify, selectedId]);
+  }, [composition.layers, notify, replaceSlotSource, selectedId]);
 
   const requestSlotImage = useCallback((slotId) => {
     pendingSlot.current = slotId;
@@ -1529,7 +1645,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
     </header>
     <div className="use-layout">
       <section className="use-sidebar">
-        <p className="eyebrow">第 1 步</p><h1>替换照片</h1><p className="use-intro">点击画布中的高亮区域，或把图片直接拖入对应区域。</p>
+        <p className="eyebrow">第 1 步</p><h1>替换照片</h1><p className="use-intro">点击画布中的高亮区域、拖入图片，或按 Ctrl+V 粘贴剪贴板图片。</p>
         <div className="slot-list-heading"><strong>可替换图层</strong><span>{slots.length}</span></div>
         <div className="slot-list">
           {slots.map((layer) => {
@@ -1542,6 +1658,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
             </button>{source && <IconButton label="裁切照片" className={cropModeId === layer.id ? 'active slot-crop-button' : 'slot-crop-button'} onClick={() => { setSelectedId(layer.id); setCropModeId(layer.id); }}><Crop size={16}/></IconButton>}</div>;
           })}
         </div>
+        <label className="check-row"><input type="checkbox" checked={lockAspectRatio} onChange={(event) => setLockAspectRatio(event.target.checked)}/><span>锁定照片宽高比</span></label>
         {cropLayer && slotSources[cropLayer.id] && <div className="crop-controls"><div className="crop-controls-heading"><strong><Crop size={16}/>裁切照片</strong><IconButton label="完成裁切" onClick={() => setCropModeId(null)}><Check size={16}/></IconButton></div><label className="crop-zoom-field"><span>缩放</span><input type="range" min="1" max="5" step="0.05" value={cropTransform.zoom} onChange={(event) => updatePhotoTransform(cropLayer.id, { zoom: Number(event.target.value) })}/><output>{Math.round(cropTransform.zoom * 100)}%</output></label><button className="wide-property-button" onClick={resetCrop}><RotateCcw size={16}/>重置裁切</button></div>}
         <input ref={input} hidden type="file" accept="image/*" onChange={(event) => { if (event.target.files[0]) acceptFile(event.target.files[0], pendingSlot.current); event.target.value = ''; pendingSlot.current = null; }}/>
         <div className="export-settings"><div className="slot-list-heading"><strong>导出设置</strong></div><div className="export-setting-row"><label><span>格式</span><select value={exportFormat} onChange={(event) => { const value = event.target.value; setExportFormat(value); if (value === 'jpg') setTransparent(false); }}><option value="png">PNG</option><option value="jpg">JPEG</option><option value="webp">WebP</option></select></label><label><span>倍率</span><select value={exportScale} onChange={(event) => setExportScale(Number(event.target.value))}><option value="1">1x</option><option value="2">2x</option><option value="3">3x</option></select></label></div><label className="check-row"><input type="checkbox" disabled={exportFormat === 'jpg'} checked={transparent} onChange={(event) => setTransparent(event.target.checked)}/><span>透明画布背景</span></label></div>
@@ -1550,7 +1667,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
       <section className="result-area">
         <div className="result-heading"><div><p className="eyebrow">第 2 步</p><h2>生成结果</h2></div><div className="result-heading-actions"><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>{result && <div className="result-actions"><button className="secondary-button" onClick={save}><Download size={17}/>保存 {exportFormat.toUpperCase()}</button><button className="primary-button" onClick={copyAgain}>{copied ? <Check size={17}/> : <Copy size={17}/>}复制图片</button></div>}</div></div>
         <div className="result-stage has-result" onWheel={handleResultWheel} onContextMenu={openContextMenu} onDragStart={(event) => event.preventDefault()} onDragOver={(event) => { if (Array.from(event.dataTransfer.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropOnSlot}>
-          <UseStage composition={composition} slotSources={slotSources} slotTransforms={slotTransforms} selectedId={selectedId} setSelectedId={setSelectedId} updateLayer={updateLayer} cropModeId={cropModeId} setCropModeId={setCropModeId} updatePhotoTransform={updatePhotoTransform} onRequestSlot={requestSlotImage} zoom={zoom} pan={pan} panning={panning} onPanStart={beginPan} transparent={transparent}/>
+          <UseStage composition={composition} slotSources={slotSources} slotTransforms={slotTransforms} selectedId={selectedId} setSelectedId={setSelectedId} updateLayer={updateLayer} cropModeId={cropModeId} setCropModeId={setCropModeId} updatePhotoTransform={updatePhotoTransform} onRequestSlot={requestSlotImage} zoom={zoom} pan={pan} panning={panning} onPanStart={beginPan} transparent={transparent} lockAspectRatio={lockAspectRatio}/>
         </div>
         {result && <div className={`copied-banner ${copied ? '' : 'copy-pending'}`}>{copied ? <Check size={18}/> : <Clipboard size={18}/>}<span>{copied ? '图片已复制，可粘贴到聊天窗口或文件夹' : '图片已生成，点击“复制图片”或保存 PNG'}</span></div>}
       </section>
