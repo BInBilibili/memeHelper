@@ -7,7 +7,7 @@ import {
   AlignHorizontalJustifyStart, AlignLeft, AlignRight, AlignVerticalDistributeCenter,
   AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowLeft, Bold, Check, ChevronDown, ChevronUp,
   Circle, Clipboard, Copy, Crop, Download, Eye, EyeOff, FileImage, GripVertical, ImagePlus,
-  Italic, Layers3, LayoutTemplate, Lock, MoreHorizontal, PackageOpen, Pencil, Plus, Redo2, RotateCcw,
+  Italic, Layers3, LayoutTemplate, Lock, MoreHorizontal, Pencil, Plus, Redo2, RotateCcw,
   Save, Shapes, Sparkles, Square, Star, Strikethrough, Trash2, Type, Underline, Undo2, Unlock, Upload,
   X, ZoomIn, ZoomOut
 } from 'lucide-react';
@@ -21,13 +21,6 @@ const browserDesktop = {
   saveTemplates: async (value) => localStorage.setItem('meme-helper-templates', JSON.stringify(value)),
   loadEditorDrafts: async () => JSON.parse(localStorage.getItem('meme-helper-editor-drafts') || '{}'),
   saveEditorDrafts: async (value) => localStorage.setItem('meme-helper-editor-drafts', JSON.stringify(value)),
-  publishTemplates: async (value) => {
-    const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'bundled-templates.json'; a.click();
-    URL.revokeObjectURL(url);
-    return 'bundled-templates.json';
-  },
   copyImage: async (dataUrl, clipboardDataUrl) => {
     const blob = await (await fetch(clipboardDataUrl || dataUrl)).blob();
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
@@ -63,7 +56,6 @@ const desktop = window.__TAURI_INTERNALS__ ? {
   saveTemplates: (templates) => invoke('save_templates', { templates }),
   loadEditorDrafts: () => invoke('load_editor_drafts'),
   saveEditorDrafts: (drafts) => invoke('save_editor_drafts', { drafts }),
-  publishTemplates: (templates) => invoke('publish_templates', { templates }),
   copyImage: (dataUrl, clipboardDataUrl) => invoke('copy_image', { dataUrl, clipboardDataUrl }),
   readClipboardImage: () => invoke('read_clipboard_image'),
   saveImage: (dataUrl, suggestedName) => invoke('save_image', { dataUrl, suggestedName })
@@ -613,36 +605,6 @@ function App() {
     await commitTemplates(templates.filter((item) => item.id !== id)); notify('模板已删除');
   };
 
-  const publishTemplates = async () => {
-    const filePath = await desktop.publishTemplates(templates);
-    if (filePath) notify(desktop.isDesktop ? '模板包已生成，可随项目提交到 GitHub' : '模板包已下载');
-  };
-
-  const importTemplates = async (file) => {
-    try {
-      const parsed = JSON.parse(await file.text());
-      const incoming = Array.isArray(parsed) ? parsed : parsed?.templates;
-      if (!Array.isArray(incoming) || !incoming.length) throw new Error('模板包中没有可导入的模板');
-      const valid = incoming.filter((item) => item && typeof item.name === 'string' && Number(item.width) > 0 && Number(item.height) > 0 && Array.isArray(item.layers));
-      if (!valid.length) throw new Error('模板包格式无效');
-      const next = [...templates];
-      let added = 0; let updated = 0; let skipped = 0;
-      valid.forEach((raw) => {
-        const imported = structuredClone(raw);
-        imported.id ||= uid();
-        imported.createdAt ||= Date.now();
-        imported.updatedAt ||= imported.createdAt;
-        imported.tags = Array.isArray(imported.tags) ? imported.tags.filter((tag) => typeof tag === 'string') : [];
-        const index = next.findIndex((item) => item.id === imported.id || (item.name === imported.name && item.width === imported.width && item.height === imported.height));
-        if (index < 0) { next.unshift(imported); added += 1; }
-        else if ((imported.updatedAt || 0) >= (next[index].updatedAt || 0)) { next[index] = { ...imported, favorite: next[index].favorite || imported.favorite }; updated += 1; }
-        else skipped += 1;
-      });
-      await commitTemplates(next);
-      notify(`已导入 ${added} 个模板，更新 ${updated} 个${skipped ? `，保留 ${skipped} 个较新版本` : ''}`);
-    } catch (error) { notify(error.message || '模板包导入失败', 'error'); }
-  };
-
   const useTemplate = async (template, file) => {
     const nextTemplate = { ...template, lastUsedAt: Date.now() };
     const next = templates.map((item) => item.id === template.id ? nextTemplate : item);
@@ -682,7 +644,7 @@ function App() {
   if (!ready) return <div className="loading-screen"><Sparkles size={26}/><span>正在准备模板库...</span></div>;
 
   return <div className="app-shell">
-    {page.name === 'library' && <Library templates={templates} query={query} setQuery={setQuery} onCreate={() => setPage({ name: 'editor' })} onEdit={(template) => setPage({ name: 'editor', template })} onRename={renameTemplate} onUse={useTemplate} onDelete={deleteTemplate} onPublish={publishTemplates} onImport={importTemplates} onToggleFavorite={toggleFavorite} notify={notify}/>}
+    {page.name === 'library' && <Library templates={templates} query={query} setQuery={setQuery} onCreate={() => setPage({ name: 'editor' })} onEdit={(template) => setPage({ name: 'editor', template })} onRename={renameTemplate} onUse={useTemplate} onDelete={deleteTemplate} onToggleFavorite={toggleFavorite} notify={notify}/>}
     {page.name === 'editor' && <Editor initial={page.template} autosave={editorDrafts[page.template?.id || 'new']} onSaveDraft={saveEditorDraft} onClearDraft={clearEditorDraft} onBack={() => setPage({ name: 'library' })} onSave={saveTemplate} notify={notify}/>}
     {page.name === 'use' && <UseTemplate template={page.template} initialFile={page.file} autoCopy={config.autoCopy !== false} onBack={() => setPage({ name: 'library' })} onEdit={() => setPage({ name: 'editor', template: page.template })} notify={notify}/>}
     <Toast toast={toast}/>
@@ -693,17 +655,16 @@ function Brand() {
   return <div className="brand"><div className="brand-mark"><Sparkles size={20}/></div><span>MemeHelper</span></div>;
 }
 
-function Library({ templates, query, setQuery, onCreate, onEdit, onRename, onUse, onDelete, onPublish, onImport, onToggleFavorite, notify }) {
+function Library({ templates, query, setQuery, onCreate, onEdit, onRename, onUse, onDelete, onToggleFavorite, notify }) {
   const [sort, setSort] = useState('recent');
   const [favoritesOnly, setFavoritesOnly] = useState(false);
-  const importInput = useRef();
   const normalizedQuery = query.trim().toLowerCase();
   const filtered = templates
     .filter((item) => !favoritesOnly || item.favorite)
     .filter((item) => !normalizedQuery || item.name.toLowerCase().includes(normalizedQuery) || (item.tags || []).some((tag) => tag.toLowerCase().includes(normalizedQuery)))
     .sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name, 'zh-CN') : sort === 'created' ? (b.createdAt || 0) - (a.createdAt || 0) : (b.lastUsedAt || b.updatedAt || 0) - (a.lastUsedAt || a.updatedAt || 0));
   return <main className="library-page">
-    <header className="topbar"><Brand/><div className="topbar-actions"><span className="storage-note">{desktop.isDesktop ? '模板保存在程序目录' : '模板保存在浏览器'}</span><input ref={importInput} hidden type="file" accept="application/json,.json" onChange={(event) => { if (event.target.files[0]) onImport(event.target.files[0]); event.target.value = ''; }}/><button className="secondary-button" onClick={() => importInput.current.click()}><Upload size={17}/>导入模板包</button><button className="secondary-button" onClick={onPublish}><PackageOpen size={17}/>发布模板包</button><button className="primary-button" onClick={onCreate}><Plus size={18}/>新建模板</button></div></header>
+    <header className="topbar"><Brand/><div className="topbar-actions"><span className="storage-note">{desktop.isDesktop ? '模板保存在程序目录' : '模板保存在浏览器'}</span><button className="primary-button" onClick={onCreate}><Plus size={18}/>新建模板</button></div></header>
     <section className="library-heading"><div><p className="eyebrow">模板工作台</p><h1>选择一个模板，马上开始</h1><p>点击使用，或把图片直接拖到模板上。</p></div><div className="library-controls"><div className="search-box"><LayoutTemplate size={18}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索名称或标签"/></div><button className={`favorite-filter ${favoritesOnly ? 'active' : ''}`} onClick={() => setFavoritesOnly((current) => !current)}><Star size={16} fill={favoritesOnly ? 'currentColor' : 'none'}/>收藏</button><select value={sort} onChange={(event) => setSort(event.target.value)} aria-label="模板排序"><option value="recent">最近使用</option><option value="created">最近创建</option><option value="name">按名称</option></select></div></section>
     <section className="template-grid">
       <button className="new-template-card" onClick={onCreate}><span className="new-icon"><Plus size={26}/></span><strong>创建新模板</strong><small>设置底图与照片位置</small></button>

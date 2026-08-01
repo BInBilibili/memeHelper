@@ -196,13 +196,6 @@ fn save_editor_drafts(drafts: Value) -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn publish_templates(templates: Vec<Value>) -> Result<String, String> {
-    let path = templates_path();
-    write_templates(&path, &templates)?;
-    Ok(path.to_string_lossy().into_owned())
-}
-
-#[tauri::command]
 fn copy_image(data_url: String, clipboard_data_url: Option<String>) -> Result<bool, String> {
     let (mime, bytes) = decode_image_data_url(&data_url)?;
     let extension = match mime {
@@ -342,7 +335,6 @@ fn main() {
             save_templates,
             load_editor_drafts,
             save_editor_drafts,
-            publish_templates,
             copy_image,
             read_clipboard_image,
             save_image
