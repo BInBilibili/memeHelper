@@ -480,6 +480,9 @@ function useCanvasViewport(initialZoom, minZoom, maxZoom) {
 
   const zoomAtPointer = useCallback((event) => {
     event.preventDefault();
+    // A wheel gesture starts a new viewport operation; never keep a prior
+    // blank-area pan gesture alive while the canvas is being rescaled.
+    stopPanRef.current?.();
     const rect = event.currentTarget.getBoundingClientRect();
     const pointer = {
       x: event.clientX - rect.left - rect.width / 2,
@@ -1655,7 +1658,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
               <span className={`slot-item-thumb ${source ? 'has-image' : ''}`}>{source ? <img src={source} alt=""/> : <LayerThumb layer={layer}/>}</span>
               <span className="slot-item-copy"><strong>{layer.name}</strong><small>{name || '点击选择图片'}</small></span>
               {source ? <RotateCcw size={16}/> : <ImagePlus size={16}/>}
-            </button>{source && <IconButton label="裁切照片" className={cropModeId === layer.id ? 'active slot-crop-button' : 'slot-crop-button'} onClick={() => { setSelectedId(layer.id); setCropModeId(layer.id); }}><Crop size={16}/></IconButton>}</div>;
+            </button>{source && <IconButton label={cropModeId === layer.id ? '退出裁切' : '裁切照片'} className={cropModeId === layer.id ? 'active slot-crop-button' : 'slot-crop-button'} onClick={() => { setSelectedId(layer.id); setCropModeId((current) => current === layer.id ? null : layer.id); }}><Crop size={16}/></IconButton>}</div>;
           })}
         </div>
         <label className="check-row"><input type="checkbox" checked={lockAspectRatio} onChange={(event) => setLockAspectRatio(event.target.checked)}/><span>锁定照片宽高比</span></label>
