@@ -695,27 +695,68 @@ function TemplateCard({ template, onUse, onEdit, onDelete, onToggleFavorite, not
   const [preview, setPreview] = useState('');
   const [dragging, setDragging] = useState(false);
   const [menu, setMenu] = useState(false);
+  const [pasteMenu, setPasteMenu] = useState(null);
+  const [quickWorking, setQuickWorking] = useState(false);
   const menuRef = useRef();
+  const pasteMenuRef = useRef();
+  const slots = useMemo(() => template.layers.filter((layer) => layer.type === 'slot'), [template.layers]);
+  const canQuickReplace = slots.length === 1;
   useEffect(() => { let alive = true; renderTemplate(template).then((data) => alive && setPreview(data)); return () => { alive = false; }; }, [template]);
   useEffect(() => {
-    if (!menu) return undefined;
+    if (!menu && !pasteMenu) return undefined;
     const closeMenu = (event) => {
       if (!menuRef.current?.contains(event.target)) setMenu(false);
+      if (!pasteMenuRef.current?.contains(event.target)) setPasteMenu(null);
     };
     window.addEventListener('pointerdown', closeMenu);
     return () => window.removeEventListener('pointerdown', closeMenu);
-  }, [menu]);
-  const drop = (event) => {
+  }, [menu, pasteMenu]);
+  const quickReplace = useCallback(async (source) => {
+    if (!canQuickReplace || quickWorking) return;
+    setQuickWorking(true);
+    try {
+      const dataUrl = await renderTemplate(template, { [slots[0].id]: source });
+      await desktop.copyImage(dataUrl);
+      notify('作品已生成并复制到剪贴板');
+    } catch (error) {
+      notify(`生成或复制失败：${error?.message || error}`, 'error');
+    } finally {
+      setQuickWorking(false);
+    }
+  }, [canQuickReplace, notify, quickWorking, slots, template]);
+  const pasteImage = useCallback(async () => {
+    setPasteMenu(null);
+    try {
+      const dataUrl = await desktop.readClipboardImage();
+      if (!dataUrl) return notify('剪贴板中没有图片', 'error');
+      await quickReplace(dataUrl);
+    } catch (error) {
+      notify(`读取剪贴板失败：${error?.message || error}`, 'error');
+    }
+  }, [notify, quickReplace]);
+  const drop = async (event) => {
     event.preventDefault(); setDragging(false);
     const file = event.dataTransfer.files?.[0];
     if (!file?.type?.startsWith('image/')) return notify('请拖入图片文件', 'error');
+    if (canQuickReplace) {
+      try { await quickReplace(await fileToDataUrl(file)); }
+      catch (error) { notify(`读取图片失败：${error?.message || error}`, 'error'); }
+      return;
+    }
     onUse(template, file);
   };
-  return <article className={`template-card ${dragging ? 'dragging' : ''}`} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={drop}>
-    <div className="template-preview" onClick={() => onUse(template)}>{preview && <img src={preview} alt="" draggable={false}/>}<div className="drop-hint"><Upload size={28}/><strong>松开即可生成</strong></div></div>
-    <div className="template-meta"><div><h3>{template.name}</h3><span>{template.width} x {template.height} · {template.layers.filter((x) => x.type === 'slot').length} 个照片位</span>{Boolean(template.tags?.length) && <span className="template-tags">{template.tags.slice(0, 3).map((tag) => <small key={tag}>{tag}</small>)}</span>}</div><div className="template-card-tools"><IconButton label={template.favorite ? '取消收藏' : '收藏模板'} className={template.favorite ? 'favorite-active' : ''} onClick={() => onToggleFavorite(template.id)}><Star size={17} fill={template.favorite ? 'currentColor' : 'none'}/></IconButton><div ref={menuRef} className="card-menu-wrap"><IconButton label="模板操作" onClick={() => setMenu((current) => !current)}><MoreHorizontal size={19}/></IconButton>{menu && <div className="context-menu"><button onClick={() => { setMenu(false); onEdit(template); }}><Pencil size={16}/>编辑模板</button><button className="danger" onClick={() => { setMenu(false); onDelete(template.id); }}><Trash2 size={16}/>删除模板</button></div>}</div></div></div>
+  const openPasteMenu = (event) => {
+    if (!canQuickReplace) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setMenu(false);
+    setPasteMenu({ x: Math.min(event.clientX, window.innerWidth - 196), y: Math.min(event.clientY, window.innerHeight - 52) });
+  };
+  return <><article className={`template-card ${dragging ? 'dragging' : ''}`} onContextMenu={openPasteMenu} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={drop}>
+    <div className="template-preview" onClick={() => onUse(template)}><span className="slot-count-badge" title="可替换图层数，为1时可以直接拖入图层复制作品到粘贴板" aria-label={`可替换图层数 ${slots.length}`}>{slots.length}</span>{preview && <img src={preview} alt="" draggable={false}/>}<div className="drop-hint"><Upload size={28}/><strong>{canQuickReplace ? '松开并复制作品' : '松开即可生成'}</strong></div></div>
+    <div className="template-meta"><div><h3>{template.name}</h3><span>{template.width} x {template.height} · {slots.length} 个照片位</span>{Boolean(template.tags?.length) && <span className="template-tags">{template.tags.slice(0, 3).map((tag) => <small key={tag}>{tag}</small>)}</span>}</div><div className="template-card-tools"><IconButton label={template.favorite ? '取消收藏' : '收藏模板'} className={template.favorite ? 'favorite-active' : ''} onClick={() => onToggleFavorite(template.id)}><Star size={17} fill={template.favorite ? 'currentColor' : 'none'}/></IconButton><div ref={menuRef} className="card-menu-wrap"><IconButton label="模板操作" onClick={() => setMenu((current) => !current)}><MoreHorizontal size={19}/></IconButton>{menu && <div className="context-menu"><button onClick={() => { setMenu(false); onEdit(template); }}><Pencil size={16}/>编辑模板</button><button className="danger" onClick={() => { setMenu(false); onDelete(template.id); }}><Trash2 size={16}/>删除模板</button></div>}</div></div></div>
     <div className="card-actions"><button className="secondary-button" onClick={() => onEdit(template)}><Pencil size={16}/>编辑</button><button className="primary-button grow" onClick={() => onUse(template)}><Sparkles size={17}/>使用模板</button></div>
-  </article>;
+  </article>{pasteMenu && <div ref={pasteMenuRef} className="library-paste-menu" style={{ left: pasteMenu.x, top: pasteMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={pasteImage} disabled={quickWorking}><Clipboard size={16}/>粘贴图片并复制作品</button></div>}</>;
 }
 
 function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, notify }) {
