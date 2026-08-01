@@ -2,6 +2,17 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $package = Get-Content -Raw -Encoding UTF8 (Join-Path $projectRoot 'package.json') | ConvertFrom-Json
+$releaseRoot = Join-Path $projectRoot 'release-tauri'
+$releaseDirectory = Join-Path $releaseRoot "MemeHelper-$($package.version)"
+$archivePath = Join-Path $releaseRoot "MemeHelper-$($package.version)-windows-x64.7z"
+$resolvedProject = [IO.Path]::GetFullPath($projectRoot).TrimEnd('\')
+$resolvedRelease = [IO.Path]::GetFullPath($releaseDirectory)
+if (-not $resolvedRelease.StartsWith("$resolvedProject\", [StringComparison]::OrdinalIgnoreCase)) {
+  throw "Refusing to create a release directory outside the project: $resolvedRelease"
+}
+if ((Test-Path -LiteralPath $releaseDirectory) -or (Test-Path -LiteralPath $archivePath)) {
+  throw "Release $($package.version) already exists. Increase the version before building; existing releases are never overwritten."
+}
 $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
 $cargoExe = Join-Path $cargoBin 'cargo.exe'
 $xwinRoot = Join-Path $env:LOCALAPPDATA 'cargo-xwin\xwin'
@@ -44,17 +55,7 @@ try {
     throw "Built executable does not exist: $sourceExe"
   }
 
-  $releaseRoot = Join-Path $projectRoot 'release-tauri'
-  $releaseDirectory = Join-Path $releaseRoot "MemeHelper-$($package.version)"
-  $resolvedProject = [IO.Path]::GetFullPath($projectRoot).TrimEnd('\')
-  $resolvedRelease = [IO.Path]::GetFullPath($releaseDirectory)
-  if (-not $resolvedRelease.StartsWith("$resolvedProject\", [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Refusing to replace a release directory outside the project: $resolvedRelease"
-  }
-  if (Test-Path -LiteralPath $releaseDirectory) {
-    Remove-Item -LiteralPath $releaseDirectory -Recurse -Force
-  }
-  New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
+  New-Item -ItemType Directory -Path $releaseDirectory | Out-Null
 
   Copy-Item -LiteralPath $sourceExe -Destination (Join-Path $releaseDirectory 'MemeHelper.exe')
   Copy-Item -LiteralPath (Join-Path $projectRoot 'config.json') -Destination (Join-Path $releaseDirectory 'config.json')
@@ -71,8 +72,6 @@ try {
   $sevenZipPattern = Join-Path $env:LOCALAPPDATA 'electron-builder\Cache\7zip@*\*\bin\7za.exe'
   $sevenZip = Get-ChildItem -Path $sevenZipPattern -File -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($sevenZip) {
-    $archivePath = Join-Path $releaseRoot "MemeHelper-$($package.version)-windows-x64.7z"
-    if (Test-Path -LiteralPath $archivePath) { Remove-Item -LiteralPath $archivePath -Force }
     Push-Location $releaseDirectory
     try {
       & $sevenZip.FullName a -t7z -mx=9 -m0=lzma2 -ms=on -mmt=on $archivePath '.\*'
