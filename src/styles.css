@@ -238,6 +238,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .slot-list-heading span { min-width: 22px; height: 18px; padding: 0 6px; border-radius: 9px; background: #eeeae2; color: var(--muted); display: grid; place-items: center; font-size: 9px; }
 .slot-list { display: flex; flex-direction: column; gap: 7px; margin-bottom: 16px; }
 .slot-item-row { display: grid; grid-template-columns: minmax(0, 1fr) 34px; gap: 6px; align-items: stretch; }
+.slot-item-row.dragging .slot-item, .slot-item-row.dragging .slot-crop-button { border-color: var(--accent); background: #fff4f1; box-shadow: 0 0 0 2px rgba(233,78,55,.12); }
 .slot-item { width: 100%; min-height: 58px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); display: flex; align-items: center; gap: 9px; text-align: left; cursor: pointer; }
 .slot-item:hover { border-color: #d7a092; background: #fff9f7; }
 .slot-item.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
@@ -424,6 +425,11 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 
 :root[data-theme="dark"] .slot-item:hover {
   background: #342a28;
+}
+
+:root[data-theme="dark"] .slot-item-row.dragging .slot-item,
+:root[data-theme="dark"] .slot-item-row.dragging .slot-crop-button {
+  background: #3a2824;
 }
 
 :root[data-theme="dark"] .slot-item-thumb {

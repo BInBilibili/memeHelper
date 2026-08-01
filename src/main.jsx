@@ -1435,6 +1435,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
   const { zoom, pan, panning, setZoom, zoomAtPointer, beginPan } = useCanvasViewport(1, .5, 3);
   const [selectedId, setSelectedId] = useState(template.layers.find((layer) => layer.type === 'slot')?.id || null);
   const [cropModeId, setCropModeId] = useState(null);
+  const [slotDropId, setSlotDropId] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
   const [exportFormat, setExportFormat] = useState('png');
   const [exportScale, setExportScale] = useState(1);
@@ -1678,6 +1679,15 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
     acceptFile(file, target.id);
   };
 
+  const dropOnSlotList = (event, slotId) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setSlotDropId(null);
+    const file = Array.from(event.dataTransfer.files || []).find((item) => item.type.startsWith('image/'));
+    if (!file) return notify('请拖入图片文件', 'error');
+    acceptFile(file, slotId);
+  };
+
   const handleResultWheel = (event) => {
     if (cropModeId && cropLayer && slotSources[cropModeId]) {
       const frame = event.currentTarget.querySelector('.result-canvas-frame');
@@ -1717,7 +1727,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
           {slots.map((layer) => {
             const source = slotSources[layer.id];
             const name = slotNames[layer.id];
-            return <div key={layer.id} className="slot-item-row"><button type="button" className={`slot-item ${selectedId === layer.id ? 'selected' : ''}`} onClick={() => { setSelectedId(layer.id); requestSlotImage(layer.id); }}>
+            return <div key={layer.id} className={`slot-item-row ${slotDropId === layer.id ? 'dragging' : ''}`} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setSlotDropId(layer.id); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setSlotDropId((current) => current === layer.id ? null : current); }} onDrop={(event) => dropOnSlotList(event, layer.id)}><button type="button" className={`slot-item ${selectedId === layer.id ? 'selected' : ''}`} onClick={() => { setSelectedId(layer.id); requestSlotImage(layer.id); }}>
               <span className={`slot-item-thumb ${source ? 'has-image' : ''}`}>{source ? <img src={source} alt=""/> : <LayerThumb layer={layer}/>}</span>
               <span className="slot-item-copy"><strong>{layer.name}</strong><small>{name || '点击选择图片'}</small></span>
               {source ? <RotateCcw size={16}/> : <ImagePlus size={16}/>}
