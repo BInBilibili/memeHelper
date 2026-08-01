@@ -246,7 +246,30 @@ fn read_clipboard_image() -> Result<Option<String>, String> {
     let mut clipboard = Clipboard::new().map_err(|error| error.to_string())?;
     let clipboard_image = match clipboard.get_image() {
         Ok(image) => image,
-        Err(ClipboardError::ContentNotAvailable) => return Ok(None),
+        Err(ClipboardError::ContentNotAvailable) => {
+            let files = match clipboard.get().file_list() {
+                Ok(files) => files,
+                Err(ClipboardError::ContentNotAvailable) => return Ok(None),
+                Err(error) => return Err(error.to_string()),
+            };
+            let Some((path, mime)) = files.iter().find_map(|path| {
+                let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+                let mime = match extension.as_str() {
+                    "png" => "image/png",
+                    "jpg" | "jpeg" => "image/jpeg",
+                    "webp" => "image/webp",
+                    _ => return None,
+                };
+                Some((path, mime))
+            }) else {
+                return Ok(None);
+            };
+            let bytes = fs::read(path).map_err(|error| error.to_string())?;
+            return Ok(Some(format!(
+                "data:{mime};base64,{}",
+                STANDARD.encode(bytes)
+            )));
+        }
         Err(error) => return Err(error.to_string()),
     };
     let mut png = Vec::new();
