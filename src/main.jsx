@@ -656,10 +656,33 @@ function App() {
     await commitTemplates(next);
   };
 
+  const renameTemplate = async (id, name) => {
+    const nextName = name.trim();
+    if (!nextName) {
+      notify('模板名称不能为空', 'error');
+      return false;
+    }
+    if (templates.some((item) => item.id !== id && item.name.trim().toLocaleLowerCase() === nextName.toLocaleLowerCase())) {
+      notify('已有同名模板，请使用其他名称', 'error');
+      return false;
+    }
+    const current = templates.find((item) => item.id === id);
+    if (!current || current.name === nextName) return true;
+    try {
+      const next = templates.map((item) => item.id === id ? { ...item, name: nextName, updatedAt: Date.now() } : item);
+      await commitTemplates(next);
+      notify('模板名称已更新');
+      return true;
+    } catch (error) {
+      notify(`模板名称保存失败：${error?.message || error}`, 'error');
+      return false;
+    }
+  };
+
   if (!ready) return <div className="loading-screen"><Sparkles size={26}/><span>正在准备模板库...</span></div>;
 
   return <div className="app-shell">
-    {page.name === 'library' && <Library templates={templates} query={query} setQuery={setQuery} onCreate={() => setPage({ name: 'editor' })} onEdit={(template) => setPage({ name: 'editor', template })} onUse={useTemplate} onDelete={deleteTemplate} onPublish={publishTemplates} onImport={importTemplates} onToggleFavorite={toggleFavorite} notify={notify}/>}
+    {page.name === 'library' && <Library templates={templates} query={query} setQuery={setQuery} onCreate={() => setPage({ name: 'editor' })} onEdit={(template) => setPage({ name: 'editor', template })} onRename={renameTemplate} onUse={useTemplate} onDelete={deleteTemplate} onPublish={publishTemplates} onImport={importTemplates} onToggleFavorite={toggleFavorite} notify={notify}/>}
     {page.name === 'editor' && <Editor initial={page.template} autosave={editorDrafts[page.template?.id || 'new']} onSaveDraft={saveEditorDraft} onClearDraft={clearEditorDraft} onBack={() => setPage({ name: 'library' })} onSave={saveTemplate} notify={notify}/>}
     {page.name === 'use' && <UseTemplate template={page.template} initialFile={page.file} autoCopy={config.autoCopy !== false} onBack={() => setPage({ name: 'library' })} onEdit={() => setPage({ name: 'editor', template: page.template })} notify={notify}/>}
     <Toast toast={toast}/>
@@ -670,7 +693,7 @@ function Brand() {
   return <div className="brand"><div className="brand-mark"><Sparkles size={20}/></div><span>MemeHelper</span></div>;
 }
 
-function Library({ templates, query, setQuery, onCreate, onEdit, onUse, onDelete, onPublish, onImport, onToggleFavorite, notify }) {
+function Library({ templates, query, setQuery, onCreate, onEdit, onRename, onUse, onDelete, onPublish, onImport, onToggleFavorite, notify }) {
   const [sort, setSort] = useState('recent');
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const importInput = useRef();
@@ -684,17 +707,41 @@ function Library({ templates, query, setQuery, onCreate, onEdit, onUse, onDelete
     <section className="library-heading"><div><p className="eyebrow">模板工作台</p><h1>选择一个模板，马上开始</h1><p>点击使用，或把图片直接拖到模板上。</p></div><div className="library-controls"><div className="search-box"><LayoutTemplate size={18}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索名称或标签"/></div><button className={`favorite-filter ${favoritesOnly ? 'active' : ''}`} onClick={() => setFavoritesOnly((current) => !current)}><Star size={16} fill={favoritesOnly ? 'currentColor' : 'none'}/>收藏</button><select value={sort} onChange={(event) => setSort(event.target.value)} aria-label="模板排序"><option value="recent">最近使用</option><option value="created">最近创建</option><option value="name">按名称</option></select></div></section>
     <section className="template-grid">
       <button className="new-template-card" onClick={onCreate}><span className="new-icon"><Plus size={26}/></span><strong>创建新模板</strong><small>设置底图与照片位置</small></button>
-      {filtered.map((template) => <TemplateCard key={template.id} template={template} onUse={onUse} onEdit={onEdit} onDelete={onDelete} onToggleFavorite={onToggleFavorite} notify={notify}/>) }
+      {filtered.map((template) => <TemplateCard key={template.id} template={template} onUse={onUse} onEdit={onEdit} onRename={onRename} onDelete={onDelete} onToggleFavorite={onToggleFavorite} notify={notify}/>) }
     </section>
     {!filtered.length && <div className="empty-state"><LayoutTemplate size={34}/><h3>没有找到模板</h3><p>换个关键词，或新建一个模板。</p></div>}
     <footer className="app-footer"><span>{templates.length} 个模板</span><span>拖入图片即可生成并复制</span></footer>
   </main>;
 }
 
-function TemplateCard({ template, onUse, onEdit, onDelete, onToggleFavorite, notify }) {
+function RenameTemplateDialog({ template, onCancel, onSave }) {
+  const [name, setName] = useState(template.name);
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef();
+  const nextName = name.trim();
+  useEffect(() => { inputRef.current?.select(); }, []);
+  const submit = async (event) => {
+    event.preventDefault();
+    if (!nextName || saving) return;
+    setSaving(true);
+    const saved = await onSave(template.id, nextName);
+    setSaving(false);
+    if (saved) onCancel();
+  };
+  return <div className="rename-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onCancel(); }}>
+    <form className="rename-dialog" role="dialog" aria-modal="true" aria-labelledby="rename-dialog-title" onSubmit={submit} onKeyDown={(event) => { if (event.key === 'Escape' && !saving) onCancel(); }}>
+      <div className="rename-dialog-heading"><div><p className="eyebrow">模板操作</p><h2 id="rename-dialog-title">编辑名称</h2></div><IconButton type="button" label="关闭" onClick={onCancel} disabled={saving}><X size={18}/></IconButton></div>
+      <label className="rename-dialog-field"><span>模板名称</span><input ref={inputRef} value={name} maxLength={80} onChange={(event) => setName(event.target.value)} /></label>
+      <div className="rename-dialog-actions"><button type="button" className="secondary-button" onClick={onCancel} disabled={saving}>取消</button><button type="submit" className="primary-button" disabled={!nextName || nextName === template.name || saving}><Save size={16}/>{saving ? '保存中' : '保存'}</button></div>
+    </form>
+  </div>;
+}
+
+function TemplateCard({ template, onUse, onEdit, onRename, onDelete, onToggleFavorite, notify }) {
   const [preview, setPreview] = useState('');
   const [dragging, setDragging] = useState(false);
   const [menu, setMenu] = useState(false);
+  const [renaming, setRenaming] = useState(false);
   const [pasteMenu, setPasteMenu] = useState(null);
   const [quickWorking, setQuickWorking] = useState(false);
   const menuRef = useRef();
@@ -754,9 +801,9 @@ function TemplateCard({ template, onUse, onEdit, onDelete, onToggleFavorite, not
   };
   return <><article className={`template-card ${dragging ? 'dragging' : ''}`} onContextMenu={openPasteMenu} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={drop}>
     <div className="template-preview" onClick={() => onUse(template)}><span className="slot-count-badge" title="可替换图层数，为1时可以直接拖入图层复制作品到粘贴板" aria-label={`可替换图层数 ${slots.length}`}>{slots.length}</span>{preview && <img src={preview} alt="" draggable={false}/>}<div className="drop-hint"><Upload size={28}/><strong>{canQuickReplace ? '松开并复制作品' : '松开即可生成'}</strong></div></div>
-    <div className="template-meta"><div><h3>{template.name}</h3><span>{template.width} x {template.height} · {slots.length} 个照片位</span>{Boolean(template.tags?.length) && <span className="template-tags">{template.tags.slice(0, 3).map((tag) => <small key={tag}>{tag}</small>)}</span>}</div><div className="template-card-tools"><IconButton label={template.favorite ? '取消收藏' : '收藏模板'} className={template.favorite ? 'favorite-active' : ''} onClick={() => onToggleFavorite(template.id)}><Star size={17} fill={template.favorite ? 'currentColor' : 'none'}/></IconButton><div ref={menuRef} className="card-menu-wrap"><IconButton label="模板操作" onClick={() => setMenu((current) => !current)}><MoreHorizontal size={19}/></IconButton>{menu && <div className="context-menu"><button onClick={() => { setMenu(false); onEdit(template); }}><Pencil size={16}/>编辑模板</button><button className="danger" onClick={() => { setMenu(false); onDelete(template.id); }}><Trash2 size={16}/>删除模板</button></div>}</div></div></div>
+    <div className="template-meta"><div><h3>{template.name}</h3><span>{template.width} x {template.height} · {slots.length} 个照片位</span>{Boolean(template.tags?.length) && <span className="template-tags">{template.tags.slice(0, 3).map((tag) => <small key={tag}>{tag}</small>)}</span>}</div><div className="template-card-tools"><IconButton label={template.favorite ? '取消收藏' : '收藏模板'} className={template.favorite ? 'favorite-active' : ''} onClick={() => onToggleFavorite(template.id)}><Star size={17} fill={template.favorite ? 'currentColor' : 'none'}/></IconButton><div ref={menuRef} className="card-menu-wrap"><IconButton label="模板操作" onClick={() => setMenu((current) => !current)}><MoreHorizontal size={19}/></IconButton>{menu && <div className="context-menu"><button onClick={() => { setMenu(false); onEdit(template); }}><Pencil size={16}/>编辑模板</button><button onClick={() => { setMenu(false); setRenaming(true); }}><Type size={16}/>编辑名称</button><button className="danger" onClick={() => { setMenu(false); onDelete(template.id); }}><Trash2 size={16}/>删除模板</button></div>}</div></div></div>
     <div className="card-actions"><button className="secondary-button" onClick={() => onEdit(template)}><Pencil size={16}/>编辑</button><button className="primary-button grow" onClick={() => onUse(template)}><Sparkles size={17}/>使用模板</button></div>
-  </article>{pasteMenu && <div ref={pasteMenuRef} className="library-paste-menu" style={{ left: pasteMenu.x, top: pasteMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={pasteImage} disabled={quickWorking}><Clipboard size={16}/>粘贴图片并复制作品</button></div>}</>;
+  </article>{pasteMenu && <div ref={pasteMenuRef} className="library-paste-menu" style={{ left: pasteMenu.x, top: pasteMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={pasteImage} disabled={quickWorking}><Clipboard size={16}/>粘贴图片并复制作品</button></div>}{renaming && <RenameTemplateDialog template={template} onCancel={() => setRenaming(false)} onSave={onRename}/>}</>;
 }
 
 function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, notify }) {
