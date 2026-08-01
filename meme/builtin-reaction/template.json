@@ -1,0 +1,37 @@
+{
+  "id": "f626ff1c-c021-4149-b54a-eae0ead4a457",
+  "name": "需求来了",
+  "width": 900,
+  "height": 600,
+  "createdAt": 1785251880461,
+  "updatedAt": 1785251880461,
+  "layers": [
+    {
+      "id": "5e98a700-09ac-4778-8995-210aa9e70f11",
+      "name": "黑色边框",
+      "type": "static",
+      "src": "background.svg",
+      "x": 0,
+      "y": 0,
+      "width": 900,
+      "height": 600,
+      "rotation": 0,
+      "visible": true,
+      "fit": "fill"
+    },
+    {
+      "id": "f195e7a1-6f67-4e01-9a85-8c209d460684",
+      "name": "反应照片",
+      "type": "slot",
+      "shape": "rect",
+      "src": "",
+      "x": 92,
+      "y": 125,
+      "width": 716,
+      "height": 350,
+      "rotation": 0,
+      "visible": true,
+      "fit": "cover"
+    }
+  ]
+}

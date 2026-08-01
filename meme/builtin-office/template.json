@@ -1,0 +1,37 @@
+{
+  "id": "e81bff17-14a1-4dfb-a9c7-9652f53d41b6",
+  "name": "上班状态",
+  "width": 800,
+  "height": 800,
+  "createdAt": 1785251880461,
+  "updatedAt": 1785281522224,
+  "layers": [
+    {
+      "id": "750bebf4-514c-45fc-a605-8cce76134956",
+      "name": "底图与文字",
+      "type": "static",
+      "src": "background.svg",
+      "x": 0,
+      "y": 0,
+      "width": 800,
+      "height": 800,
+      "rotation": 0,
+      "visible": true,
+      "fit": "fill"
+    },
+    {
+      "id": "2aa63360-1774-46e4-a692-9daab7a51a9d",
+      "name": "人物照片",
+      "type": "slot",
+      "shape": "rect",
+      "src": "",
+      "x": 116,
+      "y": 150,
+      "width": 568,
+      "height": 400,
+      "rotation": 0,
+      "visible": true,
+      "fit": "fill"
+    }
+  ]
+}

@@ -57,8 +57,16 @@ try {
   New-Item -ItemType Directory -Path $releaseDirectory -Force | Out-Null
 
   Copy-Item -LiteralPath $sourceExe -Destination (Join-Path $releaseDirectory 'MemeHelper.exe')
-  Copy-Item -LiteralPath (Join-Path $projectRoot 'src\bundled-templates.json') -Destination (Join-Path $releaseDirectory 'templates.json')
   Copy-Item -LiteralPath (Join-Path $projectRoot 'config.json') -Destination (Join-Path $releaseDirectory 'config.json')
+  $sourceTemplates = Join-Path $projectRoot 'meme'
+  if (-not (Test-Path -LiteralPath $sourceTemplates)) {
+    throw "Template directory does not exist: $sourceTemplates"
+  }
+  $releaseTemplates = Join-Path $releaseDirectory 'meme'
+  New-Item -ItemType Directory -Path $releaseTemplates -Force | Out-Null
+  Get-ChildItem -LiteralPath $sourceTemplates -Force |
+    Where-Object { $_.Name -ne '.legacy-migrated' } |
+    Copy-Item -Destination $releaseTemplates -Recurse
 
   $sevenZipPattern = Join-Path $env:LOCALAPPDATA 'electron-builder\Cache\7zip@*\*\bin\7za.exe'
   $sevenZip = Get-ChildItem -Path $sevenZipPattern -File -ErrorAction SilentlyContinue | Select-Object -First 1

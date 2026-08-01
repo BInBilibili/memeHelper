@@ -16,7 +16,7 @@ import './styles.css';
 
 const browserDesktop = {
   isDesktop: false,
-  loadConfig: async () => ({ theme: 'system', autoCopy: true, templatesFile: 'templates.json' }),
+  loadConfig: async () => ({ theme: 'system', autoCopy: true }),
   loadTemplates: async () => JSON.parse(localStorage.getItem('meme-helper-templates') || '[]'),
   saveTemplates: async (value) => localStorage.setItem('meme-helper-templates', JSON.stringify(value)),
   loadEditorDrafts: async () => JSON.parse(localStorage.getItem('meme-helper-editor-drafts') || '{}'),
@@ -533,7 +533,7 @@ function Toast({ toast }) {
 function App() {
   const [templates, setTemplates] = useState([]);
   const [editorDrafts, setEditorDrafts] = useState({});
-  const [config, setConfig] = useState({ theme: 'system', autoCopy: true, templatesFile: 'templates.json' });
+  const [config, setConfig] = useState({ theme: 'system', autoCopy: true });
   const [ready, setReady] = useState(false);
   const [page, setPage] = useState({ name: 'library' });
   const [toast, setToast] = useState(null);
@@ -664,7 +664,7 @@ function Library({ templates, query, setQuery, onCreate, onEdit, onRename, onUse
     .filter((item) => !normalizedQuery || item.name.toLowerCase().includes(normalizedQuery) || (item.tags || []).some((tag) => tag.toLowerCase().includes(normalizedQuery)))
     .sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name, 'zh-CN') : sort === 'created' ? (b.createdAt || 0) - (a.createdAt || 0) : (b.lastUsedAt || b.updatedAt || 0) - (a.lastUsedAt || a.updatedAt || 0));
   return <main className="library-page">
-    <header className="topbar"><Brand/><div className="topbar-actions"><span className="storage-note">{desktop.isDesktop ? '模板保存在程序目录' : '模板保存在浏览器'}</span><button className="primary-button" onClick={onCreate}><Plus size={18}/>新建模板</button></div></header>
+    <header className="topbar"><Brand/><div className="topbar-actions"><span className="storage-note">{desktop.isDesktop ? '模板保存在程序目录的 meme 文件夹' : '模板保存在浏览器'}</span><button className="primary-button" onClick={onCreate}><Plus size={18}/>新建模板</button></div></header>
     <section className="library-heading"><div><p className="eyebrow">模板工作台</p><h1>选择一个模板，马上开始</h1><p>点击使用，或把图片直接拖到模板上。</p></div><div className="library-controls"><div className="search-box"><LayoutTemplate size={18}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索名称或标签"/></div><button className={`favorite-filter ${favoritesOnly ? 'active' : ''}`} onClick={() => setFavoritesOnly((current) => !current)}><Star size={16} fill={favoritesOnly ? 'currentColor' : 'none'}/>收藏</button><select value={sort} onChange={(event) => setSort(event.target.value)} aria-label="模板排序"><option value="recent">最近使用</option><option value="created">最近创建</option><option value="name">按名称</option></select></div></section>
     <section className="template-grid">
       <button className="new-template-card" onClick={onCreate}><span className="new-icon"><Plus size={26}/></span><strong>创建新模板</strong><small>设置底图与照片位置</small></button>

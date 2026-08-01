@@ -6,8 +6,9 @@ use image::ImageEncoder;
 use serde_json::{json, Value};
 use std::{
     borrow::Cow,
+    collections::{HashMap, HashSet},
     env, fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 use tauri::{LogicalSize, Manager, Size};
 
@@ -15,7 +16,6 @@ fn default_config() -> Value {
     json!({
         "theme": "system",
         "autoCopy": true,
-        "templatesFile": "templates.json",
         "window": {
             "width": 1320,
             "height": 860,
@@ -66,20 +66,15 @@ fn read_config() -> Value {
     config
 }
 
-fn templates_path() -> PathBuf {
-    if cfg!(debug_assertions) {
-        return app_directory().join("src").join("bundled-templates.json");
-    }
-    let config = read_config();
-    let configured = config
-        .get("templatesFile")
-        .and_then(Value::as_str)
-        .unwrap_or("templates.json");
-    let file_name = Path::new(configured)
-        .file_name()
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| std::ffi::OsStr::new("templates.json"));
-    app_directory().join(file_name)
+const TEMPLATE_FILE_NAME: &str = "template.json";
+const MIGRATION_MARKER_NAME: &str = ".legacy-migrated";
+
+fn templates_directory() -> PathBuf {
+    app_directory().join("meme")
+}
+
+fn legacy_directory_templates_path() -> PathBuf {
+    app_directory().join("templates.json")
 }
 
 fn legacy_templates_path() -> Option<PathBuf> {
@@ -88,11 +83,274 @@ fn legacy_templates_path() -> Option<PathBuf> {
         .map(|path| path.join("meme-helper").join("templates.json"))
 }
 
-fn read_templates(path: &Path) -> Vec<Value> {
+fn read_template_array(path: &Path) -> Vec<Value> {
     fs::read_to_string(path)
         .ok()
         .and_then(|contents| serde_json::from_str::<Vec<Value>>(&contents).ok())
         .unwrap_or_default()
+}
+
+fn image_type_from_mime(mime: &str) -> Option<(&'static str, &'static str)> {
+    match mime.to_ascii_lowercase().as_str() {
+        "image/png" => Some(("png", "image/png")),
+        "image/jpeg" | "image/jpg" => Some(("jpg", "image/jpeg")),
+        "image/webp" => Some(("webp", "image/webp")),
+        "image/gif" => Some(("gif", "image/gif")),
+        "image/bmp" | "image/x-ms-bmp" => Some(("bmp", "image/bmp")),
+        "image/svg+xml" => Some(("svg", "image/svg+xml")),
+        "image/avif" => Some(("avif", "image/avif")),
+        "image/tiff" => Some(("tif", "image/tiff")),
+        "image/x-icon" | "image/vnd.microsoft.icon" => Some(("ico", "image/x-icon")),
+        _ => None,
+    }
+}
+
+fn image_mime_from_path(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    match extension.as_str() {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "webp" => Some("image/webp"),
+        "gif" => Some("image/gif"),
+        "bmp" => Some("image/bmp"),
+        "svg" => Some("image/svg+xml"),
+        "avif" => Some("image/avif"),
+        "tif" | "tiff" => Some("image/tiff"),
+        "ico" => Some("image/x-icon"),
+        _ => None,
+    }
+}
+
+fn safe_relative_path(value: &str) -> Option<PathBuf> {
+    let path = Path::new(value);
+    if value.is_empty() || path.is_absolute() {
+        return None;
+    }
+    let mut safe = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => safe.push(part),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    (!safe.as_os_str().is_empty()).then_some(safe)
+}
+
+fn safe_name(value: &str, fallback: &str, limit: usize) -> String {
+    let mut result = String::new();
+    let mut separator = false;
+    for character in value.chars() {
+        if character.is_alphanumeric() || matches!(character, '-' | '_') {
+            if separator && !result.is_empty() {
+                result.push('-');
+            }
+            result.push(character);
+            separator = false;
+        } else {
+            separator = true;
+        }
+        if result.chars().count() >= limit {
+            break;
+        }
+    }
+    let result = result.trim_matches(['-', '_', '.']).to_string();
+    if result.is_empty() {
+        fallback.to_string()
+    } else {
+        result
+    }
+}
+
+fn template_id(template: &Value) -> Option<&str> {
+    template.get("id").and_then(Value::as_str).filter(|id| !id.is_empty())
+}
+
+fn layers_mut(template: &mut Value) -> Option<&mut Vec<Value>> {
+    template.get_mut("layers")?.as_array_mut()
+}
+
+fn hydrate_template_assets(template: &mut Value, directory: &Path) {
+    let Some(layers) = layers_mut(template) else {
+        return;
+    };
+    for layer in layers {
+        let Some(source) = layer.get("src").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(relative) = safe_relative_path(source) else {
+            continue;
+        };
+        let path = directory.join(relative);
+        let Some(mime) = image_mime_from_path(&path) else {
+            continue;
+        };
+        if let Ok(bytes) = fs::read(path) {
+            layer["src"] = Value::String(format!(
+                "data:{mime};base64,{}",
+                STANDARD.encode(bytes)
+            ));
+        }
+    }
+}
+
+fn read_template_file(path: &Path, hydrate: bool) -> Option<Value> {
+    let mut template = fs::read_to_string(path)
+        .ok()
+        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
+        .filter(Value::is_object)?;
+    if hydrate {
+        hydrate_template_assets(&mut template, path.parent()?);
+    }
+    Some(template)
+}
+
+fn template_directories(root: &Path, hydrate: bool) -> Vec<(String, PathBuf, Value)> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut directories: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    directories.sort();
+    directories
+        .into_iter()
+        .filter_map(|directory| {
+            let template = read_template_file(&directory.join(TEMPLATE_FILE_NAME), hydrate)?;
+            let id = template_id(&template)?.to_string();
+            Some((id, directory, template))
+        })
+        .collect()
+}
+
+fn read_template_directories(root: &Path) -> Vec<Value> {
+    template_directories(root, true)
+        .into_iter()
+        .map(|(_, _, template)| template)
+        .collect()
+}
+
+fn decode_template_asset(source: &str) -> Result<Option<(&'static str, Vec<u8>)>, String> {
+    let Some((header, encoded)) = source.split_once(',') else {
+        return Ok(None);
+    };
+    let Some(metadata) = header.strip_prefix("data:") else {
+        return Ok(None);
+    };
+    let mut parts = metadata.split(';');
+    let Some(mime) = parts.next() else {
+        return Ok(None);
+    };
+    if !parts.any(|part| part.eq_ignore_ascii_case("base64")) {
+        return Ok(None);
+    }
+    let Some((extension, _)) = image_type_from_mime(mime) else {
+        return Ok(None);
+    };
+    let bytes = STANDARD.decode(encoded).map_err(|error| error.to_string())?;
+    Ok(Some((extension, bytes)))
+}
+
+fn referenced_assets(template: &Value) -> HashSet<PathBuf> {
+    template
+        .get("layers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|layer| layer.get("src").and_then(Value::as_str))
+        .filter_map(safe_relative_path)
+        .collect()
+}
+
+fn write_template_directory(directory: &Path, template: &Value) -> Result<(), String> {
+    fs::create_dir_all(directory).map_err(|error| error.to_string())?;
+    let old_template = read_template_file(&directory.join(TEMPLATE_FILE_NAME), false);
+    let old_assets = old_template.as_ref().map(referenced_assets).unwrap_or_default();
+    let mut stored = template.clone();
+    let Some(layers) = layers_mut(&mut stored) else {
+        return Err("模板图层数据格式无效".to_string());
+    };
+    let mut current_assets = HashSet::new();
+    for (index, layer) in layers.iter_mut().enumerate() {
+        let Some(source) = layer.get("src").and_then(Value::as_str) else {
+            continue;
+        };
+        if let Some((extension, bytes)) = decode_template_asset(source)? {
+            let layer_id = layer
+                .get("id")
+                .and_then(Value::as_str)
+                .map(|id| safe_name(id, "image", 64))
+                .unwrap_or_else(|| format!("image-{}", index + 1));
+            let file_name = format!("layer-{layer_id}.{extension}");
+            fs::write(directory.join(&file_name), bytes).map_err(|error| error.to_string())?;
+            layer["src"] = Value::String(file_name.clone());
+            current_assets.insert(PathBuf::from(file_name));
+        } else if let Some(relative) = safe_relative_path(source) {
+            current_assets.insert(relative);
+        }
+    }
+    let json = serde_json::to_string_pretty(&stored).map_err(|error| error.to_string())?;
+    fs::write(directory.join(TEMPLATE_FILE_NAME), json).map_err(|error| error.to_string())?;
+    for stale in old_assets.difference(&current_assets) {
+        let path = directory.join(stale);
+        if path.is_file() {
+            fs::remove_file(path).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn new_template_directory(root: &Path, template: &Value, used: &HashSet<PathBuf>) -> PathBuf {
+    let name = template
+        .get("name")
+        .and_then(Value::as_str)
+        .map(|name| safe_name(name, "template", 36))
+        .unwrap_or_else(|| "template".to_string());
+    let id = template_id(template)
+        .map(|id| safe_name(id, "id", 12))
+        .unwrap_or_else(|| "id".to_string());
+    let mut candidate = root.join(format!("template-{name}-{id}"));
+    let mut suffix = 2;
+    while candidate.exists() || used.contains(&candidate) {
+        candidate = root.join(format!("template-{name}-{id}-{suffix}"));
+        suffix += 1;
+    }
+    candidate
+}
+
+fn write_template_directories(root: &Path, templates: &[Value]) -> Result<(), String> {
+    fs::create_dir_all(root).map_err(|error| error.to_string())?;
+    let existing = template_directories(root, false);
+    let existing_by_id: HashMap<String, PathBuf> = existing
+        .iter()
+        .map(|(id, directory, _)| (id.clone(), directory.clone()))
+        .collect();
+    let target_ids: HashSet<String> = templates
+        .iter()
+        .filter_map(template_id)
+        .map(str::to_string)
+        .collect();
+    if target_ids.len() != templates.len() {
+        return Err("模板 ID 缺失或重复".to_string());
+    }
+    let mut used_directories = HashSet::new();
+    for template in templates {
+        let id = template_id(template).expect("template IDs were validated");
+        let directory = existing_by_id
+            .get(id)
+            .cloned()
+            .unwrap_or_else(|| new_template_directory(root, template, &used_directories));
+        write_template_directory(&directory, template)?;
+        used_directories.insert(directory);
+    }
+    for (id, directory, _) in existing {
+        if !target_ids.contains(&id) && directory.starts_with(root) {
+            fs::remove_dir_all(directory).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 fn template_matches(left: &Value, right: &Value) -> bool {
@@ -121,14 +379,6 @@ fn merge_templates(groups: impl IntoIterator<Item = Vec<Value>>) -> Vec<Value> {
     merged
 }
 
-fn write_templates(path: &Path, templates: &[Value]) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let json = serde_json::to_string_pretty(templates).map_err(|error| error.to_string())?;
-    fs::write(path, json).map_err(|error| error.to_string())
-}
-
 fn editor_drafts_path() -> PathBuf {
     app_directory().join("autosave.json")
 }
@@ -151,28 +401,31 @@ fn load_config() -> Value {
     read_config()
 }
 
+fn load_templates_from(root: &Path, legacy_paths: &[PathBuf]) -> Result<Vec<Value>, String> {
+    let marker = root.join(MIGRATION_MARKER_NAME);
+    if !marker.exists() {
+        let directory_templates = read_template_directories(&root);
+        let mut groups = vec![directory_templates];
+        groups.extend(legacy_paths.iter().map(|path| read_template_array(path)));
+        let merged = merge_templates(groups);
+        write_template_directories(root, &merged)?;
+        fs::write(&marker, b"1").map_err(|error| error.to_string())?;
+    }
+    Ok(read_template_directories(root))
+}
+
 #[tauri::command]
 fn load_templates() -> Result<Vec<Value>, String> {
-    let path = templates_path();
-    let external = read_templates(&path);
-    if cfg!(debug_assertions) {
-        return Ok(external);
+    let mut legacy_paths = vec![legacy_directory_templates_path()];
+    if let Some(path) = legacy_templates_path() {
+        legacy_paths.push(path);
     }
-
-    let legacy = legacy_templates_path()
-        .as_deref()
-        .map(read_templates)
-        .unwrap_or_default();
-    let merged = merge_templates([external.clone(), legacy]);
-    if merged != external {
-        write_templates(&path, &merged)?;
-    }
-    Ok(merged)
+    load_templates_from(&templates_directory(), &legacy_paths)
 }
 
 #[tauri::command]
 fn save_templates(templates: Vec<Value>) -> Result<bool, String> {
-    write_templates(&templates_path(), &templates)?;
+    write_template_directories(&templates_directory(), &templates)?;
     Ok(true)
 }
 
@@ -311,6 +564,172 @@ fn config_number(config: &Value, key: &str, fallback: f64, minimum: f64) -> f64 
         .and_then(Value::as_f64)
         .unwrap_or(fallback)
         .max(minimum)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_directory(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time must be after Unix epoch")
+            .as_nanos();
+        env::temp_dir().join(format!(
+            "meme-helper-storage-test-{name}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    fn template(id: &str, name: &str, source: &str) -> Value {
+        json!({
+            "id": id,
+            "name": name,
+            "width": 100,
+            "height": 100,
+            "createdAt": 1,
+            "updatedAt": 1,
+            "layers": [{
+                "id": format!("layer-{id}"),
+                "name": "image",
+                "type": "static",
+                "src": source,
+                "x": 0,
+                "y": 0,
+                "width": 100,
+                "height": 100,
+                "rotation": 0,
+                "visible": true,
+                "fit": "fill"
+            }]
+        })
+    }
+
+    #[test]
+    fn writes_images_as_relative_assets_and_hydrates_them() {
+        let root = test_directory("assets");
+        let bytes = b"original-jpeg-bytes";
+        let source = format!("data:image/jpeg;base64,{}", STANDARD.encode(bytes));
+        let value = template("one", "First", &source);
+
+        write_template_directories(&root, &[value]).expect("template must be written");
+        let directories = template_directories(&root, false);
+        assert_eq!(directories.len(), 1);
+        let stored = &directories[0].2;
+        let stored_source = stored["layers"][0]["src"]
+            .as_str()
+            .expect("stored source must be a string");
+        assert!(stored_source.ends_with(".jpg"));
+        assert_eq!(
+            fs::read(directories[0].1.join(stored_source)).expect("asset must be readable"),
+            bytes
+        );
+
+        let hydrated = read_template_directories(&root);
+        assert_eq!(hydrated[0]["layers"][0]["src"], source);
+        fs::remove_dir_all(root).expect("test directory must be removable");
+    }
+
+    #[test]
+    fn removes_deleted_templates_and_stale_assets() {
+        let root = test_directory("cleanup");
+        let png = format!("data:image/png;base64,{}", STANDARD.encode(b"png"));
+        let first = template("one", "First", &png);
+        let second = template("two", "Second", &png);
+        write_template_directories(&root, &[first.clone(), second])
+            .expect("templates must be written");
+
+        let first_directory = template_directories(&root, false)
+            .into_iter()
+            .find(|(id, _, _)| id == "one")
+            .expect("first template must exist")
+            .1;
+        let old_asset = referenced_assets(
+            &read_template_file(&first_directory.join(TEMPLATE_FILE_NAME), false)
+                .expect("stored template must be readable"),
+        )
+        .into_iter()
+        .next()
+        .expect("stored template must reference an asset");
+
+        let without_image = template("one", "First", "");
+        write_template_directories(&root, &[without_image])
+            .expect("updated template must be written");
+        assert!(!first_directory.join(old_asset).exists());
+        assert_eq!(template_directories(&root, false).len(), 1);
+        fs::remove_dir_all(root).expect("test directory must be removable");
+    }
+
+    #[test]
+    fn does_not_hydrate_paths_outside_the_template_directory() {
+        let root = test_directory("traversal");
+        let directory = root.join("template");
+        fs::create_dir_all(&directory).expect("template directory must be created");
+        let value = template("one", "First", "../outside.png");
+        fs::write(
+            directory.join(TEMPLATE_FILE_NAME),
+            serde_json::to_string(&value).expect("template must serialize"),
+        )
+        .expect("template must be written");
+        fs::write(root.join("outside.png"), b"outside").expect("outside file must be written");
+
+        let loaded = read_template_directories(&root);
+        assert_eq!(loaded[0]["layers"][0]["src"], "../outside.png");
+        fs::remove_dir_all(root).expect("test directory must be removable");
+    }
+
+    #[test]
+    fn repository_templates_reference_readable_assets() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("manifest directory must have a parent")
+            .join("meme");
+        let templates = read_template_directories(&root);
+        assert_eq!(templates.len(), 2);
+        for template in templates {
+            let static_source = template["layers"]
+                .as_array()
+                .expect("template layers must be an array")
+                .iter()
+                .find(|layer| layer["type"] == "static")
+                .and_then(|layer| layer["src"].as_str())
+                .expect("template must have a static image source");
+            assert!(static_source.starts_with("data:image/svg+xml;base64,"));
+        }
+    }
+
+    #[test]
+    fn migrates_legacy_templates_only_once() {
+        let directory = test_directory("migration");
+        let root = directory.join("meme");
+        let legacy = directory.join("templates.json");
+        let source = format!("data:image/png;base64,{}", STANDARD.encode(b"png"));
+        let first = template("one", "First", &source);
+        fs::create_dir_all(&directory).expect("test directory must be created");
+        fs::write(
+            &legacy,
+            serde_json::to_string(&vec![first]).expect("legacy templates must serialize"),
+        )
+        .expect("legacy templates must be written");
+
+        let migrated = load_templates_from(&root, std::slice::from_ref(&legacy))
+            .expect("legacy templates must migrate");
+        assert_eq!(migrated.len(), 1);
+        assert!(root.join(MIGRATION_MARKER_NAME).is_file());
+
+        let second = template("two", "Second", &source);
+        fs::write(
+            &legacy,
+            serde_json::to_string(&vec![second]).expect("legacy templates must serialize"),
+        )
+        .expect("legacy templates must be replaced");
+        let loaded = load_templates_from(&root, std::slice::from_ref(&legacy))
+            .expect("directory templates must load");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0]["id"], "one");
+        fs::remove_dir_all(directory).expect("test directory must be removable");
+    }
 }
 
 fn main() {
