@@ -4,7 +4,7 @@ Windows 表情包模板编辑与生成工具。
 
 ## 使用
 
-下载 `MemeHelper-2.1.4-windows-x64.7z`，完整解压后运行其中的 `MemeHelper.exe`。应用已迁移到 Tauri，不再附带 Electron/Chromium 文件。
+下载 `MemeHelper-2.1.5-windows-x64.7z`，完整解压后运行其中的 `MemeHelper.exe`。应用已迁移到 Tauri，不再附带 Electron/Chromium 文件。
 
 - 新建模板：添加固定图层、矩形/圆形/圆角矩形照片区域和文字图层，拖动或缩放后保存。
 - 编辑模板：调整图层位置、尺寸、旋转与顺序；支持图层锁定、多选、组合、对齐、等距分布、复制粘贴、`Delete` 快速删除和完整右键菜单。
@@ -65,4 +65,4 @@ npm run dev
 npm run build
 ```
 
-输出位于 `release-tauri/MemeHelper-2.1.4/`。同版本发布目录或压缩包已存在时，构建会停止并要求先更新版本号，不会覆盖正在运行或已经交付的旧版。构建机需要 Rust；Windows SDK 可由 Visual Studio Build Tools 提供，项目构建脚本也会自动使用本机已有的 `cargo-xwin` SDK 缓存。
+输出位于 `release-tauri/MemeHelper-2.1.5/`。同版本发布目录或压缩包已存在时，构建会停止并要求先更新版本号，不会覆盖正在运行或已经交付的旧版。构建机需要 Rust；Windows SDK 可由 Visual Studio Build Tools 提供，项目构建脚本也会自动使用本机已有的 `cargo-xwin` SDK 缓存。

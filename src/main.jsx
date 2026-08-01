@@ -1438,7 +1438,6 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
   }));
   const { composition, slotSources, slotNames, slotTransforms } = session;
   const [result, setResult] = useState('');
-  const [working, setWorking] = useState(false);
   const [copied, setCopied] = useState(false);
   const { zoom, pan, panning, setZoom, zoomAtPointer, beginPan } = useCanvasViewport(1, .5, 3);
   const [selectedId, setSelectedId] = useState(template.layers.find((layer) => layer.type === 'slot')?.id || null);
@@ -1459,6 +1458,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
   const cropLayer = composition.layers.find((layer) => layer.id === cropModeId && layer.type === 'slot');
   const cropTransform = cropLayer ? (slotTransforms[cropLayer.id] || { zoom: 1, offsetX: 0, offsetY: 0 }) : null;
   const outputMime = exportFormat === 'jpg' ? 'image/jpeg' : `image/${exportFormat}`;
+  const exportScaleHint = '控制保存和复制图片的像素尺寸；2x 的宽高均为 1x 的 2 倍。';
 
   const updateLayer = useCallback((id, patch) => {
     commitSession((previous) => ({
@@ -1606,9 +1606,8 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
     if (!Object.keys(slotSources).length) { setResult(''); setCopied(false); return; }
     const request = ++renderRequest.current;
     let cancelled = false;
-    setWorking(true);
     setCopied(false);
-    renderTemplate(composition, slotSources, slotTransforms, { transparent, mime: outputMime }).then(async (dataUrl) => {
+    renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: outputMime }).then(async (dataUrl) => {
       if (cancelled || request !== renderRequest.current) return;
       setResult(dataUrl);
       if (!copyAfterRenderRef.current || !autoCopy) {
@@ -1620,7 +1619,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
       try {
         const clipboardDataUrl = outputMime === 'image/png'
           ? undefined
-          : await renderTemplate(composition, slotSources, slotTransforms, { transparent, mime: 'image/png' });
+          : await renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: 'image/png' });
         await desktop.copyImage(dataUrl, clipboardDataUrl);
         if (!cancelled && request === renderRequest.current) {
           setCopied(true);
@@ -1631,11 +1630,9 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
       }
     }).catch((error) => {
       if (!cancelled) notify(`生成失败：${error.message}`, 'error');
-    }).finally(() => {
-      if (!cancelled && request === renderRequest.current) setWorking(false);
     });
     return () => { cancelled = true; };
-  }, [autoCopy, composition, outputMime, slotSources, slotTransforms, transparent, notify]);
+  }, [autoCopy, composition, exportScale, outputMime, slotSources, slotTransforms, transparent, notify]);
 
   const acceptFile = useCallback(async (file, targetId) => {
     try {
@@ -1660,13 +1657,10 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
 
   const currentResult = useCallback(async () => {
     if (!Object.keys(slotSources).length) return '';
-    if (working || !result) {
-      const dataUrl = await renderTemplate(composition, slotSources, slotTransforms, { transparent, mime: outputMime });
-      setResult(dataUrl);
-      return dataUrl;
-    }
-    return result;
-  }, [composition, outputMime, result, slotSources, slotTransforms, transparent, working]);
+    const dataUrl = await renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: outputMime });
+    setResult(dataUrl);
+    return dataUrl;
+  }, [composition, exportScale, outputMime, slotSources, slotTransforms, transparent]);
 
   const copyAgain = useCallback(async () => {
     const dataUrl = await currentResult();
@@ -1674,13 +1668,13 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
     try {
       const clipboardDataUrl = outputMime === 'image/png'
         ? undefined
-        : await renderTemplate(composition, slotSources, slotTransforms, { transparent, mime: 'image/png' });
+        : await renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: 'image/png' });
       await desktop.copyImage(dataUrl, clipboardDataUrl);
       setCopied(true);
       notify('已复制，可粘贴到聊天窗口或文件夹');
     }
     catch { setCopied(false); notify('剪贴板不可用，请保存 PNG', 'error'); }
-  }, [composition, currentResult, notify, outputMime, slotSources, slotTransforms, transparent]);
+  }, [composition, currentResult, exportScale, notify, outputMime, slotSources, slotTransforms, transparent]);
 
   const resetCrop = () => { if (cropModeId) updatePhotoTransform(cropModeId, { zoom: 1, offsetX: 0, offsetY: 0 }); };
 
@@ -1778,7 +1772,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
         <label className="check-row"><input type="checkbox" checked={lockAspectRatio} onChange={(event) => setLockAspectRatio(event.target.checked)}/><span>锁定照片宽高比</span></label>
         {cropLayer && slotSources[cropLayer.id] && <div className="crop-controls"><div className="crop-controls-heading"><strong><Crop size={16}/>裁切照片</strong><IconButton label="完成裁切" onClick={() => setCropModeId(null)}><Check size={16}/></IconButton></div><label className="crop-zoom-field"><span>缩放</span><input type="range" min="1" max="5" step="0.05" value={cropTransform.zoom} onChange={(event) => updatePhotoTransform(cropLayer.id, { zoom: Number(event.target.value) })}/><output>{Math.round(cropTransform.zoom * 100)}%</output></label><button className="wide-property-button" onClick={resetCrop}><RotateCcw size={16}/>重置裁切</button></div>}
         <input ref={input} hidden type="file" accept="image/*" onChange={(event) => { if (event.target.files[0]) acceptFile(event.target.files[0], pendingSlot.current); event.target.value = ''; pendingSlot.current = null; }}/>
-        <div className="export-settings"><div className="slot-list-heading"><strong>导出设置</strong></div><div className="export-setting-row"><label><span>格式</span><select value={exportFormat} onChange={(event) => { const value = event.target.value; setExportFormat(value); if (value === 'jpg') setTransparent(false); }}><option value="png">PNG</option><option value="jpg">JPEG</option><option value="webp">WebP</option></select></label><label><span>倍率</span><select value={exportScale} onChange={(event) => setExportScale(Number(event.target.value))}><option value="1">1x</option><option value="2">2x</option><option value="3">3x</option></select></label></div><label className="check-row"><input type="checkbox" disabled={exportFormat === 'jpg'} checked={transparent} onChange={(event) => setTransparent(event.target.checked)}/><span>透明画布背景</span></label></div>
+        <div className="export-settings"><div className="slot-list-heading"><strong>导出设置</strong></div><div className="export-setting-row"><label><span>格式</span><select value={exportFormat} onChange={(event) => { const value = event.target.value; setExportFormat(value); if (value === 'jpg') setTransparent(false); }}><option value="png">PNG</option><option value="jpg">JPEG</option><option value="webp">WebP</option></select></label><label title={exportScaleHint}><span title={exportScaleHint}>倍率</span><select title={exportScaleHint} value={exportScale} onChange={(event) => setExportScale(Number(event.target.value))}><option value="1" title={exportScaleHint}>1x</option><option value="2" title={exportScaleHint}>2x</option><option value="3" title={exportScaleHint}>3x</option></select></label></div><label className="check-row"><input type="checkbox" disabled={exportFormat === 'jpg'} checked={transparent} onChange={(event) => setTransparent(event.target.checked)}/><span>透明画布背景</span></label></div>
       </section>
       <section className="result-area">
         <div className="result-heading"><div><p className="eyebrow">第 2 步</p><h2>生成结果</h2></div><div className="result-heading-actions"><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>{result && <div className="result-actions"><button className="secondary-button" onClick={save}><Download size={17}/>保存 {exportFormat.toUpperCase()}</button><button className="primary-button" onClick={copyAgain}>{copied ? <Check size={17}/> : <Copy size={17}/>}复制图片</button></div>}</div></div>
