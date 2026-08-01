@@ -268,10 +268,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .result-canvas-frame { position: absolute; left: 50%; top: 50%; flex: none; background: #fff; box-shadow: 0 8px 28px rgba(25, 24, 21, .18); }
 .result-canvas-frame.transparent { background-color: #eee; background-image: linear-gradient(45deg,#d5d5d5 25%,transparent 25%),linear-gradient(-45deg,#d5d5d5 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#d5d5d5 75%),linear-gradient(-45deg,transparent 75%,#d5d5d5 75%); background-size: 18px 18px; background-position: 0 0,0 9px,9px -9px,-9px 0; }
 .result-canvas-frame canvas { display: block; }
-.result-empty, .generating { padding: 35px; border-radius: 7px; background: rgba(245,244,239,.9); color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 9px; }
-.result-empty strong, .generating strong { color: var(--ink); font-size: 12px; }
+.result-empty { padding: 35px; border-radius: 7px; background: rgba(245,244,239,.9); color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 9px; }
+.result-empty strong { color: var(--ink); font-size: 12px; }
 .result-empty span { font-size: 10px; }
-.result-overlay { position: absolute; z-index: 3; padding: 18px 24px; pointer-events: none; box-shadow: 0 5px 20px rgba(35, 33, 28, .12); }
 .copied-banner { flex: none; height: 42px; margin-top: 12px; border-radius: 6px; background: #e7f5ed; color: #267c51; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 11px; font-weight: 600; }
 .copied-banner.copy-pending { background: #f6efdc; color: #806418; }
 .result-context-menu { position: fixed; z-index: 120; width: 154px; padding: 5px; border: 1px solid var(--line); border-radius: 6px; background: #fff; box-shadow: 0 10px 30px rgba(25, 24, 21, .18); }
@@ -379,8 +378,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
   background-image: linear-gradient(45deg,#323438 25%,transparent 25%),linear-gradient(-45deg,#323438 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#323438 75%),linear-gradient(-45deg,transparent 75%,#323438 75%);
 }
 
-:root[data-theme="dark"] .result-empty,
-:root[data-theme="dark"] .generating {
+:root[data-theme="dark"] .result-empty {
   background: rgba(37,38,41,.94);
 }
 
