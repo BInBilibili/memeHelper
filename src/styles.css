@@ -262,10 +262,6 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .export-setting-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .export-setting-row label span { display: block; margin-bottom: 5px; color: var(--muted); font-size: 9px; font-weight: 600; }
 .export-setting-row select { width: 100%; height: 34px; padding: 0 7px; border: 1px solid var(--line); border-radius: 4px; background: #fff; font-size: 10px; }
-.tip-box { margin-top: 22px; padding: 14px; background: #f0f7f3; border: 1px solid #d4e8dc; border-radius: 6px; color: var(--green); display: flex; align-items: flex-start; gap: 9px; }
-.tip-box p { margin: 0; display: flex; flex-direction: column; gap: 4px; }
-.tip-box strong { color: #247d52; font-size: 10px; }
-.tip-box span { color: #5f786a; font-size: 9px; line-height: 1.5; }
 .result-area { min-width: 0; min-height: 0; padding: 36px 44px; display: flex; flex-direction: column; }
 .result-heading { height: 58px; flex: none; display: flex; align-items: start; justify-content: space-between; }
 .result-heading h2 { margin: 0; font-size: 20px; }
@@ -278,8 +274,6 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .result-empty { padding: 35px; border-radius: 7px; background: rgba(245,244,239,.9); color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: 9px; }
 .result-empty strong { color: var(--ink); font-size: 12px; }
 .result-empty span { font-size: 10px; }
-.copied-banner { flex: none; height: 42px; margin-top: 12px; border-radius: 6px; background: #e7f5ed; color: #267c51; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 11px; font-weight: 600; }
-.copied-banner.copy-pending { background: #f6efdc; color: #806418; }
 .result-context-menu { position: fixed; z-index: 120; width: 154px; padding: 5px; border: 1px solid var(--line); border-radius: 6px; background: #fff; box-shadow: 0 10px 30px rgba(25, 24, 21, .18); }
 .result-context-menu button { width: 100%; height: 36px; padding: 0 10px; border: 0; border-radius: 4px; background: transparent; display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; cursor: pointer; }
 .result-context-menu button:hover { background: #f3f2ed; }
@@ -391,15 +385,6 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
   background: rgba(37,38,41,.94);
 }
 
-:root[data-theme="dark"] .tip-box {
-  background: #20332a;
-  border-color: #315943;
-}
-
-:root[data-theme="dark"] .tip-box strong,
-:root[data-theme="dark"] .tip-box span {
-  color: #85cca5;
-}
 :root[data-theme="dark"] .crop-controls {
   background: #352825;
   border-color: #8e4b40;
