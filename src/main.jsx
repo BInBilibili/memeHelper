@@ -741,6 +741,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const [tagsText, setTagsText] = useState(() => (initialStateRef.current.draft.tags || []).join(', '));
   const memeInput = useRef();
   const clipboardLayersRef = useRef([]);
+  const layerReorderRef = useRef(null);
   const selected = draft.layers.find((item) => item.id === selectedId);
   const selectedLayers = draft.layers.filter((item) => selectedIds.includes(item.id));
   const selectedGroupId = selectedLayers.length && selectedLayers.every((item) => item.groupId && item.groupId === selectedLayers[0].groupId) ? selectedLayers[0].groupId : null;
@@ -938,6 +939,44 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     });
     setSelectedIds([sourceId]);
   };
+  const beginLayerReorder = (event, sourceId) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    selectLayer(sourceId, event);
+    const start = { x: event.clientX, y: event.clientY };
+    const resolveTarget = (pointerEvent) => {
+      const row = document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)?.closest('.layer-row[data-layer-id]');
+      const targetId = row?.dataset.layerId;
+      if (!targetId || targetId === sourceId) return null;
+      const rect = row.getBoundingClientRect();
+      return { id: targetId, placement: pointerEvent.clientY < rect.top + rect.height / 2 ? 'before' : 'after' };
+    };
+    const cleanup = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      layerReorderRef.current = null;
+    };
+    const move = (pointerEvent) => {
+      if (!layerReorderRef.current?.active && Math.hypot(pointerEvent.clientX - start.x, pointerEvent.clientY - start.y) < 4) return;
+      if (layerReorderRef.current) layerReorderRef.current.active = true;
+      setDraggedLayerId(sourceId);
+      const target = resolveTarget(pointerEvent);
+      setLayerDrop((current) => current?.id === target?.id && current?.placement === target?.placement ? current : target);
+    };
+    const finish = (pointerEvent) => {
+      const active = layerReorderRef.current?.active;
+      const target = resolveTarget(pointerEvent);
+      cleanup();
+      if (active && target) reorderLayer(sourceId, target.id, target.placement);
+      setDraggedLayerId(null);
+      setLayerDrop(null);
+    };
+    layerReorderRef.current?.cleanup?.();
+    layerReorderRef.current = { active: false, cleanup };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', finish);
+  };
   const groupSelected = () => {
     if (selectedIds.length < 2) return;
     const groupId = uid();
@@ -1011,6 +1050,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     if (toFront) layers.push(layer); else layers.unshift(layer);
     return { ...previous, layers };
   });
+  useEffect(() => () => layerReorderRef.current?.cleanup?.(), []);
   const save = async () => {
     if (!draft.name.trim()) return notify('请填写模板名称', 'error');
     if (!draft.layers.length) return notify('请至少添加一个图层', 'error');
@@ -1028,39 +1068,11 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
           const dropClass = layerDrop?.id === layer.id ? `drop-${layerDrop.placement}` : '';
           return <div
             key={layer.id}
-            draggable={!layer.locked}
+            data-layer-id={layer.id}
             className={`layer-row ${selectedIds.includes(layer.id) ? 'selected' : ''} ${draggedLayerId === layer.id ? 'dragging' : ''} ${dropClass} ${layer.locked ? 'locked' : ''}`}
             onClick={(event) => selectLayer(layer.id, event)}
             onContextMenu={(event) => openLayerMenu(layer.id, event)}
-            onDragStart={(event) => {
-              if (layer.locked) { event.preventDefault(); return; }
-              setDraggedLayerId(layer.id);
-              selectLayer(layer.id, event);
-              event.dataTransfer.effectAllowed = 'move';
-              event.dataTransfer.setData('text/plain', layer.id);
-            }}
-            onDragOver={(event) => {
-              const sourceId = draggedLayerId || event.dataTransfer.getData('text/plain');
-              if (!sourceId || sourceId === layer.id) return;
-              event.preventDefault();
-              event.dataTransfer.dropEffect = 'move';
-              const rect = event.currentTarget.getBoundingClientRect();
-              const placement = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
-              setLayerDrop((current) => current?.id === layer.id && current.placement === placement ? current : { id: layer.id, placement });
-            }}
-            onDragLeave={(event) => {
-              if (!event.currentTarget.contains(event.relatedTarget)) setLayerDrop((current) => current?.id === layer.id ? null : current);
-            }}
-            onDrop={(event) => {
-              event.preventDefault();
-              const sourceId = draggedLayerId || event.dataTransfer.getData('text/plain');
-              const placement = layerDrop?.id === layer.id ? layerDrop.placement : 'before';
-              reorderLayer(sourceId, layer.id, placement);
-              setDraggedLayerId(null);
-              setLayerDrop(null);
-            }}
-            onDragEnd={() => { setDraggedLayerId(null); setLayerDrop(null); }}
-          ><GripVertical size={15} className="grip"/><div className={`layer-thumb ${layer.type}`}><LayerThumb layer={layer}/></div><div className="layer-copy"><strong>{layer.name}</strong><span>{layer.type === 'slot' ? `${shapeOf(layer) === 'circle' ? '圆形' : shapeOf(layer) === 'rounded' ? '圆角矩形' : '矩形'}照片` : layer.type === 'text' ? '文字图层' : '固定图层'}{layer.groupId ? ' · 已组合' : ''}</span></div><IconButton label={layer.locked ? '解锁图层' : '锁定图层'} draggable={false} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { locked: !layer.locked }); }}>{layer.locked ? <Lock size={15}/> : <Unlock size={15}/>}</IconButton><IconButton label={layer.visible ? '隐藏图层' : '显示图层'} draggable={false} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { visible: !layer.visible }); }}>{layer.visible ? <Eye size={16}/> : <EyeOff size={16}/>}</IconButton></div>;
+          ><span className="layer-grip" title={layer.locked ? '图层已锁定' : '拖动排序'} onPointerDown={(event) => { if (!layer.locked) beginLayerReorder(event, layer.id); }}><GripVertical size={15}/></span><div className={`layer-thumb ${layer.type}`}><LayerThumb layer={layer}/></div><div className="layer-copy"><strong>{layer.name}</strong><span>{layer.type === 'slot' ? `${shapeOf(layer) === 'circle' ? '圆形' : shapeOf(layer) === 'rounded' ? '圆角矩形' : '矩形'}照片` : layer.type === 'text' ? '文字图层' : '固定图层'}{layer.groupId ? ' · 已组合' : ''}</span></div><IconButton label={layer.locked ? '解锁图层' : '锁定图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { locked: !layer.locked }); }}>{layer.locked ? <Lock size={15}/> : <Unlock size={15}/>}</IconButton><IconButton label={layer.visible ? '隐藏图层' : '显示图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { visible: !layer.visible }); }}>{layer.visible ? <Eye size={16}/> : <EyeOff size={16}/>}</IconButton></div>;
         })}</div>
         {!draft.layers.length && <div className="layers-empty"><Layers3 size={28}/><p>先添加 Meme 底图，再添加一个照片位置。</p></div>}
       </aside>
