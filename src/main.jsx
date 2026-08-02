@@ -837,16 +837,18 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const [shapeMenu, setShapeMenu] = useState(false);
   const [layerMenu, setLayerMenu] = useState(null);
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
+  const [selectedGroupId, setSelectedGroupId] = useState(null);
   const [draggedLayerId, setDraggedLayerId] = useState(null);
   const [layerDrop, setLayerDrop] = useState(null);
   const [tagsText, setTagsText] = useState(() => (initialStateRef.current.draft.tags || []).join(', '));
   const memeInput = useRef();
-  const clipboardLayersRef = useRef([]);
+  const clipboardLayersRef = useRef({ layers: [], groupMeta: {} });
   const layerReorderRef = useRef(null);
   const selectionAnchorRef = useRef(selectedIds.at(-1) || null);
   const selected = draft.layers.find((item) => item.id === selectedId);
   const selectedLayers = draft.layers.filter((item) => selectedIds.includes(item.id));
-  const selectedGroupId = selectedLayers.length && selectedLayers.every((item) => item.groupId && item.groupId === selectedLayers[0].groupId) ? selectedLayers[0].groupId : null;
+  const selectedGroupLayers = selectedGroupId ? draft.layers.filter((item) => item.groupId === selectedGroupId) : [];
+  const uniformlySelectedGroupId = selectedLayers.length && selectedLayers.every((item) => item.groupId && item.groupId === selectedLayers[0].groupId) ? selectedLayers[0].groupId : null;
   const updateDraft = useCallback((updater) => { commitDraft(updater); setDirty(true); setAutosaveState('pending'); }, [commitDraft]);
   const updateLayer = (id, patch) => updateDraft((prev) => ({ ...prev, layers: prev.layers.map((item) => item.id === id ? { ...item, ...patch } : item) }));
   const updateLayers = useCallback((patches) => updateDraft((previous) => ({
@@ -859,9 +861,9 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     const layer = draft.layers.find((item) => item.id === id);
     if (!layer) return;
     if (event.shiftKey) event.preventDefault?.();
-    const groupIds = layer.groupId ? draft.layers.filter((item) => item.groupId === layer.groupId).map((item) => item.id) : [id];
     const rangeSelect = event.shiftKey && !event.ctrlKey && !event.metaKey;
     const additive = event.ctrlKey || event.metaKey;
+    setSelectedGroupId(null);
     if (!rangeSelect) selectionAnchorRef.current = id;
     setSelectedIds((current) => {
       if (rangeSelect) {
@@ -871,36 +873,49 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
           if (!item.groupId) { entries.push([item.id]); return; }
           if (seen.has(item.groupId)) return;
           seen.add(item.groupId);
-          const members = draft.layers.filter((candidate) => candidate.groupId === item.groupId).map((candidate) => candidate.id);
-          entries.push(collapsedGroups.has(item.groupId) ? [members[0]] : members);
+          const members = draft.layers.filter((candidate) => candidate.groupId === item.groupId).reverse().map((candidate) => candidate.id);
+          if (collapsedGroups.has(item.groupId)) entries.push(members);
+          else members.forEach((memberId) => entries.push([memberId]));
         });
         const anchorId = selectionAnchorRef.current || current.at(-1) || id;
         const anchorIndex = entries.findIndex((entry) => entry.includes(anchorId));
         const targetIndex = entries.findIndex((entry) => entry.includes(id));
-        if (anchorIndex < 0 || targetIndex < 0) return groupIds;
+        if (anchorIndex < 0 || targetIndex < 0) return [id];
         const start = Math.min(anchorIndex, targetIndex);
         const end = Math.max(anchorIndex, targetIndex);
         return [...new Set(entries.slice(start, end + 1).flat())];
       }
-      if (!additive) return groupIds;
-      const allSelected = groupIds.every((item) => current.includes(item));
-      return allSelected ? current.filter((item) => !groupIds.includes(item)) : [...new Set([...current, ...groupIds])];
+      if (!additive) return [id];
+      return current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
     });
   }, [collapsedGroups, draft.layers]);
-  const copySelectedLayers = useCallback(() => {
-    const selected = new Set(selectedIds);
-    draft.layers.filter((item) => selected.has(item.id) && item.groupId).forEach((item) => {
-      draft.layers.filter((candidate) => candidate.groupId === item.groupId).forEach((candidate) => selected.add(candidate.id));
+  const selectGroup = useCallback((groupId, event = {}) => {
+    const memberIds = draft.layers.filter((item) => item.groupId === groupId).map((item) => item.id);
+    if (!memberIds.length) return;
+    if (event.shiftKey) event.preventDefault?.();
+    const additive = event.ctrlKey || event.metaKey;
+    selectionAnchorRef.current = memberIds.at(-1);
+    setSelectedIds((current) => {
+      if (!additive) return memberIds;
+      const allSelected = memberIds.every((id) => current.includes(id));
+      return allSelected ? current.filter((id) => !memberIds.includes(id)) : [...new Set([...current, ...memberIds])];
     });
-    const layers = draft.layers.filter((item) => selected.has(item.id));
+    setSelectedGroupId(additive ? null : groupId);
+  }, [draft.layers]);
+  const copySelectedLayers = useCallback(() => {
+    const layers = draft.layers.filter((item) => selectedIds.includes(item.id));
     if (!layers.length) return;
-    clipboardLayersRef.current = structuredClone(layers);
+    const groupIds = new Set(layers.map((layer) => layer.groupId).filter((groupId) => groupId && draft.layers.filter((candidate) => candidate.groupId === groupId).every((candidate) => selectedIds.includes(candidate.id))));
+    clipboardLayersRef.current = {
+      layers: structuredClone(layers.map((layer) => layer.groupId && !groupIds.has(layer.groupId) ? { ...layer, groupId: undefined } : layer)),
+      groupMeta: Object.fromEntries([...groupIds].map((groupId) => [groupId, structuredClone(draft.groupMeta?.[groupId] || {})]))
+    };
     notify(layers.length === 1 ? `已复制图层“${layers[0].name}”` : `已复制 ${layers.length} 个图层`);
-  }, [draft.layers, notify, selectedIds]);
+  }, [draft.groupMeta, draft.layers, notify, selectedIds]);
   const pasteLayers = useCallback(() => {
-    if (!clipboardLayersRef.current.length) return notify('请先选择并复制图层', 'error');
+    if (!clipboardLayersRef.current.layers.length) return notify('请先选择并复制图层', 'error');
     const groupMap = new Map();
-    const layers = clipboardLayersRef.current.map((copiedLayer) => {
+    const layers = clipboardLayersRef.current.layers.map((copiedLayer) => {
       if (copiedLayer.groupId && !groupMap.has(copiedLayer.groupId)) groupMap.set(copiedLayer.groupId, uid());
       return {
         ...structuredClone(copiedLayer),
@@ -911,14 +926,24 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
         y: clamp(copiedLayer.y + 20, 0, Math.max(0, draft.height - copiedLayer.height))
       };
     });
-    updateDraft((previous) => ({ ...previous, layers: [...previous.layers, ...layers] }));
-    clipboardLayersRef.current = structuredClone(layers);
+    const copiedGroupMeta = Object.fromEntries([...groupMap].map(([oldId, newId]) => [newId, {
+      ...structuredClone(clipboardLayersRef.current.groupMeta[oldId] || {}),
+      name: `${clipboardLayersRef.current.groupMeta[oldId]?.name || '图层组'} 副本`
+    }]));
+    updateDraft((previous) => ({ ...previous, layers: [...previous.layers, ...layers], groupMeta: { ...(previous.groupMeta || {}), ...copiedGroupMeta } }));
+    clipboardLayersRef.current = { layers: structuredClone(layers), groupMeta: copiedGroupMeta };
     setSelectedIds(layers.map((layer) => layer.id));
+    setSelectedGroupId(groupMap.size === 1 ? [...groupMap.values()][0] : null);
   }, [draft.height, draft.width, notify, updateDraft]);
   const removeSelectedLayers = useCallback(() => {
     const removableIds = draft.layers.filter((layer) => selectedIds.includes(layer.id) && !layer.locked).map((layer) => layer.id);
     if (!removableIds.length) return notify('所选图层已锁定', 'error');
-    updateDraft((previous) => ({ ...previous, layers: previous.layers.filter((layer) => !removableIds.includes(layer.id)) }));
+    updateDraft((previous) => {
+      const layers = previous.layers.filter((layer) => !removableIds.includes(layer.id));
+      const groupIds = new Set(layers.map((layer) => layer.groupId).filter(Boolean));
+      const groupMeta = Object.fromEntries(Object.entries(previous.groupMeta || {}).filter(([id]) => groupIds.has(id)));
+      return { ...previous, layers, groupMeta };
+    });
     setSelectedIds((current) => current.filter((id) => !removableIds.includes(id)));
   }, [draft.layers, notify, selectedIds, updateDraft]);
   const nudgeSelectedLayers = useCallback((key, distance) => {
@@ -1009,11 +1034,12 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     const available = new Set(draft.layers.map((layer) => layer.id));
     setSelectedIds((current) => current.filter((id) => available.has(id)));
     const groups = new Set(draft.layers.map((layer) => layer.groupId).filter(Boolean));
+    if (selectedGroupId && !groups.has(selectedGroupId)) setSelectedGroupId(null);
     setCollapsedGroups((current) => {
       const next = new Set([...current].filter((groupId) => groups.has(groupId)));
       return next.size === current.size ? current : next;
     });
-  }, [draft.layers]);
+  }, [draft.layers, selectedGroupId]);
 
   const addImage = async (file) => {
     try {
@@ -1022,7 +1048,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       const scale = Math.min(maxW / image.width, maxH / image.height, 1);
       const width = Math.round(image.width * scale); const height = Math.round(image.height * scale);
       const layer = { id: uid(), name: file.name.replace(/\.[^.]+$/, ''), type: 'static', src, x: Math.round((draft.width - width) / 2), y: Math.round((draft.height - height) / 2), width, height, rotation: 0, visible: true, fit: 'fill' };
-      updateDraft((prev) => ({ ...prev, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]);
+      updateDraft((prev) => ({ ...prev, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
     } catch (error) { notify(error.message, 'error'); }
   };
 
@@ -1032,59 +1058,78 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     const height = shape === 'circle' ? size : Math.round(draft.height * .48);
     const shapeName = shape === 'circle' ? '圆形' : shape === 'rounded' ? '圆角矩形' : '矩形';
     const layer = { id: uid(), name: `${shapeName}照片 ${draft.layers.filter((x) => x.type === 'slot').length + 1}`, type: 'slot', shape, src: '', x: Math.round((draft.width - width) / 2), y: Math.round((draft.height - height) / 2), width, height, rotation: 0, visible: true, fit: 'cover' };
-    updateDraft((prev) => ({ ...prev, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]);
+    updateDraft((prev) => ({ ...prev, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
     setShapeMenu(false);
   };
 
   const addTextLayer = () => {
     const layer = { id: uid(), name: `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`, type: 'text', text: '输入文字', x: Math.round(draft.width * .18), y: Math.round(draft.height * .18), width: Math.round(draft.width * .64), height: 130, rotation: 0, visible: true, fontSize: 48, fontFamily: 'Microsoft YaHei', fontStyle: 'normal', textDecoration: '', align: 'center', fill: '#22211f', lineHeight: 1.25, autoFit: false, stroke: '#ffffff', strokeWidth: 0, shadowEnabled: false, shadowColor: '#000000', shadowBlur: 8, shadowOffsetX: 2, shadowOffsetY: 2, background: '', backgroundPadding: 8 };
-    updateDraft((prev) => ({ ...prev, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]);
+    updateDraft((prev) => ({ ...prev, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
   };
 
   const openLayerMenu = (id, event) => {
     event.preventDefault(); event.stopPropagation();
-    const target = draft.layers.find((item) => item.id === id);
-    const targetIds = target?.groupId ? draft.layers.filter((item) => item.groupId === target.groupId).map((item) => item.id) : [id];
-    if (!targetIds.every((targetId) => selectedIds.includes(targetId))) selectLayer(id, event);
+    if (!selectedIds.includes(id)) selectLayer(id, event);
     setLayerMenu({ id, x: Math.min(event.clientX, window.innerWidth - 166), y: Math.min(event.clientY, window.innerHeight - 334) });
+  };
+  const openGroupMenu = (groupId, event) => {
+    event.preventDefault(); event.stopPropagation();
+    const members = draft.layers.filter((item) => item.groupId === groupId);
+    if (!members.length) return;
+    if (selectedGroupId !== groupId) selectGroup(groupId, event);
+    setLayerMenu({ id: members.at(-1).id, groupId, x: Math.min(event.clientX, window.innerWidth - 166), y: Math.min(event.clientY, window.innerHeight - 334) });
   };
 
   const removeLayer = (id) => {
     const layer = draft.layers.find((item) => item.id === id);
     if (layer?.locked) return notify('请先解锁图层', 'error');
-    const removeIds = layer?.groupId ? draft.layers.filter((item) => item.groupId === layer.groupId).map((item) => item.id) : [id];
-    const lockedIds = removeIds.filter((removeId) => draft.layers.find((item) => item.id === removeId)?.locked);
-    if (lockedIds.length) return notify('组内含有锁定图层，请先解锁', 'error');
-    updateDraft((prev) => ({ ...prev, layers: prev.layers.filter((x) => !removeIds.includes(x.id)) }));
-    setSelectedIds((current) => current.filter((item) => !removeIds.includes(item)));
+    updateDraft((prev) => {
+      const layers = prev.layers.filter((x) => x.id !== id);
+      const groupIds = new Set(layers.map((item) => item.groupId).filter(Boolean));
+      const groupMeta = Object.fromEntries(Object.entries(prev.groupMeta || {}).filter(([groupId]) => groupIds.has(groupId)));
+      return { ...prev, layers, groupMeta };
+    });
+    setSelectedIds((current) => current.filter((item) => item !== id));
   };
-  const moveLayer = (id, direction) => updateDraft((prev) => {
+  const moveLayer = (id, direction, wholeGroup = false) => updateDraft((prev) => {
     const source = prev.layers.find((item) => item.id === id);
     if (!source) return prev;
-    const ids = source.groupId ? prev.layers.filter((item) => item.groupId === source.groupId).map((item) => item.id) : [id];
+    const index = prev.layers.findIndex((item) => item.id === id);
+    if (!wholeGroup && source.groupId) {
+      const targetIndex = index + direction;
+      if (targetIndex < 0 || targetIndex >= prev.layers.length || prev.layers[targetIndex].groupId !== source.groupId || source.locked) return prev;
+      const layers = [...prev.layers];
+      [layers[index], layers[targetIndex]] = [layers[targetIndex], layers[index]];
+      return { ...prev, layers };
+    }
+    const ids = wholeGroup && source.groupId ? prev.layers.filter((item) => item.groupId === source.groupId).map((item) => item.id) : [id];
     const indexes = prev.layers.map((item, index) => ids.includes(item.id) ? index : -1).filter((index) => index >= 0);
     if (!indexes.length || ids.some((itemId) => prev.layers.find((item) => item.id === itemId)?.locked)) return prev;
     const first = Math.min(...indexes); const last = Math.max(...indexes);
-    const before = prev.layers.filter((item, index) => index < first && !ids.includes(item.id));
+    const adjacent = prev.layers[direction > 0 ? last + 1 : first - 1];
+    if (!adjacent) return prev;
+    const targetIds = adjacent.groupId ? prev.layers.filter((item) => item.groupId === adjacent.groupId).map((item) => item.id) : [adjacent.id];
     const moving = prev.layers.filter((item) => ids.includes(item.id));
-    const after = prev.layers.filter((item, index) => index > last && !ids.includes(item.id));
-    if (direction > 0) {
-      if (!after.length) return prev;
-      return { ...prev, layers: [...before, after[0], ...moving, ...after.slice(1)] };
-    }
-    if (!before.length) return prev;
-    return { ...prev, layers: [...before.slice(0, -1), ...moving, before.at(-1), ...after] };
+    const layers = prev.layers.filter((item) => !ids.includes(item.id));
+    const targetStart = layers.findIndex((item) => targetIds.includes(item.id));
+    if (targetStart < 0) return prev;
+    const targetEnd = targetStart + targetIds.length - 1;
+    layers.splice(direction > 0 ? targetEnd + 1 : targetStart, 0, ...moving);
+    return { ...prev, layers };
   });
-  const reorderLayer = (sourceId, targetId, placement) => {
+  const reorderLayer = (sourceId, targetId, placement, wholeGroup = false) => {
     if (!sourceId || sourceId === targetId) return;
     updateDraft((previous) => {
       const source = previous.layers.find((item) => item.id === sourceId);
       const target = previous.layers.find((item) => item.id === targetId);
       if (!source || !target) return previous;
-      const sourceIds = source.groupId
+      const sourceIds = wholeGroup && source.groupId
         ? previous.layers.filter((item) => item.groupId === source.groupId).map((item) => item.id)
         : [sourceId];
-      const targetIds = target.groupId
+      if (!wholeGroup && source.groupId && target.groupId !== source.groupId) return previous;
+      const targetIds = !wholeGroup && source.groupId
+        ? [targetId]
+        : target.groupId
         ? previous.layers.filter((item) => item.groupId === target.groupId).map((item) => item.id)
         : [targetId];
       if (sourceIds.some((id) => targetIds.includes(id)) || sourceIds.some((id) => previous.layers.find((item) => item.id === id)?.locked)) return previous;
@@ -1097,19 +1142,32 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       return { ...previous, layers };
     });
     const sourceLayer = draft.layers.find((item) => item.id === sourceId);
-    setSelectedIds(sourceLayer?.groupId ? draft.layers.filter((item) => item.groupId === sourceLayer.groupId).map((item) => item.id) : [sourceId]);
+    setSelectedIds(wholeGroup && sourceLayer?.groupId ? draft.layers.filter((item) => item.groupId === sourceLayer.groupId).map((item) => item.id) : [sourceId]);
+    setSelectedGroupId(wholeGroup ? sourceLayer?.groupId || null : null);
   };
-  const beginLayerReorder = (event, sourceId) => {
+  const beginLayerReorder = (event, sourceId, sourceGroupId = null) => {
     if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    selectLayer(sourceId, event);
+    if (sourceGroupId) selectGroup(sourceGroupId, event); else selectLayer(sourceId, event);
     const start = { x: event.clientX, y: event.clientY };
     const resolveTarget = (pointerEvent) => {
       const row = document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)?.closest('[data-layer-id]');
-      const targetId = row?.dataset.layerId;
+      let targetId = row?.dataset.layerId;
       if (!targetId || targetId === sourceId) return null;
-      const rect = row.getBoundingClientRect();
+      const target = draft.layers.find((item) => item.id === targetId);
+      if (sourceGroupId && target?.groupId === sourceGroupId) return null;
+      let rect = row.getBoundingClientRect();
+      if (sourceGroupId && target?.groupId) {
+        targetId = draft.layers.filter((item) => item.groupId === target.groupId).at(-1)?.id || targetId;
+        const groupRows = [...document.querySelectorAll('[data-group-id], [data-parent-group-id]')].filter((item) => item.dataset.groupId === target.groupId || item.dataset.parentGroupId === target.groupId);
+        if (groupRows.length) {
+          const rects = groupRows.map((item) => item.getBoundingClientRect());
+          const top = Math.min(...rects.map((item) => item.top));
+          const bottom = Math.max(...rects.map((item) => item.bottom));
+          rect = { top, height: bottom - top };
+        }
+      }
       return { id: targetId, placement: pointerEvent.clientY < rect.top + rect.height / 2 ? 'before' : 'after' };
     };
     const cleanup = () => {
@@ -1128,7 +1186,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       const active = layerReorderRef.current?.active;
       const target = resolveTarget(pointerEvent);
       cleanup();
-      if (active && target) reorderLayer(sourceId, target.id, target.placement);
+      if (active && target) reorderLayer(sourceId, target.id, target.placement, Boolean(sourceGroupId));
       setDraggedLayerId(null);
       setLayerDrop(null);
     };
@@ -1146,20 +1204,59 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       const moving = previous.layers.filter((layer) => selected.has(layer.id)).map((layer) => ({ ...layer, groupId }));
       const layers = previous.layers.filter((layer) => !selected.has(layer.id));
       layers.splice(Math.max(0, firstIndex), 0, ...moving);
-      return { ...previous, layers };
+      const groupCount = new Set(previous.layers.map((layer) => layer.groupId).filter(Boolean)).size;
+      const activeGroupIds = new Set(layers.map((layer) => layer.groupId).filter(Boolean));
+      const groupMeta = Object.fromEntries(Object.entries(previous.groupMeta || {}).filter(([id]) => activeGroupIds.has(id)));
+      return { ...previous, layers, groupMeta: { ...groupMeta, [groupId]: { name: `图层组 ${groupCount + 1}` } } };
     });
     setCollapsedGroups((current) => { const next = new Set(current); next.delete(groupId); return next; });
+    setSelectedGroupId(groupId);
   };
-  const ungroupSelected = () => {
-    if (!selectedGroupId) return;
-    const groupId = selectedGroupId;
-    updateDraft((previous) => ({ ...previous, layers: previous.layers.map((layer) => layer.groupId === groupId ? { ...layer, groupId: undefined } : layer) }));
+  const ungroupGroup = (groupId) => {
+    if (!groupId) return;
+    updateDraft((previous) => {
+      const groupMeta = { ...(previous.groupMeta || {}) };
+      delete groupMeta[groupId];
+      return { ...previous, groupMeta, layers: previous.layers.map((layer) => layer.groupId === groupId ? { ...layer, groupId: undefined } : layer) };
+    });
     setCollapsedGroups((current) => { const next = new Set(current); next.delete(groupId); return next; });
+    setSelectedGroupId(null);
   };
+  const ungroupSelected = () => ungroupGroup(selectedGroupId || uniformlySelectedGroupId);
   const toggleSelectedLock = () => {
     if (!selectedIds.length) return;
     const lock = selectedLayers.some((layer) => !layer.locked);
     updateDraft((previous) => ({ ...previous, layers: previous.layers.map((layer) => selectedIds.includes(layer.id) ? { ...layer, locked: lock } : layer) }));
+  };
+  const updateGroupMeta = (groupId, patch) => updateDraft((previous) => ({
+    ...previous,
+    groupMeta: { ...(previous.groupMeta || {}), [groupId]: { ...(previous.groupMeta?.[groupId] || {}), ...patch } }
+  }));
+  const updateGroupLayers = (groupId, patch) => updateDraft((previous) => ({
+    ...previous,
+    layers: previous.layers.map((layer) => layer.groupId === groupId ? { ...layer, ...patch } : layer)
+  }));
+  const removeGroup = (groupId) => {
+    const members = draft.layers.filter((layer) => layer.groupId === groupId);
+    if (members.some((layer) => layer.locked)) return notify('组内含有锁定图层，请先解锁', 'error');
+    const removeIds = members.map((layer) => layer.id);
+    updateDraft((previous) => {
+      const groupMeta = { ...(previous.groupMeta || {}) };
+      delete groupMeta[groupId];
+      return { ...previous, groupMeta, layers: previous.layers.filter((layer) => layer.groupId !== groupId) };
+    });
+    setSelectedIds((current) => current.filter((id) => !removeIds.includes(id)));
+    setSelectedGroupId(null);
+  };
+  const moveGroupTo = (groupId, axis, value) => {
+    const members = draft.layers.filter((layer) => layer.groupId === groupId);
+    if (!members.length || members.some((layer) => layer.locked)) return;
+    const min = Math.min(...members.map((layer) => layer[axis]));
+    const max = Math.max(...members.map((layer) => layer[axis] + (axis === 'x' ? layer.width : layer.height)));
+    const limit = axis === 'x' ? draft.width : draft.height;
+    const delta = clamp(Number(value) - min, -min, limit - max);
+    if (!delta) return;
+    updateDraft((previous) => ({ ...previous, layers: previous.layers.map((layer) => layer.groupId === groupId ? { ...layer, [axis]: layer[axis] + delta } : layer) }));
   };
   const alignSelected = (mode) => {
     const layers = selectedLayers.filter((layer) => !layer.locked);
@@ -1188,18 +1285,21 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     const patches = Object.fromEntries(sorted.map((layer, index) => [layer.id, axis === 'x' ? { x: Math.round(start + step * index - layer.width / 2) } : { y: Math.round(start + step * index - layer.height / 2) }]));
     updateLayers(patches);
   };
-  const copyLayerFromMenu = (id) => {
+  const copyLayerFromMenu = (id, groupId = null) => {
     const layer = draft.layers.find((item) => item.id === id);
     if (!layer) return;
-    const layers = layer.groupId ? draft.layers.filter((item) => item.groupId === layer.groupId) : [layer];
-    clipboardLayersRef.current = structuredClone(layers);
+    const layers = groupId ? draft.layers.filter((item) => item.groupId === groupId) : [{ ...layer, groupId: undefined }];
+    clipboardLayersRef.current = {
+      layers: structuredClone(layers),
+      groupMeta: groupId ? { [groupId]: structuredClone(draft.groupMeta?.[groupId] || {}) } : {}
+    };
     notify(layers.length > 1 ? `已复制 ${layers.length} 个组合图层` : `已复制图层“${layer.name}”`);
   };
-  const duplicateLayerFromMenu = (id) => {
+  const duplicateLayerFromMenu = (id, groupId = null) => {
     const layer = draft.layers.find((item) => item.id === id);
     if (!layer) return;
-    const sourceLayers = layer.groupId ? draft.layers.filter((item) => item.groupId === layer.groupId) : [layer];
-    const nextGroupId = sourceLayers.length > 1 ? uid() : undefined;
+    const sourceLayers = groupId ? draft.layers.filter((item) => item.groupId === groupId) : [layer];
+    const nextGroupId = groupId ? uid() : undefined;
     const copies = sourceLayers.map((source) => ({
       ...structuredClone(source),
       id: uid(),
@@ -1209,13 +1309,28 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       y: clamp(source.y + 20, 0, Math.max(0, draft.height - source.height)),
       locked: false
     }));
-    updateDraft((previous) => ({ ...previous, layers: [...previous.layers, ...copies] }));
+    updateDraft((previous) => ({
+      ...previous,
+      layers: [...previous.layers, ...copies],
+      groupMeta: nextGroupId ? { ...(previous.groupMeta || {}), [nextGroupId]: { ...(previous.groupMeta?.[groupId] || {}), name: `${previous.groupMeta?.[groupId]?.name || '图层组'} 副本` } } : previous.groupMeta
+    }));
     setSelectedIds(copies.map((copy) => copy.id));
+    setSelectedGroupId(nextGroupId || null);
   };
-  const moveLayerExtreme = (id, toFront) => updateDraft((previous) => {
+  const moveLayerExtreme = (id, toFront, wholeGroup = false) => updateDraft((previous) => {
     const source = previous.layers.find((layer) => layer.id === id);
     if (!source) return previous;
-    const ids = source.groupId ? previous.layers.filter((item) => item.groupId === source.groupId).map((item) => item.id) : [id];
+    if (!wholeGroup && source.groupId) {
+      if (source.locked) return previous;
+      const members = previous.layers.filter((item) => item.groupId === source.groupId);
+      const ids = members.map((item) => item.id);
+      const layers = previous.layers.filter((item) => item.id !== id);
+      const indexes = layers.map((item, index) => ids.includes(item.id) ? index : -1).filter((index) => index >= 0);
+      const insertAt = toFront ? Math.max(...indexes) + 1 : Math.min(...indexes);
+      layers.splice(insertAt, 0, source);
+      return { ...previous, layers };
+    }
+    const ids = wholeGroup && source.groupId ? previous.layers.filter((item) => item.groupId === source.groupId).map((item) => item.id) : [id];
     if (ids.some((itemId) => previous.layers.find((item) => item.id === itemId)?.locked)) return previous;
     const moving = previous.layers.filter((item) => ids.includes(item.id));
     const rest = previous.layers.filter((item) => !ids.includes(item.id));
@@ -1236,6 +1351,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     return <div
       key={layer.id}
       data-layer-id={layer.id}
+      data-parent-group-id={child ? layer.groupId : undefined}
       className={`layer-row ${child ? 'layer-child' : ''} ${selectedIds.includes(layer.id) ? 'selected' : ''} ${draggedLayerId === layer.id ? 'dragging' : ''} ${dropClass} ${layer.locked ? 'locked' : ''}`}
       onClick={(event) => selectLayer(layer.id, event)}
       onContextMenu={(event) => openLayerMenu(layer.id, event)}
@@ -1254,16 +1370,25 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     groupNumber += 1;
     const members = draft.layers.filter((item) => item.groupId === layer.groupId).reverse();
     const collapsed = collapsedGroups.has(layer.groupId);
-    const groupSelected = members.every((item) => selectedIds.includes(item.id));
+    const groupSelected = selectedGroupId === layer.groupId;
+    const dropClass = layerDrop?.id === members[0].id ? `drop-${layerDrop.placement}` : '';
+    const groupName = draft.groupMeta?.[layer.groupId]?.name || `图层组 ${groupNumber}`;
     layerListRows.push(<div
       key={`group-${layer.groupId}`}
       data-layer-id={members[0].id}
-      className={`layer-group-row ${groupSelected ? 'selected' : ''}`}
-      onClick={(event) => selectLayer(members[0].id, event)}
-      onContextMenu={(event) => openLayerMenu(members[0].id, event)}
-    ><span className="layer-grip" title="拖动整组排序" onPointerDown={(event) => beginLayerReorder(event, members[0].id)}><GripVertical size={15}/></span><IconButton label={collapsed ? '展开图层组' : '收起图层组'} className="group-toggle" onClick={(event) => { event.stopPropagation(); setCollapsedGroups((current) => { const next = new Set(current); if (next.has(layer.groupId)) next.delete(layer.groupId); else next.add(layer.groupId); return next; }); }}>{collapsed ? <ChevronRight size={15}/> : <ChevronDown size={15}/>}</IconButton><div className="layer-group-icon"><Layers3 size={17}/></div><div className="layer-copy"><strong>图层组 {groupNumber}</strong><span>{members.length} 个图层</span></div></div>);
+      data-group-id={layer.groupId}
+      className={`layer-group-row ${groupSelected ? 'selected' : ''} ${draggedLayerId === members[0].id ? 'dragging' : ''} ${dropClass}`}
+      onClick={(event) => selectGroup(layer.groupId, event)}
+      onContextMenu={(event) => openGroupMenu(layer.groupId, event)}
+    ><span className="layer-grip" title="拖动整组排序" onPointerDown={(event) => beginLayerReorder(event, members[0].id, layer.groupId)}><GripVertical size={15}/></span><IconButton label={collapsed ? '展开图层组' : '收起图层组'} className="group-toggle" onClick={(event) => { event.stopPropagation(); setCollapsedGroups((current) => { const next = new Set(current); if (next.has(layer.groupId)) next.delete(layer.groupId); else next.add(layer.groupId); return next; }); }}>{collapsed ? <ChevronRight size={15}/> : <ChevronDown size={15}/>}</IconButton><div className="layer-group-icon"><Layers3 size={17}/></div><div className="layer-copy"><strong>{groupName}</strong><span>{members.length} 个图层</span></div></div>);
     if (!collapsed) members.forEach((member) => layerListRows.push(renderLayerRow(member, true)));
   });
+  const contextLayer = layerMenu ? draft.layers.find((item) => item.id === layerMenu.id) : null;
+  const contextGroupId = layerMenu?.groupId || null;
+  const contextGroupLayers = contextGroupId ? draft.layers.filter((item) => item.groupId === contextGroupId) : [];
+  const contextLocked = contextGroupId ? contextGroupLayers.some((item) => item.locked) : Boolean(contextLayer?.locked);
+  const contextAllLocked = contextGroupId && contextGroupLayers.every((item) => item.locked);
+  const selectedGroupName = selectedGroupId ? draft.groupMeta?.[selectedGroupId]?.name || `图层组 ${[...seenGroups].indexOf(selectedGroupId) + 1}` : '';
 
   return <main className="editor-page">
     <header className="editor-topbar"><div className="editor-left"><IconButton label="返回模板库" onClick={tryBack}><ArrowLeft size={21}/></IconButton><div className="title-field"><input value={draft.name} onChange={(e) => updateDraft({ ...draft, name: e.target.value })}/><span>{draft.width} x {draft.height}px</span></div></div><div className="editor-center"><span className="status-dot"></span>{autosaveState === 'saving' ? '正在自动保存' : autosaveState === 'error' ? '自动保存失败' : initialStateRef.current.restored ? '已恢复草稿' : dirty ? '已自动保存' : '已保存'}</div><div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undoDraft} disabled={!canUndo}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redoDraft} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={tryBack}>取消</button><button className="primary-button" onClick={save}><Save size={17}/>保存模板</button></div></header>
@@ -1272,21 +1397,21 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
         <div className="layers-list">{layerListRows}</div>
         {!draft.layers.length && <div className="layers-empty"><Layers3 size={28}/><p>先添加 Meme 底图，再添加一个照片位置。</p></div>}
       </aside>
-      <section className="canvas-workspace"><div className="canvas-toolbar"><div className="canvas-size"><label>画布</label><input type="number" min="100" max="4000" value={draft.width} onChange={(e) => updateDraft({ ...draft, width: clamp(e.target.value, 100, 4000) })}/><span>×</span><input type="number" min="100" max="4000" value={draft.height} onChange={(e) => updateDraft({ ...draft, height: clamp(e.target.value, 100, 4000) })}/></div><div className="selection-actions">{selectedIds.length > 1 && <button className="toolbar-button" onClick={groupSelected}><Layers3 size={15}/>组合</button>}{selectedGroupId && <button className="toolbar-button" onClick={ungroupSelected}><Layers3 size={15}/>取消组合</button>}{selectedIds.length > 0 && <button className="toolbar-button" onClick={toggleSelectedLock}>{selectedLayers.some((layer) => !layer.locked) ? <Lock size={15}/> : <Unlock size={15}/>} {selectedLayers.some((layer) => !layer.locked) ? '锁定' : '解锁'}</button>}</div><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div></div><div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''}`} onWheel={zoomAtPointer} onMouseDown={(event) => { if (event.target === event.currentTarget) beginPan(event); }}><div className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}><EditorStage template={draft} selectedIds={selectedIds} selectedId={selectedId} setSelectedIds={setSelectedIds} selectLayer={selectLayer} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onPanStart={beginPan} zoom={zoom}/></div></div></section>
-      <aside className="properties-panel"><div className="panel-title"><span>属性</span></div>{selectedLayers.length > 1 ? <MultiSelectionProperties layers={selectedLayers} grouped={Boolean(selectedGroupId)} onGroup={groupSelected} onUngroup={ungroupSelected} onToggleLock={toggleSelectedLock} onAlign={alignSelected} onDistribute={distributeSelected}/> : selected ? <Properties layer={selected} update={(patch) => updateLayer(selected.id, patch)} toggleLock={() => updateLayer(selected.id, { locked: !selected.locked })} remove={() => removeLayer(selected.id)} move={(direction) => moveLayer(selected.id, direction)}/> : <div className="property-empty"><Pencil size={26}/><p>选择一个图层后，可调整位置、尺寸和旋转。</p></div>}</aside>
+      <section className="canvas-workspace"><div className="canvas-toolbar"><div className="canvas-size"><label>画布</label><input type="number" min="100" max="4000" value={draft.width} onChange={(e) => updateDraft({ ...draft, width: clamp(e.target.value, 100, 4000) })}/><span>×</span><input type="number" min="100" max="4000" value={draft.height} onChange={(e) => updateDraft({ ...draft, height: clamp(e.target.value, 100, 4000) })}/></div><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div></div><div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''}`} onWheel={zoomAtPointer} onMouseDown={(event) => { if (event.target === event.currentTarget) beginPan(event); }}><div className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}><EditorStage template={draft} selectedIds={selectedIds} selectLayer={selectLayer} clearSelection={() => { setSelectedIds([]); setSelectedGroupId(null); }} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onPanStart={beginPan} zoom={zoom}/></div></div></section>
+      <aside className="properties-panel"><div className="panel-title"><span>属性</span></div>{selectedGroupId && selectedGroupLayers.length ? <GroupProperties name={selectedGroupName} layers={selectedGroupLayers} onRename={(name) => updateGroupMeta(selectedGroupId, { name })} onToggleLock={() => updateGroupLayers(selectedGroupId, { locked: selectedGroupLayers.some((layer) => !layer.locked) })} onToggleVisibility={() => updateGroupLayers(selectedGroupId, { visible: !selectedGroupLayers.every((layer) => layer.visible) })} onMove={(axis, value) => moveGroupTo(selectedGroupId, axis, value)} onUngroup={ungroupSelected} onRemove={() => removeGroup(selectedGroupId)} onOrder={(direction) => moveLayer(selectedGroupLayers[0].id, direction, true)}/> : selectedLayers.length > 1 ? <MultiSelectionProperties layers={selectedLayers} grouped={Boolean(uniformlySelectedGroupId)} onGroup={groupSelected} onUngroup={ungroupSelected} onToggleLock={toggleSelectedLock} onAlign={alignSelected} onDistribute={distributeSelected}/> : selected ? <Properties layer={selected} update={(patch) => updateLayer(selected.id, patch)} toggleLock={() => updateLayer(selected.id, { locked: !selected.locked })} remove={() => removeLayer(selected.id)} move={(direction) => moveLayer(selected.id, direction)}/> : <div className="property-empty"><Pencil size={26}/><p>选择一个图层后，可调整位置、尺寸和旋转。</p></div>}</aside>
     </div>
     {layerMenu && <div className="layer-context-menu" style={{ left: layerMenu.x, top: Math.max(6, layerMenu.y) }} onPointerDown={(event) => event.stopPropagation()}>
-      <button onClick={() => { copyLayerFromMenu(layerMenu.id); setLayerMenu(null); }}><Copy size={16}/>复制图层</button>
-      <button onClick={() => { duplicateLayerFromMenu(layerMenu.id); setLayerMenu(null); }}><Plus size={16}/>创建副本</button>
-      {draft.layers.find((item) => item.id === layerMenu.id)?.groupId
-        ? <button onClick={() => { ungroupSelected(); setLayerMenu(null); }}><Layers3 size={16}/>取消组合</button>
+      <button onClick={() => { copyLayerFromMenu(layerMenu.id, contextGroupId); setLayerMenu(null); }}><Copy size={16}/>复制{contextGroupId ? '图层组' : '图层'}</button>
+      <button onClick={() => { duplicateLayerFromMenu(layerMenu.id, contextGroupId); setLayerMenu(null); }}><Plus size={16}/>创建副本</button>
+      {contextGroupId || contextLayer?.groupId
+        ? <button onClick={() => { ungroupGroup(contextGroupId || contextLayer.groupId); setLayerMenu(null); }}><Layers3 size={16}/>取消组合</button>
         : <button disabled={selectedIds.length < 2} onClick={() => { groupSelected(); setLayerMenu(null); }}><Layers3 size={16}/>组合图层</button>}
-      <button onClick={() => { const layer = draft.layers.find((item) => item.id === layerMenu.id); updateLayer(layerMenu.id, { locked: !layer?.locked }); setLayerMenu(null); }}>{draft.layers.find((item) => item.id === layerMenu.id)?.locked ? <Unlock size={16}/> : <Lock size={16}/>} {draft.layers.find((item) => item.id === layerMenu.id)?.locked ? '解锁图层' : '锁定图层'}</button>
-      <button disabled={draft.layers.find((item) => item.id === layerMenu.id)?.locked} onClick={() => { moveLayer(layerMenu.id, 1); setLayerMenu(null); }}><ChevronUp size={16}/>上移图层</button>
-      <button disabled={draft.layers.find((item) => item.id === layerMenu.id)?.locked} onClick={() => { moveLayer(layerMenu.id, -1); setLayerMenu(null); }}><ChevronDown size={16}/>下移图层</button>
-      <button disabled={draft.layers.find((item) => item.id === layerMenu.id)?.locked} onClick={() => { moveLayerExtreme(layerMenu.id, true); setLayerMenu(null); }}><ChevronUp size={16}/>置于顶层</button>
-      <button disabled={draft.layers.find((item) => item.id === layerMenu.id)?.locked} onClick={() => { moveLayerExtreme(layerMenu.id, false); setLayerMenu(null); }}><ChevronDown size={16}/>置于底层</button>
-      <button className="danger" disabled={draft.layers.find((item) => item.id === layerMenu.id)?.locked} onClick={() => { removeLayer(layerMenu.id); setLayerMenu(null); }}><Trash2 size={16}/>删除图层</button>
+      <button onClick={() => { if (contextGroupId) updateGroupLayers(contextGroupId, { locked: !contextAllLocked }); else updateLayer(layerMenu.id, { locked: !contextLayer?.locked }); setLayerMenu(null); }}>{contextGroupId ? (contextAllLocked ? <Unlock size={16}/> : <Lock size={16}/>) : (contextLayer?.locked ? <Unlock size={16}/> : <Lock size={16}/>)} {contextGroupId ? (contextAllLocked ? '解锁图层组' : '锁定图层组') : (contextLayer?.locked ? '解锁图层' : '锁定图层')}</button>
+      <button disabled={contextLocked} onClick={() => { moveLayer(layerMenu.id, 1, Boolean(contextGroupId)); setLayerMenu(null); }}><ChevronUp size={16}/>上移{contextGroupId ? '图层组' : '图层'}</button>
+      <button disabled={contextLocked} onClick={() => { moveLayer(layerMenu.id, -1, Boolean(contextGroupId)); setLayerMenu(null); }}><ChevronDown size={16}/>下移{contextGroupId ? '图层组' : '图层'}</button>
+      <button disabled={contextLocked} onClick={() => { moveLayerExtreme(layerMenu.id, true, Boolean(contextGroupId)); setLayerMenu(null); }}><ChevronUp size={16}/>置于顶层</button>
+      <button disabled={contextLocked} onClick={() => { moveLayerExtreme(layerMenu.id, false, Boolean(contextGroupId)); setLayerMenu(null); }}><ChevronDown size={16}/>置于底层</button>
+      <button className="danger" disabled={contextLocked} onClick={() => { if (contextGroupId) removeGroup(contextGroupId); else removeLayer(layerMenu.id); setLayerMenu(null); }}><Trash2 size={16}/>删除{contextGroupId ? '图层组' : '图层'}</button>
     </div>}
   </main>;
 }
@@ -1298,7 +1423,7 @@ function LayerThumb({ layer }) {
   return <span className={`shape-thumb ${shapeOf(layer)}`}></span>;
 }
 
-function EditorStage({ template, selectedIds, setSelectedIds, selectLayer, updateLayer, updateLayers, onLayerContextMenu, onPanStart, zoom }) {
+function EditorStage({ template, selectedIds, selectLayer, clearSelection, updateLayer, updateLayers, onLayerContextMenu, onPanStart, zoom }) {
   const trRef = useRef();
   const nodeRefs = useRef({});
   const dragRef = useRef(null);
@@ -1339,13 +1464,11 @@ function EditorStage({ template, selectedIds, setSelectedIds, selectLayer, updat
   }, []);
 
   const startDrag = (layer) => {
-    const groupedIds = layer.groupId ? template.layers.filter((item) => item.groupId === layer.groupId).map((item) => item.id) : [layer.id];
-    const requestedIds = selectedIds.includes(layer.id) ? selectedIds : groupedIds;
+    const requestedIds = selectedIds.includes(layer.id) ? selectedIds : [layer.id];
     const ids = requestedIds.filter((id) => {
       const item = template.layers.find((candidate) => candidate.id === id);
-      return item && !item.locked && item.visible;
+      return item && !item.locked;
     });
-    if (!selectedIds.includes(layer.id)) setSelectedIds(groupedIds);
     const positions = Object.fromEntries(ids.map((id) => {
       const item = template.layers.find((candidate) => candidate.id === id);
       return [id, { x: item.x, y: item.y }];
@@ -1355,7 +1478,8 @@ function EditorStage({ template, selectedIds, setSelectedIds, selectLayer, updat
     const minY = Math.min(...items.map((item) => item.y));
     const maxX = Math.max(...items.map((item) => item.x + item.width));
     const maxY = Math.max(...items.map((item) => item.y + item.height));
-    dragRef.current = { ids, positions, anchorId: layer.id, anchor: positions[layer.id], bounds: { x: minX, y: minY, width: maxX - minX, height: maxY - minY } };
+    trRef.current?.nodes([]);
+    dragRef.current = { ids, positions, anchorId: layer.id, anchor: positions[layer.id], lastDx: 0, lastDy: 0, bounds: { x: minX, y: minY, width: maxX - minX, height: maxY - minY } };
   };
 
   const moveDrag = (layer, event) => {
@@ -1368,18 +1492,25 @@ function EditorStage({ template, selectedIds, setSelectedIds, selectLayer, updat
       const snapped = snapLayerPosition(virtualLayer, { x: drag.bounds.x + dx, y: drag.bounds.y + dy }, template, 8 / zoom, drag.ids);
       dx = snapped.x - drag.bounds.x;
       dy = snapped.y - drag.bounds.y;
-      setGuides(snapped.guides);
+      setGuides((current) => JSON.stringify(current) === JSON.stringify(snapped.guides) ? current : snapped.guides);
     } else {
       setGuides((current) => current.length ? [] : current);
     }
-    drag.ids.forEach((id) => nodeRefs.current[id]?.position({ x: drag.positions[id].x + dx, y: drag.positions[id].y + dy }));
+    drag.lastDx = dx;
+    drag.lastDy = dy;
+    drag.ids.forEach((id) => {
+      const node = nodeRefs.current[id];
+      if (!node) return;
+      if (id === layer.id && !event.evt.shiftKey) return;
+      node.position({ x: drag.positions[id].x + dx, y: drag.positions[id].y + dy });
+    });
   };
 
   const finishDrag = (layer, event) => {
     moveDrag(layer, event);
     const drag = dragRef.current;
     if (!drag) return;
-    const patches = Object.fromEntries(drag.ids.map((id) => [id, { x: Math.round(nodeRefs.current[id].x()), y: Math.round(nodeRefs.current[id].y()) }]));
+    const patches = Object.fromEntries(drag.ids.map((id) => [id, { x: Math.round(drag.positions[id].x + drag.lastDx), y: Math.round(drag.positions[id].y + drag.lastDy) }]));
     dragRef.current = null;
     setGuides([]);
     updateLayers(patches);
@@ -1398,16 +1529,16 @@ function EditorStage({ template, selectedIds, setSelectedIds, selectLayer, updat
     if (Object.keys(patches).length) updateLayers(patches);
   };
 
-  return <Stage width={template.width * zoom} height={template.height * zoom} scaleX={zoom} scaleY={zoom} onWheel={(event) => event.target.stopDrag?.()} onMouseDown={(event) => { trRef.current?.rotationSnaps(event.evt.shiftKey || shiftPressed ? ROTATION_SNAPS : []); if (event.target === event.target.getStage() || event.target.name() === 'editor-background') { setSelectedIds([]); onPanStart(event); } }}><Layer><Rect name="editor-background" width={template.width} height={template.height} fill="#fff"/>{template.layers.map((layer) => <EditorLayer key={layer.id} layer={layer} interactive={!layer.locked} selectable setRef={(node) => nodeRefs.current[layer.id] = node} onSelect={(event) => selectLayer(layer.id, event.evt)} onContextMenu={(event) => onLayerContextMenu(layer.id, event.evt)} onChange={(patch) => updateLayer(layer.id, patch)} onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)} onTransformEnd={false}/>)}{template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}{guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94e37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }<Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} enabledAnchors={['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/></Layer></Stage>;
+  return <Stage width={template.width * zoom} height={template.height * zoom} scaleX={zoom} scaleY={zoom} onWheel={(event) => event.target.stopDrag?.()} onMouseDown={(event) => { trRef.current?.rotationSnaps(event.evt.shiftKey || shiftPressed ? ROTATION_SNAPS : []); if (event.target === event.target.getStage() || event.target.name() === 'editor-background') { clearSelection(); onPanStart(event); } }}><Layer><Rect name="editor-background" width={template.width} height={template.height} fill="#fff"/>{template.layers.map((layer) => <EditorLayer key={layer.id} layer={layer} interactive={!layer.locked} selectable setRef={(node) => nodeRefs.current[layer.id] = node} onPointerDown={(event) => { if (!selectedIds.includes(layer.id) && !event.evt.ctrlKey && !event.evt.metaKey && !event.evt.shiftKey) selectLayer(layer.id, event.evt); }} onSelect={(event) => selectLayer(layer.id, event.evt)} onContextMenu={(event) => onLayerContextMenu(layer.id, event.evt)} onChange={(patch) => updateLayer(layer.id, patch)} onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)} onTransformEnd={false}/>)}{template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}{guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94e37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }<Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} enabledAnchors={['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/></Layer></Stage>;
 }
 
-function EditorLayer({ layer, setRef, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, source, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
+function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, source, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
   const image = useHtmlImage(source ?? layer.src);
   const crop = image && layer.fit === 'cover' ? getCoverCrop(image, layer.width, layer.height) : undefined;
   const placement = image && layer.type === 'slot' && source ? getPhotoPlacement(image, layer, photoTransform) : null;
   if (!layer.visible) return null;
   const common = { ref: setRef, x: layer.x, y: layer.y, width: layer.width, height: layer.height, rotation: layer.rotation || 0, draggable: interactive, listening: selectable };
-  if (selectable) Object.assign(common, { onClick: onSelect, onTap: onSelect, onDblClick: onEnterCrop, onDblTap: onEnterCrop, onContextMenu });
+  if (selectable) Object.assign(common, { onMouseDown: onPointerDown, onTouchStart: onPointerDown, onClick: onSelect, onTap: onSelect, onDblClick: onEnterCrop, onDblTap: onEnterCrop, onContextMenu });
   if (interactive) {
     Object.assign(common, { onDragStart, onDragMove, onDragEnd: onDragEnd || ((event) => onChange({ x: Math.round(event.target.x()), y: Math.round(event.target.y()) })) });
     if (onTransformEnd !== false) common.onTransformEnd = onTransformEnd || ((event) => { const node = event.target; const sx = node.scaleX(), sy = node.scaleY(); node.scaleX(1); node.scaleY(1); onChange({ x: Math.round(node.x()), y: Math.round(node.y()), width: Math.max(10, Math.round(node.width() * sx)), height: Math.max(10, Math.round(node.height() * sy)), rotation: Math.round(node.rotation()) }); });
@@ -1428,6 +1559,26 @@ function EditorLayer({ layer, setRef, onSelect, onContextMenu, onChange, onDragS
 }
 
 function NumberField({ label, value, onChange, suffix }) { return <label className="number-field"><span>{label}</span><div><input type="number" value={Math.round(value)} onChange={(e) => onChange(Number(e.target.value))}/>{suffix && <em>{suffix}</em>}</div></label>; }
+
+function GroupProperties({ name, layers, onRename, onToggleLock, onToggleVisibility, onMove, onUngroup, onRemove, onOrder }) {
+  const allLocked = layers.every((layer) => layer.locked);
+  const hasLocked = layers.some((layer) => layer.locked);
+  const allVisible = layers.every((layer) => layer.visible);
+  const left = Math.min(...layers.map((layer) => layer.x));
+  const top = Math.min(...layers.map((layer) => layer.y));
+  const right = Math.max(...layers.map((layer) => layer.x + layer.width));
+  const bottom = Math.max(...layers.map((layer) => layer.y + layer.height));
+  return <div className="property-content group-properties">
+    <button className={`layer-lock-button ${allLocked ? 'active' : ''}`} onClick={onToggleLock}>{allLocked ? <Lock size={16}/> : <Unlock size={16}/>}<span>{allLocked ? '图层组已锁定' : '锁定图层组'}</span></button>
+    <label className="text-field"><span>图层组名称</span><input value={name} onChange={(event) => onRename(event.target.value)}/></label>
+    <div className="multi-selection-summary"><Layers3 size={24}/><strong>{layers.length} 个图层</strong><span>{Math.round(right - left)} × {Math.round(bottom - top)} px</span></div>
+    <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={left} onChange={(x) => { if (!hasLocked) onMove('x', x); }}/><NumberField label="Y" value={top} onChange={(y) => { if (!hasLocked) onMove('y', y); }}/></div>{hasLocked && <p className="property-note">组内含锁定图层，解锁后才能修改整组位置。</p>}</div>
+    <div className="property-section"><h4>可见性</h4><button className="wide-property-button" onClick={onToggleVisibility}>{allVisible ? <EyeOff size={16}/> : <Eye size={16}/>} {allVisible ? '隐藏图层组' : '显示图层组'}</button></div>
+    <div className="property-section"><h4>图层组顺序</h4><div className="order-buttons"><button disabled={hasLocked} onClick={() => onOrder(1)}><ChevronUp size={17}/>上移</button><button disabled={hasLocked} onClick={() => onOrder(-1)}><ChevronDown size={17}/>下移</button></div></div>
+    <div className="property-section"><h4>组合</h4><button className="wide-property-button" onClick={onUngroup}><Layers3 size={16}/>取消组合</button></div>
+    <button className="delete-button" disabled={hasLocked} onClick={onRemove}><Trash2 size={17}/>删除图层组</button>
+  </div>;
+}
 
 function MultiSelectionProperties({ layers, grouped, onGroup, onUngroup, onToggleLock, onAlign, onDistribute }) {
   const allLocked = layers.every((layer) => layer.locked);

@@ -153,6 +153,10 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .layer-group-row { position: relative; height: 48px; padding: 5px; border: 1px solid transparent; border-radius: 5px; display: flex; align-items: center; gap: 5px; cursor: pointer; user-select: none; background: #f6f4ef; }
 .layer-group-row:hover { background: #efede7; }
 .layer-group-row.selected { background: #fff4f1; border-color: #efb5aa; }
+.layer-group-row.dragging { opacity: .42; }
+.layer-group-row.drop-before::before, .layer-group-row.drop-after::after { content: ''; position: absolute; left: 3px; right: 3px; z-index: 2; height: 2px; border-radius: 2px; background: var(--accent); box-shadow: 0 0 0 1px rgba(255,255,255,.8); }
+.layer-group-row.drop-before::before { top: -3px; }
+.layer-group-row.drop-after::after { bottom: -3px; }
 .layer-group-row .layer-grip { height: 36px; }
 .layer-group-row .group-toggle { width: 24px; height: 28px; flex: none; }
 .layer-group-icon { width: 26px; height: 28px; flex: none; display: grid; place-items: center; color: var(--accent); }
@@ -182,7 +186,6 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .canvas-size { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--muted); }
 .canvas-size label { margin-right: 4px; font-weight: 600; }
 .canvas-size input { width: 60px; height: 28px; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; font-size: 10px; }
-.selection-actions { display: flex; align-items: center; gap: 5px; margin-left: auto; margin-right: 10px; }
 .toolbar-button, .wide-property-button { height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); display: inline-flex; align-items: center; justify-content: center; gap: 5px; font-size: 10px; cursor: pointer; }
 .toolbar-button:hover, .wide-property-button:hover { border-color: #e6a092; color: var(--accent); background: #fff9f7; }
 .zoom-control { height: 30px; display: flex; align-items: center; border: 1px solid var(--line); background: #fff; border-radius: 5px; }
@@ -233,6 +236,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .multi-selection-summary { padding: 15px 0 3px; display: flex; flex-direction: column; align-items: center; gap: 7px; color: var(--muted); text-align: center; }
 .multi-selection-summary strong { color: var(--ink); font-size: 12px; }
 .multi-selection-summary span { font-size: 10px; line-height: 1.5; }
+.property-note { margin: 8px 0 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
 .multi-selection-properties .wide-property-button { width: 100%; }
 .multi-align-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .multi-align-grid .icon-button { width: 100%; height: 34px; border: 1px solid var(--line); border-radius: 4px; }
