@@ -5,7 +5,7 @@ import { Stage, Layer, Group, Ellipse, Image as KonvaImage, Line, Rect, Text as 
 import {
   AlignCenter, AlignHorizontalDistributeCenter, AlignHorizontalJustifyCenter, AlignHorizontalJustifyEnd,
   AlignHorizontalJustifyStart, AlignLeft, AlignRight, AlignVerticalDistributeCenter,
-  AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowLeft, Bold, Check, ChevronDown, ChevronUp,
+  AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowLeft, Bold, Check, ChevronDown, ChevronRight, ChevronUp,
   Circle, Clipboard, Copy, Crop, Download, Eye, EyeOff, FileImage, GripVertical, ImagePlus,
   Italic, Layers3, LayoutTemplate, Lock, MoreHorizontal, Pencil, Plus, Redo2, RefreshCw, RotateCcw,
   Save, Shapes, Sparkles, Square, Star, Strikethrough, Trash2, Type, Underline, Undo2, Unlock, Upload,
@@ -836,12 +836,14 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const [autosaveState, setAutosaveState] = useState(initialStateRef.current.restored ? 'saved' : 'idle');
   const [shapeMenu, setShapeMenu] = useState(false);
   const [layerMenu, setLayerMenu] = useState(null);
+  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const [draggedLayerId, setDraggedLayerId] = useState(null);
   const [layerDrop, setLayerDrop] = useState(null);
   const [tagsText, setTagsText] = useState(() => (initialStateRef.current.draft.tags || []).join(', '));
   const memeInput = useRef();
   const clipboardLayersRef = useRef([]);
   const layerReorderRef = useRef(null);
+  const selectionAnchorRef = useRef(selectedIds.at(-1) || null);
   const selected = draft.layers.find((item) => item.id === selectedId);
   const selectedLayers = draft.layers.filter((item) => selectedIds.includes(item.id));
   const selectedGroupId = selectedLayers.length && selectedLayers.every((item) => item.groupId && item.groupId === selectedLayers[0].groupId) ? selectedLayers[0].groupId : null;
@@ -856,16 +858,41 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const selectLayer = useCallback((id, event = {}) => {
     const layer = draft.layers.find((item) => item.id === id);
     if (!layer) return;
+    if (event.shiftKey) event.preventDefault?.();
     const groupIds = layer.groupId ? draft.layers.filter((item) => item.groupId === layer.groupId).map((item) => item.id) : [id];
-    const additive = event.ctrlKey || event.metaKey || event.shiftKey;
+    const rangeSelect = event.shiftKey && !event.ctrlKey && !event.metaKey;
+    const additive = event.ctrlKey || event.metaKey;
+    if (!rangeSelect) selectionAnchorRef.current = id;
     setSelectedIds((current) => {
+      if (rangeSelect) {
+        const entries = [];
+        const seen = new Set();
+        [...draft.layers].reverse().forEach((item) => {
+          if (!item.groupId) { entries.push([item.id]); return; }
+          if (seen.has(item.groupId)) return;
+          seen.add(item.groupId);
+          const members = draft.layers.filter((candidate) => candidate.groupId === item.groupId).map((candidate) => candidate.id);
+          entries.push(collapsedGroups.has(item.groupId) ? [members[0]] : members);
+        });
+        const anchorId = selectionAnchorRef.current || current.at(-1) || id;
+        const anchorIndex = entries.findIndex((entry) => entry.includes(anchorId));
+        const targetIndex = entries.findIndex((entry) => entry.includes(id));
+        if (anchorIndex < 0 || targetIndex < 0) return groupIds;
+        const start = Math.min(anchorIndex, targetIndex);
+        const end = Math.max(anchorIndex, targetIndex);
+        return [...new Set(entries.slice(start, end + 1).flat())];
+      }
       if (!additive) return groupIds;
       const allSelected = groupIds.every((item) => current.includes(item));
       return allSelected ? current.filter((item) => !groupIds.includes(item)) : [...new Set([...current, ...groupIds])];
     });
-  }, [draft.layers]);
+  }, [collapsedGroups, draft.layers]);
   const copySelectedLayers = useCallback(() => {
-    const layers = draft.layers.filter((item) => selectedIds.includes(item.id));
+    const selected = new Set(selectedIds);
+    draft.layers.filter((item) => selected.has(item.id) && item.groupId).forEach((item) => {
+      draft.layers.filter((candidate) => candidate.groupId === item.groupId).forEach((candidate) => selected.add(candidate.id));
+    });
+    const layers = draft.layers.filter((item) => selected.has(item.id));
     if (!layers.length) return;
     clipboardLayersRef.current = structuredClone(layers);
     notify(layers.length === 1 ? `已复制图层“${layers[0].name}”` : `已复制 ${layers.length} 个图层`);
@@ -981,6 +1008,11 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   useEffect(() => {
     const available = new Set(draft.layers.map((layer) => layer.id));
     setSelectedIds((current) => current.filter((id) => available.has(id)));
+    const groups = new Set(draft.layers.map((layer) => layer.groupId).filter(Boolean));
+    setCollapsedGroups((current) => {
+      const next = new Set([...current].filter((groupId) => groups.has(groupId)));
+      return next.size === current.size ? current : next;
+    });
   }, [draft.layers]);
 
   const addImage = async (file) => {
@@ -1010,34 +1042,62 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   };
 
   const openLayerMenu = (id, event) => {
-    event.preventDefault(); event.stopPropagation(); selectLayer(id, event);
+    event.preventDefault(); event.stopPropagation();
+    const target = draft.layers.find((item) => item.id === id);
+    const targetIds = target?.groupId ? draft.layers.filter((item) => item.groupId === target.groupId).map((item) => item.id) : [id];
+    if (!targetIds.every((targetId) => selectedIds.includes(targetId))) selectLayer(id, event);
     setLayerMenu({ id, x: Math.min(event.clientX, window.innerWidth - 166), y: Math.min(event.clientY, window.innerHeight - 334) });
   };
 
   const removeLayer = (id) => {
     const layer = draft.layers.find((item) => item.id === id);
     if (layer?.locked) return notify('请先解锁图层', 'error');
-    updateDraft((prev) => ({ ...prev, layers: prev.layers.filter((x) => x.id !== id) }));
-    setSelectedIds((current) => current.filter((item) => item !== id));
+    const removeIds = layer?.groupId ? draft.layers.filter((item) => item.groupId === layer.groupId).map((item) => item.id) : [id];
+    const lockedIds = removeIds.filter((removeId) => draft.layers.find((item) => item.id === removeId)?.locked);
+    if (lockedIds.length) return notify('组内含有锁定图层，请先解锁', 'error');
+    updateDraft((prev) => ({ ...prev, layers: prev.layers.filter((x) => !removeIds.includes(x.id)) }));
+    setSelectedIds((current) => current.filter((item) => !removeIds.includes(item)));
   };
   const moveLayer = (id, direction) => updateDraft((prev) => {
-    const index = prev.layers.findIndex((x) => x.id === id); const nextIndex = clamp(index + direction, 0, prev.layers.length - 1);
-    if (prev.layers[index]?.locked) return prev;
-    const layers = [...prev.layers]; const [item] = layers.splice(index, 1); layers.splice(nextIndex, 0, item); return { ...prev, layers };
+    const source = prev.layers.find((item) => item.id === id);
+    if (!source) return prev;
+    const ids = source.groupId ? prev.layers.filter((item) => item.groupId === source.groupId).map((item) => item.id) : [id];
+    const indexes = prev.layers.map((item, index) => ids.includes(item.id) ? index : -1).filter((index) => index >= 0);
+    if (!indexes.length || ids.some((itemId) => prev.layers.find((item) => item.id === itemId)?.locked)) return prev;
+    const first = Math.min(...indexes); const last = Math.max(...indexes);
+    const before = prev.layers.filter((item, index) => index < first && !ids.includes(item.id));
+    const moving = prev.layers.filter((item) => ids.includes(item.id));
+    const after = prev.layers.filter((item, index) => index > last && !ids.includes(item.id));
+    if (direction > 0) {
+      if (!after.length) return prev;
+      return { ...prev, layers: [...before, after[0], ...moving, ...after.slice(1)] };
+    }
+    if (!before.length) return prev;
+    return { ...prev, layers: [...before.slice(0, -1), ...moving, before.at(-1), ...after] };
   });
   const reorderLayer = (sourceId, targetId, placement) => {
     if (!sourceId || sourceId === targetId) return;
     updateDraft((previous) => {
-      const layers = [...previous.layers];
-      const sourceIndex = layers.findIndex((item) => item.id === sourceId);
-      if (sourceIndex < 0 || layers[sourceIndex].locked) return previous;
-      const [source] = layers.splice(sourceIndex, 1);
-      const targetIndex = layers.findIndex((item) => item.id === targetId);
-      if (targetIndex < 0) return previous;
-      layers.splice(placement === 'before' ? targetIndex + 1 : targetIndex, 0, source);
+      const source = previous.layers.find((item) => item.id === sourceId);
+      const target = previous.layers.find((item) => item.id === targetId);
+      if (!source || !target) return previous;
+      const sourceIds = source.groupId
+        ? previous.layers.filter((item) => item.groupId === source.groupId).map((item) => item.id)
+        : [sourceId];
+      const targetIds = target.groupId
+        ? previous.layers.filter((item) => item.groupId === target.groupId).map((item) => item.id)
+        : [targetId];
+      if (sourceIds.some((id) => targetIds.includes(id)) || sourceIds.some((id) => previous.layers.find((item) => item.id === id)?.locked)) return previous;
+      const moving = previous.layers.filter((item) => sourceIds.includes(item.id));
+      const layers = previous.layers.filter((item) => !sourceIds.includes(item.id));
+      const targetStart = layers.findIndex((item) => targetIds.includes(item.id));
+      const targetEnd = targetStart + targetIds.length - 1;
+      if (targetStart < 0) return previous;
+      layers.splice(placement === 'before' ? targetEnd + 1 : targetStart, 0, ...moving);
       return { ...previous, layers };
     });
-    setSelectedIds([sourceId]);
+    const sourceLayer = draft.layers.find((item) => item.id === sourceId);
+    setSelectedIds(sourceLayer?.groupId ? draft.layers.filter((item) => item.groupId === sourceLayer.groupId).map((item) => item.id) : [sourceId]);
   };
   const beginLayerReorder = (event, sourceId) => {
     if (event.button !== 0) return;
@@ -1046,7 +1106,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     selectLayer(sourceId, event);
     const start = { x: event.clientX, y: event.clientY };
     const resolveTarget = (pointerEvent) => {
-      const row = document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)?.closest('.layer-row[data-layer-id]');
+      const row = document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)?.closest('[data-layer-id]');
       const targetId = row?.dataset.layerId;
       if (!targetId || targetId === sourceId) return null;
       const rect = row.getBoundingClientRect();
@@ -1080,11 +1140,21 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const groupSelected = () => {
     if (selectedIds.length < 2) return;
     const groupId = uid();
-    updateDraft((previous) => ({ ...previous, layers: previous.layers.map((layer) => selectedIds.includes(layer.id) ? { ...layer, groupId } : layer) }));
+    updateDraft((previous) => {
+      const selected = new Set(selectedIds);
+      const firstIndex = previous.layers.findIndex((layer) => selected.has(layer.id));
+      const moving = previous.layers.filter((layer) => selected.has(layer.id)).map((layer) => ({ ...layer, groupId }));
+      const layers = previous.layers.filter((layer) => !selected.has(layer.id));
+      layers.splice(Math.max(0, firstIndex), 0, ...moving);
+      return { ...previous, layers };
+    });
+    setCollapsedGroups((current) => { const next = new Set(current); next.delete(groupId); return next; });
   };
   const ungroupSelected = () => {
     if (!selectedGroupId) return;
-    updateDraft((previous) => ({ ...previous, layers: previous.layers.map((layer) => layer.groupId === selectedGroupId ? { ...layer, groupId: undefined } : layer) }));
+    const groupId = selectedGroupId;
+    updateDraft((previous) => ({ ...previous, layers: previous.layers.map((layer) => layer.groupId === groupId ? { ...layer, groupId: undefined } : layer) }));
+    setCollapsedGroups((current) => { const next = new Set(current); next.delete(groupId); return next; });
   };
   const toggleSelectedLock = () => {
     if (!selectedIds.length) return;
@@ -1143,12 +1213,13 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     setSelectedIds(copies.map((copy) => copy.id));
   };
   const moveLayerExtreme = (id, toFront) => updateDraft((previous) => {
-    const index = previous.layers.findIndex((layer) => layer.id === id);
-    if (index < 0 || previous.layers[index].locked) return previous;
-    const layers = [...previous.layers];
-    const [layer] = layers.splice(index, 1);
-    if (toFront) layers.push(layer); else layers.unshift(layer);
-    return { ...previous, layers };
+    const source = previous.layers.find((layer) => layer.id === id);
+    if (!source) return previous;
+    const ids = source.groupId ? previous.layers.filter((item) => item.groupId === source.groupId).map((item) => item.id) : [id];
+    if (ids.some((itemId) => previous.layers.find((item) => item.id === itemId)?.locked)) return previous;
+    const moving = previous.layers.filter((item) => ids.includes(item.id));
+    const rest = previous.layers.filter((item) => !ids.includes(item.id));
+    return { ...previous, layers: toFront ? [...rest, ...moving] : [...moving, ...rest] };
   });
   useEffect(() => () => layerReorderRef.current?.cleanup?.(), []);
   const save = async () => {
@@ -1160,20 +1231,45 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     await onClearDraft(draftKey).catch(() => undefined);
   };
 
+  const renderLayerRow = (layer, child = false) => {
+    const dropClass = layerDrop?.id === layer.id ? `drop-${layerDrop.placement}` : '';
+    return <div
+      key={layer.id}
+      data-layer-id={layer.id}
+      className={`layer-row ${child ? 'layer-child' : ''} ${selectedIds.includes(layer.id) ? 'selected' : ''} ${draggedLayerId === layer.id ? 'dragging' : ''} ${dropClass} ${layer.locked ? 'locked' : ''}`}
+      onClick={(event) => selectLayer(layer.id, event)}
+      onContextMenu={(event) => openLayerMenu(layer.id, event)}
+    ><span className="layer-grip" title={layer.locked ? '图层已锁定' : '拖动排序'} onPointerDown={(event) => { if (!layer.locked) beginLayerReorder(event, layer.id); }}><GripVertical size={15}/></span><div className={`layer-thumb ${layer.type}`}><LayerThumb layer={layer}/></div><div className="layer-copy"><strong>{layer.name}</strong><span>{layer.type === 'slot' ? `${shapeOf(layer) === 'circle' ? '圆形' : shapeOf(layer) === 'rounded' ? '圆角矩形' : '矩形'}照片` : layer.type === 'text' ? '文字图层' : '固定图层'}</span></div><IconButton label={layer.locked ? '解锁图层' : '锁定图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { locked: !layer.locked }); }}>{layer.locked ? <Lock size={15}/> : <Unlock size={15}/>}</IconButton><IconButton label={layer.visible ? '隐藏图层' : '显示图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { visible: !layer.visible }); }}>{layer.visible ? <Eye size={16}/> : <EyeOff size={16}/>}</IconButton></div>;
+  };
+  const layerListRows = [];
+  const seenGroups = new Set();
+  let groupNumber = 0;
+  [...draft.layers].reverse().forEach((layer) => {
+    if (!layer.groupId) {
+      layerListRows.push(renderLayerRow(layer));
+      return;
+    }
+    if (seenGroups.has(layer.groupId)) return;
+    seenGroups.add(layer.groupId);
+    groupNumber += 1;
+    const members = draft.layers.filter((item) => item.groupId === layer.groupId).reverse();
+    const collapsed = collapsedGroups.has(layer.groupId);
+    const groupSelected = members.every((item) => selectedIds.includes(item.id));
+    layerListRows.push(<div
+      key={`group-${layer.groupId}`}
+      data-layer-id={members[0].id}
+      className={`layer-group-row ${groupSelected ? 'selected' : ''}`}
+      onClick={(event) => selectLayer(members[0].id, event)}
+      onContextMenu={(event) => openLayerMenu(members[0].id, event)}
+    ><span className="layer-grip" title="拖动整组排序" onPointerDown={(event) => beginLayerReorder(event, members[0].id)}><GripVertical size={15}/></span><IconButton label={collapsed ? '展开图层组' : '收起图层组'} className="group-toggle" onClick={(event) => { event.stopPropagation(); setCollapsedGroups((current) => { const next = new Set(current); if (next.has(layer.groupId)) next.delete(layer.groupId); else next.add(layer.groupId); return next; }); }}>{collapsed ? <ChevronRight size={15}/> : <ChevronDown size={15}/>}</IconButton><div className="layer-group-icon"><Layers3 size={17}/></div><div className="layer-copy"><strong>图层组 {groupNumber}</strong><span>{members.length} 个图层</span></div></div>);
+    if (!collapsed) members.forEach((member) => layerListRows.push(renderLayerRow(member, true)));
+  });
+
   return <main className="editor-page">
     <header className="editor-topbar"><div className="editor-left"><IconButton label="返回模板库" onClick={tryBack}><ArrowLeft size={21}/></IconButton><div className="title-field"><input value={draft.name} onChange={(e) => updateDraft({ ...draft, name: e.target.value })}/><span>{draft.width} x {draft.height}px</span></div></div><div className="editor-center"><span className="status-dot"></span>{autosaveState === 'saving' ? '正在自动保存' : autosaveState === 'error' ? '自动保存失败' : initialStateRef.current.restored ? '已恢复草稿' : dirty ? '已自动保存' : '已保存'}</div><div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undoDraft} disabled={!canUndo}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redoDraft} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={tryBack}>取消</button><button className="primary-button" onClick={save}><Save size={17}/>保存模板</button></div></header>
     <div className="editor-body">
       <aside className="layers-panel"><div className="panel-title"><div><span>图层</span><small>{draft.layers.length}</small></div><IconButton label="添加可替换照片" onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Plus size={18}/></IconButton></div><div className="layer-add-row"><button onClick={() => memeInput.current.click()}><ImagePlus size={18}/><span>添加固定图层</span></button><div className="shape-picker-wrap"><button onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Shapes size={18}/><span>添加可替换照片</span></button>{shapeMenu && <div className="shape-picker" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => addEmptySlot('rect')}><Square size={17}/><span>矩形</span></button><button onClick={() => addEmptySlot('circle')}><Circle size={17}/><span>圆形</span></button><button onClick={() => addEmptySlot('rounded')}><Shapes size={17}/><span>圆角矩形</span></button></div>}</div><button onClick={addTextLayer}><Type size={18}/><span>添加文字</span></button></div><label className="template-tags-field"><span>模板标签</span><input value={tagsText} onChange={(event) => { const value = event.target.value; setTagsText(value); updateDraft({ ...draft, tags: value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 10) }); }} placeholder="反应、工作、猫"/></label><input ref={memeInput} hidden type="file" accept="image/*" onChange={(event) => event.target.files[0] && addImage(event.target.files[0])}/>
-        <div className="layers-list">{[...draft.layers].reverse().map((layer) => {
-          const dropClass = layerDrop?.id === layer.id ? `drop-${layerDrop.placement}` : '';
-          return <div
-            key={layer.id}
-            data-layer-id={layer.id}
-            className={`layer-row ${selectedIds.includes(layer.id) ? 'selected' : ''} ${draggedLayerId === layer.id ? 'dragging' : ''} ${dropClass} ${layer.locked ? 'locked' : ''}`}
-            onClick={(event) => selectLayer(layer.id, event)}
-            onContextMenu={(event) => openLayerMenu(layer.id, event)}
-          ><span className="layer-grip" title={layer.locked ? '图层已锁定' : '拖动排序'} onPointerDown={(event) => { if (!layer.locked) beginLayerReorder(event, layer.id); }}><GripVertical size={15}/></span><div className={`layer-thumb ${layer.type}`}><LayerThumb layer={layer}/></div><div className="layer-copy"><strong>{layer.name}</strong><span>{layer.type === 'slot' ? `${shapeOf(layer) === 'circle' ? '圆形' : shapeOf(layer) === 'rounded' ? '圆角矩形' : '矩形'}照片` : layer.type === 'text' ? '文字图层' : '固定图层'}{layer.groupId ? ' · 已组合' : ''}</span></div><IconButton label={layer.locked ? '解锁图层' : '锁定图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { locked: !layer.locked }); }}>{layer.locked ? <Lock size={15}/> : <Unlock size={15}/>}</IconButton><IconButton label={layer.visible ? '隐藏图层' : '显示图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { visible: !layer.visible }); }}>{layer.visible ? <Eye size={16}/> : <EyeOff size={16}/>}</IconButton></div>;
-        })}</div>
+        <div className="layers-list">{layerListRows}</div>
         {!draft.layers.length && <div className="layers-empty"><Layers3 size={28}/><p>先添加 Meme 底图，再添加一个照片位置。</p></div>}
       </aside>
       <section className="canvas-workspace"><div className="canvas-toolbar"><div className="canvas-size"><label>画布</label><input type="number" min="100" max="4000" value={draft.width} onChange={(e) => updateDraft({ ...draft, width: clamp(e.target.value, 100, 4000) })}/><span>×</span><input type="number" min="100" max="4000" value={draft.height} onChange={(e) => updateDraft({ ...draft, height: clamp(e.target.value, 100, 4000) })}/></div><div className="selection-actions">{selectedIds.length > 1 && <button className="toolbar-button" onClick={groupSelected}><Layers3 size={15}/>组合</button>}{selectedGroupId && <button className="toolbar-button" onClick={ungroupSelected}><Layers3 size={15}/>取消组合</button>}{selectedIds.length > 0 && <button className="toolbar-button" onClick={toggleSelectedLock}>{selectedLayers.some((layer) => !layer.locked) ? <Lock size={15}/> : <Unlock size={15}/>} {selectedLayers.some((layer) => !layer.locked) ? '锁定' : '解锁'}</button>}</div><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div></div><div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''}`} onWheel={zoomAtPointer} onMouseDown={(event) => { if (event.target === event.currentTarget) beginPan(event); }}><div className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}><EditorStage template={draft} selectedIds={selectedIds} selectedId={selectedId} setSelectedIds={setSelectedIds} selectLayer={selectLayer} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onPanStart={beginPan} zoom={zoom}/></div></div></section>
@@ -1182,6 +1278,9 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     {layerMenu && <div className="layer-context-menu" style={{ left: layerMenu.x, top: Math.max(6, layerMenu.y) }} onPointerDown={(event) => event.stopPropagation()}>
       <button onClick={() => { copyLayerFromMenu(layerMenu.id); setLayerMenu(null); }}><Copy size={16}/>复制图层</button>
       <button onClick={() => { duplicateLayerFromMenu(layerMenu.id); setLayerMenu(null); }}><Plus size={16}/>创建副本</button>
+      {draft.layers.find((item) => item.id === layerMenu.id)?.groupId
+        ? <button onClick={() => { ungroupSelected(); setLayerMenu(null); }}><Layers3 size={16}/>取消组合</button>
+        : <button disabled={selectedIds.length < 2} onClick={() => { groupSelected(); setLayerMenu(null); }}><Layers3 size={16}/>组合图层</button>}
       <button onClick={() => { const layer = draft.layers.find((item) => item.id === layerMenu.id); updateLayer(layerMenu.id, { locked: !layer?.locked }); setLayerMenu(null); }}>{draft.layers.find((item) => item.id === layerMenu.id)?.locked ? <Unlock size={16}/> : <Lock size={16}/>} {draft.layers.find((item) => item.id === layerMenu.id)?.locked ? '解锁图层' : '锁定图层'}</button>
       <button disabled={draft.layers.find((item) => item.id === layerMenu.id)?.locked} onClick={() => { moveLayer(layerMenu.id, 1); setLayerMenu(null); }}><ChevronUp size={16}/>上移图层</button>
       <button disabled={draft.layers.find((item) => item.id === layerMenu.id)?.locked} onClick={() => { moveLayer(layerMenu.id, -1); setLayerMenu(null); }}><ChevronDown size={16}/>下移图层</button>
