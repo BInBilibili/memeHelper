@@ -7,7 +7,7 @@ import {
   AlignHorizontalJustifyStart, AlignLeft, AlignRight, AlignVerticalDistributeCenter,
   AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowLeft, Bold, Check, ChevronDown, ChevronUp,
   Circle, Clipboard, Copy, Crop, Download, Eye, EyeOff, FileImage, GripVertical, ImagePlus,
-  Italic, Layers3, LayoutTemplate, Lock, MoreHorizontal, Pencil, Plus, Redo2, RotateCcw,
+  Italic, Layers3, LayoutTemplate, Lock, MoreHorizontal, Pencil, Plus, Redo2, RefreshCw, RotateCcw,
   Save, Shapes, Sparkles, Square, Star, Strikethrough, Trash2, Type, Underline, Undo2, Unlock, Upload,
   X, ZoomIn, ZoomOut
 } from 'lucide-react';
@@ -666,10 +666,27 @@ function App() {
     }
   };
 
+  const refreshTemplates = useCallback(async () => {
+    try {
+      const saved = await desktop.loadTemplates();
+      const localTemplates = Array.isArray(saved) ? saved : [];
+      const builtInTemplates = bundledTemplates.length ? structuredClone(bundledTemplates) : starterTemplates();
+      const merged = localTemplates.length ? [...localTemplates, ...builtInTemplates] : builtInTemplates;
+      const next = merged.filter((item, index) => merged.findIndex((candidate) => candidate.id === item.id || (candidate.name === item.name && candidate.width === item.width && candidate.height === item.height)) === index);
+      const previousIds = new Set(templates.map((item) => item.id));
+      const addedCount = next.filter((item) => !previousIds.has(item.id)).length;
+      setTemplates(next);
+      notify(addedCount ? `模板库已刷新，发现 ${addedCount} 个新模板` : '模板库已刷新，未发现新模板');
+    } catch (error) {
+      notify(`刷新模板库失败：${error?.message || error}`, 'error');
+      throw error;
+    }
+  }, [notify, templates]);
+
   if (!ready) return <div className="loading-screen"><Sparkles size={26}/><span>正在准备模板库...</span></div>;
 
   return <div className="app-shell">
-    {page.name === 'library' && <Library templates={templates} query={query} setQuery={setQuery} onCreate={() => setPage({ name: 'editor' })} onEdit={(template) => setPage({ name: 'editor', template })} onRename={renameTemplate} onUse={useTemplate} onDelete={deleteTemplate} onToggleFavorite={toggleFavorite} notify={notify}/>}
+    {page.name === 'library' && <Library templates={templates} query={query} setQuery={setQuery} onRefresh={refreshTemplates} onCreate={() => setPage({ name: 'editor' })} onEdit={(template) => setPage({ name: 'editor', template })} onRename={renameTemplate} onUse={useTemplate} onDelete={deleteTemplate} onToggleFavorite={toggleFavorite} notify={notify}/>}
     {page.name === 'editor' && <Editor initial={page.template} autosave={editorDrafts[page.template?.id || 'new']} onSaveDraft={saveEditorDraft} onClearDraft={clearEditorDraft} onBack={() => setPage({ name: 'library' })} onSave={saveTemplate} notify={notify}/>}
     {page.name === 'use' && <UseTemplate template={page.template} initialFile={page.file} cachedSession={useSessions[page.template.id]} onSaveSession={saveUseSession} onBack={() => setPage({ name: 'library' })} onEdit={() => setPage({ name: 'editor', template: page.template })} notify={notify}/>}
     <Toast toast={toast}/>
@@ -680,16 +697,24 @@ function Brand() {
   return <div className="brand"><div className="brand-mark"><Sparkles size={20}/></div><span>MemeHelper</span></div>;
 }
 
-function Library({ templates, query, setQuery, onCreate, onEdit, onRename, onUse, onDelete, onToggleFavorite, notify }) {
+function Library({ templates, query, setQuery, onRefresh, onCreate, onEdit, onRename, onUse, onDelete, onToggleFavorite, notify }) {
   const [sort, setSort] = useState('recent');
   const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const refresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try { await onRefresh(); }
+    catch { /* The app-level toast reports the load error. */ }
+    finally { setRefreshing(false); }
+  };
   const normalizedQuery = query.trim().toLowerCase();
   const filtered = templates
     .filter((item) => !favoritesOnly || item.favorite)
     .filter((item) => !normalizedQuery || item.name.toLowerCase().includes(normalizedQuery) || (item.tags || []).some((tag) => tag.toLowerCase().includes(normalizedQuery)))
     .sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name, 'zh-CN') : sort === 'created' ? (b.createdAt || 0) - (a.createdAt || 0) : (b.lastUsedAt || b.updatedAt || 0) - (a.lastUsedAt || a.updatedAt || 0));
   return <main className="library-page">
-    <header className="topbar"><Brand/><div className="topbar-actions"><span className="storage-note">{desktop.isDesktop ? '模板保存在程序目录的 meme 文件夹' : '模板保存在浏览器'}</span><button className="primary-button" onClick={onCreate}><Plus size={18}/>新建模板</button></div></header>
+    <header className="topbar"><Brand/><div className="topbar-actions"><span className="storage-note">{desktop.isDesktop ? '模板保存在程序目录的 meme 文件夹' : '模板保存在浏览器'}</span><button className="secondary-button" onClick={refresh} disabled={refreshing}><RefreshCw className={refreshing ? 'refresh-icon spinning' : 'refresh-icon'} size={17}/>{refreshing ? '刷新中' : '刷新'}</button><button className="primary-button" onClick={onCreate}><Plus size={18}/>新建模板</button></div></header>
     <section className="library-heading"><div><p className="eyebrow">模板工作台</p><h1>选择一个模板，马上开始</h1><p>点击使用，或把图片直接拖到模板上。</p></div><div className="library-controls"><div className="search-box"><LayoutTemplate size={18}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索名称或标签"/></div><button className={`favorite-filter ${favoritesOnly ? 'active' : ''}`} onClick={() => setFavoritesOnly((current) => !current)}><Star size={16} fill={favoritesOnly ? 'currentColor' : 'none'}/>收藏</button><select value={sort} onChange={(event) => setSort(event.target.value)} aria-label="模板排序"><option value="recent">最近使用</option><option value="created">最近创建</option><option value="name">按名称</option></select></div></section>
     <section className="template-grid">
       <button className="new-template-card" onClick={onCreate}><span className="new-icon"><Plus size={26}/></span><strong>创建新模板</strong><small>设置底图与照片位置</small></button>

@@ -57,6 +57,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .primary-button:active, .secondary-button:active { transform: translateY(1px); }
 .secondary-button { background: #fff; border-color: var(--line); }
 .secondary-button:hover { background: #f7f6f2; border-color: #cbc8bf; }
+.secondary-button:disabled { opacity: .55; cursor: wait; transform: none; }
+.refresh-icon.spinning { animation: refresh-spin .8s linear infinite; }
+@keyframes refresh-spin { to { transform: rotate(360deg); } }
 .grow { flex: 1; }
 .icon-button { width: 34px; height: 34px; flex: none; border: 0; border-radius: 5px; background: transparent; display: grid; place-items: center; cursor: pointer; color: #6d6a63; }
 .icon-button:hover { background: #efeee9; color: var(--ink); }
