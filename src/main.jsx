@@ -81,6 +81,7 @@ applyTheme('system');
 const uid = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 const clamp = (n, min, max) => Math.max(min, Math.min(max, Number(n) || 0));
 const shapeOf = (layer) => layer.shape || 'rect';
+const ROTATION_SNAPS = Array.from({ length: 9 }, (_, index) => index * 45);
 const wheelZoom = (current, deltaY, min, max) => deltaY === 0
   ? current
   : clamp(Math.round(current * (deltaY < 0 ? 1.1 : .9) * 100) / 100, min, max);
@@ -1203,6 +1204,7 @@ function EditorStage({ template, selectedIds, setSelectedIds, selectLayer, updat
   const nodeRefs = useRef({});
   const dragRef = useRef(null);
   const [guides, setGuides] = useState([]);
+  const [shiftPressed, setShiftPressed] = useState(false);
 
   useEffect(() => {
     const nodes = selectedIds
@@ -1212,9 +1214,30 @@ function EditorStage({ template, selectedIds, setSelectedIds, selectLayer, updat
       .filter(Boolean);
     if (trRef.current) {
       trRef.current.nodes(nodes);
+      trRef.current.setAttrs({
+        anchorSize: 10,
+        anchorStrokeWidth: 1.5,
+        borderStrokeWidth: 2,
+        rotateAnchorOffset: 28
+      });
+      trRef.current.forceUpdate();
       trRef.current.getLayer()?.batchDraw();
     }
-  }, [selectedIds, template.layers]);
+  }, [selectedIds, template.layers, zoom]);
+
+  useEffect(() => {
+    const updateShift = (event) => setShiftPressed(event.type === 'keydown');
+    const releaseShift = () => setShiftPressed(false);
+    const handleKey = (event) => { if (event.key === 'Shift') updateShift(event); };
+    window.addEventListener('keydown', handleKey);
+    window.addEventListener('keyup', handleKey);
+    window.addEventListener('blur', releaseShift);
+    return () => {
+      window.removeEventListener('keydown', handleKey);
+      window.removeEventListener('keyup', handleKey);
+      window.removeEventListener('blur', releaseShift);
+    };
+  }, []);
 
   const startDrag = (layer) => {
     const groupedIds = layer.groupId ? template.layers.filter((item) => item.groupId === layer.groupId).map((item) => item.id) : [layer.id];
@@ -1276,7 +1299,7 @@ function EditorStage({ template, selectedIds, setSelectedIds, selectLayer, updat
     if (Object.keys(patches).length) updateLayers(patches);
   };
 
-  return <Stage width={template.width * zoom} height={template.height * zoom} scaleX={zoom} scaleY={zoom} onWheel={(event) => event.target.stopDrag?.()} onMouseDown={(event) => { if (event.target === event.target.getStage() || event.target.name() === 'editor-background') { setSelectedIds([]); onPanStart(event); } }}><Layer><Rect name="editor-background" width={template.width} height={template.height} fill="#fff"/>{template.layers.map((layer) => <EditorLayer key={layer.id} layer={layer} interactive={!layer.locked} selectable setRef={(node) => nodeRefs.current[layer.id] = node} onSelect={(event) => selectLayer(layer.id, event.evt)} onContextMenu={(event) => onLayerContextMenu(layer.id, event.evt)} onChange={(patch) => updateLayer(layer.id, patch)} onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)} onTransformEnd={false}/>)}{template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}{guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94e37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }<Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled enabledAnchors={['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10 / zoom} borderStrokeWidth={2 / zoom} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/></Layer></Stage>;
+  return <Stage width={template.width * zoom} height={template.height * zoom} scaleX={zoom} scaleY={zoom} onWheel={(event) => event.target.stopDrag?.()} onMouseDown={(event) => { trRef.current?.rotationSnaps(event.evt.shiftKey || shiftPressed ? ROTATION_SNAPS : []); if (event.target === event.target.getStage() || event.target.name() === 'editor-background') { setSelectedIds([]); onPanStart(event); } }}><Layer><Rect name="editor-background" width={template.width} height={template.height} fill="#fff"/>{template.layers.map((layer) => <EditorLayer key={layer.id} layer={layer} interactive={!layer.locked} selectable setRef={(node) => nodeRefs.current[layer.id] = node} onSelect={(event) => selectLayer(layer.id, event.evt)} onContextMenu={(event) => onLayerContextMenu(layer.id, event.evt)} onChange={(patch) => updateLayer(layer.id, patch)} onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)} onTransformEnd={false}/>)}{template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}{guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94e37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }<Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} enabledAnchors={['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/></Layer></Stage>;
 }
 
 function EditorLayer({ layer, setRef, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, source, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
