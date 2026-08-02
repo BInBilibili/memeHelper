@@ -21,6 +21,8 @@ const browserDesktop = {
   saveTemplates: async (value) => localStorage.setItem('meme-helper-templates', JSON.stringify(value)),
   loadEditorDrafts: async () => JSON.parse(localStorage.getItem('meme-helper-editor-drafts') || '{}'),
   saveEditorDrafts: async (value) => localStorage.setItem('meme-helper-editor-drafts', JSON.stringify(value)),
+  loadUseSessions: async () => JSON.parse(localStorage.getItem('meme-helper-use-sessions') || '{}'),
+  saveUseSessions: async (value) => localStorage.setItem('meme-helper-use-sessions', JSON.stringify(value)),
   copyImage: async (dataUrl, clipboardDataUrl) => {
     const blob = await (await fetch(clipboardDataUrl || dataUrl)).blob();
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
@@ -56,6 +58,8 @@ const desktop = window.__TAURI_INTERNALS__ ? {
   saveTemplates: (templates) => invoke('save_templates', { templates }),
   loadEditorDrafts: () => invoke('load_editor_drafts'),
   saveEditorDrafts: (drafts) => invoke('save_editor_drafts', { drafts }),
+  loadUseSessions: () => invoke('load_use_sessions'),
+  saveUseSessions: (sessions) => invoke('save_use_sessions', { sessions }),
   copyImage: (dataUrl, clipboardDataUrl) => invoke('copy_image', { dataUrl, clipboardDataUrl }),
   readClipboardImage: () => invoke('read_clipboard_image'),
   saveImage: (dataUrl, suggestedName) => invoke('save_image', { dataUrl, suggestedName })
@@ -533,6 +537,7 @@ function Toast({ toast }) {
 function App() {
   const [templates, setTemplates] = useState([]);
   const [editorDrafts, setEditorDrafts] = useState({});
+  const [useSessions, setUseSessions] = useState({});
   const [config, setConfig] = useState({ theme: 'system', autoCopy: true });
   const [ready, setReady] = useState(false);
   const [page, setPage] = useState({ name: 'library' });
@@ -541,6 +546,8 @@ function App() {
   const toastTimer = useRef();
   const editorDraftsRef = useRef({});
   const draftSaveQueue = useRef(Promise.resolve());
+  const useSessionsRef = useRef({});
+  const useSessionSaveQueue = useRef(Promise.resolve());
 
   const notify = useCallback((message, kind = '') => {
     clearTimeout(toastTimer.current); setToast({ message, kind });
@@ -548,15 +555,17 @@ function App() {
   }, []);
 
   useEffect(() => {
-    Promise.all([desktop.loadTemplates(), desktop.loadConfig(), desktop.loadEditorDrafts()]).then(([saved, loadedConfig, savedDrafts]) => {
+    Promise.all([desktop.loadTemplates(), desktop.loadConfig(), desktop.loadEditorDrafts(), desktop.loadUseSessions()]).then(([saved, loadedConfig, savedDrafts, savedUseSessions]) => {
       const localTemplates = Array.isArray(saved) ? saved : [];
       const builtInTemplates = bundledTemplates.length ? structuredClone(bundledTemplates) : starterTemplates();
       const merged = localTemplates.length ? [...localTemplates, ...builtInTemplates] : builtInTemplates;
       const next = merged.filter((item, index) => merged.findIndex((candidate) => candidate.id === item.id || (candidate.name === item.name && candidate.width === item.width && candidate.height === item.height)) === index);
       const drafts = savedDrafts && typeof savedDrafts === 'object' && !Array.isArray(savedDrafts) ? savedDrafts : {};
+      const sessions = savedUseSessions && typeof savedUseSessions === 'object' && !Array.isArray(savedUseSessions) ? savedUseSessions : {};
       applyTheme(loadedConfig?.theme);
       editorDraftsRef.current = drafts;
-      setEditorDrafts(drafts); setTemplates(next); setConfig((previous) => ({ ...previous, ...(loadedConfig || {}) })); setReady(true);
+      useSessionsRef.current = sessions;
+      setEditorDrafts(drafts); setUseSessions(sessions); setTemplates(next); setConfig((previous) => ({ ...previous, ...(loadedConfig || {}) })); setReady(true);
       if (next.length !== localTemplates.length) desktop.saveTemplates(next);
     }).catch((error) => {
       console.error(error);
@@ -594,6 +603,22 @@ function App() {
     return persistEditorDrafts(next);
   }, [persistEditorDrafts]);
 
+  const persistUseSessions = useCallback((next) => {
+    useSessionsRef.current = next;
+    setUseSessions(next);
+    useSessionSaveQueue.current = useSessionSaveQueue.current
+      .catch(() => undefined)
+      .then(() => desktop.saveUseSessions(next));
+    return useSessionSaveQueue.current;
+  }, []);
+
+  const saveUseSession = useCallback((key, value) => persistUseSessions({ ...useSessionsRef.current, [key]: value }), [persistUseSessions]);
+  const clearUseSession = useCallback((key) => {
+    const next = { ...useSessionsRef.current };
+    delete next[key];
+    return persistUseSessions(next);
+  }, [persistUseSessions]);
+
   const saveTemplate = async (template) => {
     const existing = templates.some((item) => item.id === template.id);
     const next = existing ? templates.map((item) => item.id === template.id ? template : item) : [template, ...templates];
@@ -602,7 +627,7 @@ function App() {
 
   const deleteTemplate = async (id) => {
     if (!confirm('确定删除这个模板吗？此操作不可撤销。')) return;
-    await commitTemplates(templates.filter((item) => item.id !== id)); notify('模板已删除');
+    await Promise.all([commitTemplates(templates.filter((item) => item.id !== id)), clearUseSession(id)]); notify('模板已删除');
   };
 
   const useTemplate = async (template, file) => {
@@ -646,7 +671,7 @@ function App() {
   return <div className="app-shell">
     {page.name === 'library' && <Library templates={templates} query={query} setQuery={setQuery} onCreate={() => setPage({ name: 'editor' })} onEdit={(template) => setPage({ name: 'editor', template })} onRename={renameTemplate} onUse={useTemplate} onDelete={deleteTemplate} onToggleFavorite={toggleFavorite} notify={notify}/>}
     {page.name === 'editor' && <Editor initial={page.template} autosave={editorDrafts[page.template?.id || 'new']} onSaveDraft={saveEditorDraft} onClearDraft={clearEditorDraft} onBack={() => setPage({ name: 'library' })} onSave={saveTemplate} notify={notify}/>}
-    {page.name === 'use' && <UseTemplate template={page.template} initialFile={page.file} autoCopy={config.autoCopy !== false} onBack={() => setPage({ name: 'library' })} onEdit={() => setPage({ name: 'editor', template: page.template })} notify={notify}/>}
+    {page.name === 'use' && <UseTemplate template={page.template} initialFile={page.file} cachedSession={useSessions[page.template.id]} onSaveSession={saveUseSession} onBack={() => setPage({ name: 'library' })} onEdit={() => setPage({ name: 'editor', template: page.template })} notify={notify}/>}
     <Toast toast={toast}/>
   </div>;
 }
@@ -1429,13 +1454,26 @@ function UseStage({ composition, slotSources, slotTransforms, selectedId, setSel
   </div>;
 }
 
-function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }) {
-  const [session, commitSession, undo, canUndo, redo, canRedo] = useUndoState(() => ({
+function createUseSession(template) {
+  return {
     composition: structuredClone(template),
     slotSources: {},
     slotNames: {},
     slotTransforms: {}
-  }));
+  };
+}
+
+function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBack, onEdit, notify }) {
+  const initialSessionRef = useRef();
+  if (!initialSessionRef.current) {
+    const canRestore = cachedSession?.templateUpdatedAt === (template.updatedAt || 0)
+      && Array.isArray(cachedSession.session?.composition?.layers)
+      && cachedSession.session?.slotSources
+      && cachedSession.session?.slotNames
+      && cachedSession.session?.slotTransforms;
+    initialSessionRef.current = canRestore ? structuredClone(cachedSession.session) : createUseSession(template);
+  }
+  const [session, commitSession, undo, canUndo, redo, canRedo] = useUndoState(() => initialSessionRef.current);
   const { composition, slotSources, slotNames, slotTransforms } = session;
   const [result, setResult] = useState('');
   const [copied, setCopied] = useState(false);
@@ -1445,6 +1483,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
   const [slotDropId, setSlotDropId] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
   const [slotContextMenu, setSlotContextMenu] = useState(null);
+  const [topMenu, setTopMenu] = useState(false);
   const [exportFormat, setExportFormat] = useState('png');
   const [exportScale, setExportScale] = useState(1);
   const [transparent, setTransparent] = useState(false);
@@ -1453,7 +1492,7 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
   const pendingSlot = useRef(null);
   const initialHandled = useRef(false);
   const renderRequest = useRef(0);
-  const copyAfterRenderRef = useRef(false);
+  const topMenuRef = useRef();
   const slots = composition.layers.filter((layer) => layer.type === 'slot');
   const cropLayer = composition.layers.find((layer) => layer.id === cropModeId && layer.type === 'slot');
   const cropTransform = cropLayer ? (slotTransforms[cropLayer.id] || { zoom: 1, offsetX: 0, offsetY: 0 }) : null;
@@ -1478,12 +1517,25 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
       }
     }));
   }, [commitSession]);
+  const persistSession = useCallback(() => Promise.resolve(onSaveSession(template.id, {
+    templateUpdatedAt: template.updatedAt || 0,
+    session
+  })).catch(() => notify('使用记录保存失败', 'error')), [notify, onSaveSession, session, template.id, template.updatedAt]);
   const tryBack = useCallback(() => {
-    if (!canUndo || confirm('当前生成结果有未保存的修改，确定返回模板库吗？')) onBack();
-  }, [canUndo, onBack]);
+    persistSession();
+    onBack();
+  }, [onBack, persistSession]);
+  const editTemplate = useCallback(() => {
+    persistSession();
+    onEdit();
+  }, [onEdit, persistSession]);
+
+  useEffect(() => {
+    const timer = setTimeout(persistSession, 150);
+    return () => clearTimeout(timer);
+  }, [persistSession]);
 
   const replaceSlotSource = useCallback((slotId, dataUrl, name) => {
-    copyAfterRenderRef.current = autoCopy;
     commitSession((previous) => ({
       ...previous,
       slotSources: { ...previous.slotSources, [slotId]: dataUrl },
@@ -1491,10 +1543,9 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
       slotTransforms: { ...previous.slotTransforms, [slotId]: { zoom: 1, offsetX: 0, offsetY: 0 } }
     }));
     setSelectedId(slotId);
-  }, [autoCopy, commitSession]);
+  }, [commitSession]);
 
   const removeSlotSource = useCallback((slotId) => {
-    copyAfterRenderRef.current = false;
     commitSession((previous) => {
       if (!previous.slotSources[slotId]) return previous;
       const slotSources = { ...previous.slotSources };
@@ -1563,42 +1614,6 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
   }, [commitSession, composition.layers, cropModeId, notify, selectedId, slotSources]);
 
   useEffect(() => {
-    const handleKeyDown = (event) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey) {
-        event.preventDefault(); undo();
-        return;
-      }
-      if ((event.ctrlKey || event.metaKey) && ((event.key.toLowerCase() === 'z' && event.shiftKey) || event.key.toLowerCase() === 'y')) {
-        event.preventDefault(); redo();
-        return;
-      }
-      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'v' && !isTextEditingTarget(event.target)) {
-        event.preventDefault(); pasteClipboardImage();
-        return;
-      }
-      if (event.key.startsWith('Arrow') && !event.ctrlKey && !event.metaKey && !event.altKey && !isTextEditingTarget(event.target)) {
-        event.preventDefault(); nudgeSelectedPhoto(event.key, event.shiftKey ? 10 : 1);
-        return;
-      }
-      if (event.key === 'Escape' && !event.repeat) {
-        event.preventDefault();
-        if (cropModeId) { setCropModeId(null); return; }
-        tryBack();
-      }
-    };
-    const closeMenu = () => {
-      setContextMenu(null);
-      setSlotContextMenu(null);
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('pointerdown', closeMenu);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('pointerdown', closeMenu);
-    };
-  }, [cropModeId, nudgeSelectedPhoto, pasteClipboardImage, redo, tryBack, undo]);
-
-  useEffect(() => {
     if (cropModeId && !slotSources[cropModeId]) setCropModeId(null);
   }, [cropModeId, slotSources]);
 
@@ -1607,32 +1622,14 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
     const request = ++renderRequest.current;
     let cancelled = false;
     setCopied(false);
-    renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: outputMime }).then(async (dataUrl) => {
+    renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: outputMime }).then((dataUrl) => {
       if (cancelled || request !== renderRequest.current) return;
       setResult(dataUrl);
-      if (!copyAfterRenderRef.current || !autoCopy) {
-        copyAfterRenderRef.current = false;
-        setCopied(false);
-        return;
-      }
-      copyAfterRenderRef.current = false;
-      try {
-        const clipboardDataUrl = outputMime === 'image/png'
-          ? undefined
-          : await renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: 'image/png' });
-        await desktop.copyImage(dataUrl, clipboardDataUrl);
-        if (!cancelled && request === renderRequest.current) {
-          setCopied(true);
-          notify('结果已更新并复制到剪贴板');
-        }
-      } catch {
-        if (!cancelled && request === renderRequest.current) notify('结果已更新，但剪贴板不可用', 'error');
-      }
     }).catch((error) => {
       if (!cancelled) notify(`生成失败：${error.message}`, 'error');
     });
     return () => { cancelled = true; };
-  }, [autoCopy, composition, exportScale, outputMime, slotSources, slotTransforms, transparent, notify]);
+  }, [composition, exportScale, outputMime, slotSources, slotTransforms, transparent, notify]);
 
   const acceptFile = useCallback(async (file, targetId) => {
     try {
@@ -1675,6 +1672,61 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
     }
     catch { setCopied(false); notify('剪贴板不可用，请保存 PNG', 'error'); }
   }, [composition, currentResult, exportScale, notify, outputMime, slotSources, slotTransforms, transparent]);
+
+  const resetUse = useCallback(() => {
+    commitSession(createUseSession(template));
+    setSelectedId(null);
+    setCropModeId(null);
+    setSlotDropId(null);
+    setContextMenu(null);
+    setSlotContextMenu(null);
+    setCopied(false);
+  }, [commitSession, template]);
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      const commandKey = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      if (commandKey && key === 'z' && !event.shiftKey) {
+        event.preventDefault(); undo();
+        return;
+      }
+      if (commandKey && ((key === 'z' && event.shiftKey) || key === 'y')) {
+        event.preventDefault(); redo();
+        return;
+      }
+      if (commandKey && key === 'v' && !event.shiftKey && !event.altKey && !isTextEditingTarget(event.target)) {
+        event.preventDefault(); pasteClipboardImage();
+        return;
+      }
+      if (event.key.startsWith('Arrow') && !commandKey && !event.altKey && !isTextEditingTarget(event.target)) {
+        event.preventDefault(); nudgeSelectedPhoto(event.key, event.shiftKey ? 10 : 1);
+        return;
+      }
+      if (event.key === 'Escape' && !event.repeat) {
+        event.preventDefault();
+        tryBack();
+      }
+    };
+    const handleCopy = (event) => {
+      if (selectedId || isTextEditingTarget(event.target)) return;
+      event.preventDefault();
+      copyAgain();
+    };
+    const closeMenu = (event) => {
+      setContextMenu(null);
+      setSlotContextMenu(null);
+      if (!topMenuRef.current?.contains(event.target)) setTopMenu(false);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('copy', handleCopy);
+    window.addEventListener('pointerdown', closeMenu);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('copy', handleCopy);
+      window.removeEventListener('pointerdown', closeMenu);
+    };
+  }, [copyAgain, nudgeSelectedPhoto, pasteClipboardImage, redo, selectedId, tryBack, undo]);
 
   const resetCrop = () => { if (cropModeId) updatePhotoTransform(cropModeId, { zoom: 1, offsetX: 0, offsetY: 0 }); };
 
@@ -1749,22 +1801,29 @@ function UseTemplate({ template, initialFile, autoCopy, onBack, onEdit, notify }
     });
   };
 
+  const clearSidebarSelection = (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest('button, input, select, label')) return;
+    setSelectedId(null);
+    setCropModeId(null);
+  };
+
   return <main className="use-page">
     <header className="editor-topbar">
       <div className="editor-left"><IconButton label="返回模板库" onClick={tryBack}><ArrowLeft size={21}/></IconButton><div className="title-field"><strong>{template.name}</strong><span>使用模板</span></div></div>
-      <div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undo} disabled={!canUndo}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redo} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={onEdit}><Pencil size={16}/>编辑模板</button></div>
+      <div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undo} disabled={!canUndo}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redo} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={resetUse}><RotateCcw size={16}/>重置</button><div ref={topMenuRef} className="card-menu-wrap"><IconButton label="更多操作" onClick={() => setTopMenu((current) => !current)}><MoreHorizontal size={19}/></IconButton>{topMenu && <div className="context-menu"><button onClick={() => { setTopMenu(false); editTemplate(); }}><Pencil size={16}/>编辑模板</button></div>}</div></div>
     </header>
     <div className="use-layout">
-      <section className="use-sidebar">
-        <p className="eyebrow">第 1 步</p><h1>替换照片</h1><p className="use-intro">点击画布中的高亮区域、拖入图片，或按 Ctrl+V 粘贴剪贴板图片。</p>
+      <section className="use-sidebar" onPointerDown={clearSidebarSelection}>
+        <p className="eyebrow">第 1 步</p><h1>替换照片</h1><p className="use-intro">双击左侧图层、点击画布中的高亮区域、拖入图片，或按 Ctrl+V 粘贴剪贴板图片。</p>
         <div className="slot-list-heading"><strong>可替换图层</strong><span>{slots.length}</span></div>
         <div className="slot-list">
           {slots.map((layer) => {
             const source = slotSources[layer.id];
             const name = slotNames[layer.id];
-            return <div key={layer.id} className={`slot-item-row ${slotDropId === layer.id ? 'dragging' : ''}`} onContextMenu={(event) => openSlotContextMenu(event, layer.id)} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setSlotDropId(layer.id); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setSlotDropId((current) => current === layer.id ? null : current); }} onDrop={(event) => dropOnSlotList(event, layer.id)}><button type="button" className={`slot-item ${selectedId === layer.id ? 'selected' : ''}`} onClick={() => { setSelectedId(layer.id); requestSlotImage(layer.id); }}>
+            return <div key={layer.id} className={`slot-item-row ${slotDropId === layer.id ? 'dragging' : ''}`} onContextMenu={(event) => openSlotContextMenu(event, layer.id)} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setSlotDropId(layer.id); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setSlotDropId((current) => current === layer.id ? null : current); }} onDrop={(event) => dropOnSlotList(event, layer.id)}><button type="button" className={`slot-item ${selectedId === layer.id ? 'selected' : ''}`} onClick={() => setSelectedId(layer.id)} onDoubleClick={() => { setSelectedId(layer.id); requestSlotImage(layer.id); }}>
               <span className={`slot-item-thumb ${source ? 'has-image' : ''}`}>{source ? <img src={source} alt=""/> : <LayerThumb layer={layer}/>}</span>
-              <span className="slot-item-copy"><strong>{layer.name}</strong><small>{name || '点击选择图片'}</small></span>
+              <span className="slot-item-copy"><strong>{layer.name}</strong><small>{name || '双击选择图片'}</small></span>
               {source ? <RotateCcw size={16}/> : <ImagePlus size={16}/>}
             </button>{source && <IconButton label={cropModeId === layer.id ? '退出裁切' : '裁切照片'} className={cropModeId === layer.id ? 'active slot-crop-button' : 'slot-crop-button'} onClick={() => { setSelectedId(layer.id); setCropModeId((current) => current === layer.id ? null : layer.id); }}><Crop size={16}/></IconButton>}</div>;
           })}

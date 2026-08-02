@@ -383,6 +383,10 @@ fn editor_drafts_path() -> PathBuf {
     app_directory().join("autosave.json")
 }
 
+fn use_sessions_path() -> PathBuf {
+    app_directory().join("use-sessions.json")
+}
+
 fn decode_image_data_url(data_url: &str) -> Result<(&str, Vec<u8>), String> {
     let (header, encoded) = data_url
         .split_once(',')
@@ -445,6 +449,25 @@ fn save_editor_drafts(drafts: Value) -> Result<bool, String> {
     }
     let json = serde_json::to_string_pretty(&drafts).map_err(|error| error.to_string())?;
     fs::write(editor_drafts_path(), json).map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn load_use_sessions() -> Value {
+    fs::read_to_string(use_sessions_path())
+        .ok()
+        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}))
+}
+
+#[tauri::command]
+fn save_use_sessions(sessions: Value) -> Result<bool, String> {
+    if !sessions.is_object() {
+        return Err("使用模板缓存数据格式无效".to_string());
+    }
+    let json = serde_json::to_string_pretty(&sessions).map_err(|error| error.to_string())?;
+    fs::write(use_sessions_path(), json).map_err(|error| error.to_string())?;
     Ok(true)
 }
 
@@ -754,6 +777,8 @@ fn main() {
             save_templates,
             load_editor_drafts,
             save_editor_drafts,
+            load_use_sessions,
+            save_use_sessions,
             copy_image,
             read_clipboard_image,
             save_image
