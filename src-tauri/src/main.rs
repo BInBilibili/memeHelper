@@ -166,6 +166,52 @@ fn template_id(template: &Value) -> Option<&str> {
     template.get("id").and_then(Value::as_str).filter(|id| !id.is_empty())
 }
 
+fn replacement_template_id(directory: &Path, used_ids: &HashSet<String>) -> String {
+    let folder = directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| safe_name(name, "copy", 48))
+        .unwrap_or_else(|| "copy".to_string());
+    let base = format!("folder-{folder}");
+    let mut candidate = base.clone();
+    let mut suffix = 2;
+    while used_ids.contains(&candidate) {
+        candidate = format!("{base}-{suffix}");
+        suffix += 1;
+    }
+    candidate
+}
+
+fn repair_template_directory_ids(root: &Path) -> Result<(), String> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Ok(());
+    };
+    let mut directories: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    directories.sort();
+
+    let mut used_ids = HashSet::new();
+    for directory in directories {
+        let path = directory.join(TEMPLATE_FILE_NAME);
+        let Some(mut template) = read_template_file(&path, false) else {
+            continue;
+        };
+        if template_id(&template).is_some_and(|id| used_ids.insert(id.to_string())) {
+            continue;
+        }
+
+        let id = replacement_template_id(&directory, &used_ids);
+        template["id"] = Value::String(id.clone());
+        let json = serde_json::to_string_pretty(&template).map_err(|error| error.to_string())?;
+        fs::write(path, json).map_err(|error| error.to_string())?;
+        used_ids.insert(id);
+    }
+    Ok(())
+}
+
 fn layers_mut(template: &mut Value) -> Option<&mut Vec<Value>> {
     template.get_mut("layers")?.as_array_mut()
 }
@@ -354,11 +400,7 @@ fn write_template_directories(root: &Path, templates: &[Value]) -> Result<(), St
 }
 
 fn template_matches(left: &Value, right: &Value) -> bool {
-    let same_id = left.get("id").is_some() && left.get("id") == right.get("id");
-    let same_shape = left.get("name") == right.get("name")
-        && left.get("width") == right.get("width")
-        && left.get("height") == right.get("height");
-    same_id || same_shape
+    left.get("id").is_some() && left.get("id") == right.get("id")
 }
 
 fn updated_at(value: &Value) -> i64 {
@@ -406,6 +448,7 @@ fn load_config() -> Value {
 }
 
 fn load_templates_from(root: &Path, legacy_paths: &[PathBuf]) -> Result<Vec<Value>, String> {
+    repair_template_directory_ids(root)?;
     let marker = root.join(MIGRATION_MARKER_NAME);
     if !marker.exists() {
         let directory_templates = read_template_directories(&root);
@@ -751,6 +794,33 @@ mod tests {
             .expect("directory templates must load");
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0]["id"], "one");
+        fs::remove_dir_all(directory).expect("test directory must be removable");
+    }
+
+    #[test]
+    fn repairs_duplicate_ids_when_a_template_folder_is_copied() {
+        let directory = test_directory("copied-folder");
+        let root = directory.join("meme");
+        let first_directory = root.join("first");
+        let copied_directory = root.join("first-copy");
+        let source = format!("data:image/png;base64,{}", STANDARD.encode(b"png"));
+        let value = template("same-id", "Same template", &source);
+        write_template_directory(&first_directory, &value).expect("first template must be written");
+        fs::create_dir_all(&copied_directory).expect("copy directory must be created");
+        fs::copy(
+            first_directory.join(TEMPLATE_FILE_NAME),
+            copied_directory.join(TEMPLATE_FILE_NAME),
+        )
+        .expect("template JSON must be copied");
+        fs::write(root.join(MIGRATION_MARKER_NAME), b"1").expect("marker must be written");
+
+        let loaded = load_templates_from(&root, &[]).expect("copied templates must load");
+        assert_eq!(loaded.len(), 2);
+        let ids: HashSet<&str> = loaded.iter().filter_map(template_id).collect();
+        assert_eq!(ids.len(), 2);
+        let copied = read_template_file(&copied_directory.join(TEMPLATE_FILE_NAME), false)
+            .expect("copied template must remain readable");
+        assert_ne!(template_id(&copied), Some("same-id"));
         fs::remove_dir_all(directory).expect("test directory must be removable");
     }
 }

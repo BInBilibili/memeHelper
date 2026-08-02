@@ -560,7 +560,7 @@ function App() {
       const localTemplates = Array.isArray(saved) ? saved : [];
       const builtInTemplates = bundledTemplates.length ? structuredClone(bundledTemplates) : starterTemplates();
       const merged = localTemplates.length ? [...localTemplates, ...builtInTemplates] : builtInTemplates;
-      const next = merged.filter((item, index) => merged.findIndex((candidate) => candidate.id === item.id || (candidate.name === item.name && candidate.width === item.width && candidate.height === item.height)) === index);
+      const next = merged.filter((item, index) => merged.findIndex((candidate) => candidate.id === item.id) === index);
       const drafts = savedDrafts && typeof savedDrafts === 'object' && !Array.isArray(savedDrafts) ? savedDrafts : {};
       const sessions = savedUseSessions && typeof savedUseSessions === 'object' && !Array.isArray(savedUseSessions) ? savedUseSessions : {};
       applyTheme(loadedConfig?.theme);
@@ -673,7 +673,7 @@ function App() {
       const localTemplates = Array.isArray(saved) ? saved : [];
       const builtInTemplates = bundledTemplates.length ? structuredClone(bundledTemplates) : starterTemplates();
       const merged = localTemplates.length ? [...localTemplates, ...builtInTemplates] : builtInTemplates;
-      const next = merged.filter((item, index) => merged.findIndex((candidate) => candidate.id === item.id || (candidate.name === item.name && candidate.width === item.width && candidate.height === item.height)) === index);
+      const next = merged.filter((item, index) => merged.findIndex((candidate) => candidate.id === item.id) === index);
       const previousIds = new Set(templates.map((item) => item.id));
       const addedCount = next.filter((item) => !previousIds.has(item.id)).length;
       setTemplates(next);
