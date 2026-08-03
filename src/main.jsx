@@ -760,6 +760,11 @@ function TemplateCard({ template, onUse, onEdit, onRename, onDelete, onToggleFav
   const pasteMenuRef = useRef();
   const slots = useMemo(() => template.layers.filter((layer) => layer.type === 'slot'), [template.layers]);
   const canQuickReplace = slots.length === 1;
+  const slotCountHint = slots.length === 0
+    ? '此模板没有可替换图层。'
+    : slots.length === 1
+      ? '1 个可替换图层：拖入或右键粘贴图片，即可生成并复制。'
+      : `有 ${slots.length} 个可替换图层：进入模板后可分别替换图片。`;
   useEffect(() => { let alive = true; renderTemplate(template).then((data) => alive && setPreview(data)); return () => { alive = false; }; }, [template]);
   useEffect(() => {
     if (!menu && !pasteMenu) return undefined;
@@ -812,7 +817,7 @@ function TemplateCard({ template, onUse, onEdit, onRename, onDelete, onToggleFav
     setPasteMenu({ x: Math.min(event.clientX, window.innerWidth - 196), y: Math.min(event.clientY, window.innerHeight - 52) });
   };
   return <><article className={`template-card ${dragging ? 'dragging' : ''}`} onContextMenu={openPasteMenu} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={drop}>
-    <div className="template-preview" onClick={() => onUse(template)}><span className="slot-count-badge" title="可替换图层数，为1时可以直接拖入图层复制作品到粘贴板" aria-label={`可替换图层数 ${slots.length}`}>{slots.length}</span>{preview && <img src={preview} alt="" draggable={false}/>}<div className="drop-hint"><Upload size={28}/><strong>{canQuickReplace ? '松开并复制作品' : '松开即可生成'}</strong></div></div>
+    <div className="template-preview" onClick={() => onUse(template)}><span className="slot-count-badge" title={slotCountHint} aria-label={slotCountHint}>{slots.length}</span>{preview && <img src={preview} alt="" draggable={false}/>}<div className="drop-hint"><Upload size={28}/><strong>{canQuickReplace ? '松开并复制作品' : '松开即可生成'}</strong></div></div>
     <div className="template-meta"><div><h3>{template.name}</h3><span>{template.width} x {template.height} · {slots.length} 个照片位</span>{Boolean(template.tags?.length) && <span className="template-tags">{template.tags.slice(0, 3).map((tag) => <small key={tag}>{tag}</small>)}</span>}</div><div className="template-card-tools"><IconButton label={template.favorite ? '取消收藏' : '收藏模板'} className={template.favorite ? 'favorite-active' : ''} onClick={() => onToggleFavorite(template.id)}><Star size={17} fill={template.favorite ? 'currentColor' : 'none'}/></IconButton><div ref={menuRef} className="card-menu-wrap"><IconButton label="模板操作" onClick={() => setMenu((current) => !current)}><MoreHorizontal size={19}/></IconButton>{menu && <div className="context-menu"><button onClick={() => { setMenu(false); onEdit(template); }}><Pencil size={16}/>编辑模板</button><button onClick={() => { setMenu(false); setRenaming(true); }}><Type size={16}/>编辑名称</button><button className="danger" onClick={() => { setMenu(false); onDelete(template.id); }}><Trash2 size={16}/>删除模板</button></div>}</div></div></div>
     <div className="card-actions"><button className="secondary-button" onClick={() => onEdit(template)}><Pencil size={16}/>编辑</button><button className="primary-button grow" onClick={() => onUse(template)}><Sparkles size={17}/>使用模板</button></div>
   </article>{pasteMenu && <div ref={pasteMenuRef} className="library-paste-menu" style={{ left: pasteMenu.x, top: pasteMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={pasteImage} disabled={quickWorking}><Clipboard size={16}/>粘贴图片并复制作品</button></div>}{renaming && <RenameTemplateDialog template={template} onCancel={() => setRenaming(false)} onSave={onRename}/>}</>;
