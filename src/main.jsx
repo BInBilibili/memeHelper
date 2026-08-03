@@ -281,7 +281,7 @@ function layoutStyledText(layer) {
   const lines = [];
   let line = { glyphs: [], width: 0, height: 0 };
   const pushLine = () => {
-    if (!line.height) line.height = effectiveBaseSize * (layer.lineHeight ?? 1.25);
+    if (!line.glyphs.length) line.height = effectiveBaseSize * (layer.lineHeight ?? 1.25);
     lines.push(line);
     line = { glyphs: [], width: 0, height: 0 };
   };
@@ -515,21 +515,43 @@ function wrapCanvasText(ctx, text, maxWidth) {
 
 function resolveTextFontSize(layer) {
   const requested = clamp(layer.fontSize ?? 48, TEXT_SIZE_MIN, TEXT_SIZE_MAX);
-  if (!layer.autoFit) return requested;
+  if (!layer.autoFit || requested <= 0) return requested;
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
-  const fontTokens = String(layer.fontStyle || '').split(' ');
-  const fontPrefix = `${fontTokens.includes('italic') ? 'italic ' : ''}${fontTokens.includes('bold') ? 'bold ' : ''}`;
-  const fontFamily = layer.fontFamily || 'Microsoft YaHei';
   const padding = Math.max(0, Number(layer.backgroundPadding) || 0);
   const availableWidth = Math.max(1, layer.width - padding * 2);
   const availableHeight = Math.max(1, layer.height - padding * 2);
-  for (let size = requested; size >= TEXT_SIZE_MIN; size -= 1) {
-    ctx.font = `${fontPrefix}${size}px "${fontFamily}"`;
-    const lines = wrapCanvasText(ctx, layer.text, availableWidth);
-    if (lines.length * size * (layer.lineHeight ?? 1.25) <= availableHeight) return size;
+  const fits = (scale) => {
+    let lineWidth = 0;
+    let lineHeight = 0;
+    let totalHeight = 0;
+    let hasGlyphs = false;
+    let offset = 0;
+    const finishLine = () => {
+      totalHeight += hasGlyphs ? lineHeight : requested * scale * (layer.lineHeight ?? 1.25);
+      lineWidth = 0; lineHeight = 0; hasGlyphs = false;
+    };
+    for (const character of String(layer.text || '')) {
+      if (character === '\n') { finishLine(); offset += character.length; continue; }
+      const style = { ...textStyleAt(layer, offset), fontSize: textStyleAt(layer, offset).fontSize * scale };
+      ctx.font = textFontString(style);
+      const width = ctx.measureText(character).width;
+      if (hasGlyphs && lineWidth + width > availableWidth) finishLine();
+      lineWidth += width;
+      lineHeight = Math.max(lineHeight, style.fontSize * style.lineHeight);
+      hasGlyphs = true;
+      offset += character.length;
+    }
+    finishLine();
+    return totalHeight <= availableHeight;
+  };
+  if (fits(1)) return requested;
+  let low = 0; let high = 1;
+  for (let iteration = 0; iteration < 12; iteration += 1) {
+    const middle = (low + high) / 2;
+    if (fits(middle)) low = middle; else high = middle;
   }
-  return TEXT_SIZE_MIN;
+  return requested * low;
 }
 
 function drawTextLayer(ctx, layer) {
@@ -581,11 +603,31 @@ async function drawEraseMask(ctx, layer) {
   ctx.restore();
 }
 
-async function renderIsolatedLayer(layer, source, photoTransform, paintSource, eraseSource) {
+function layerEffectInsets(layer) {
+  if (layer.type !== 'text') return { left: 0, top: 0, right: 0, bottom: 0 };
+  const text = String(layer.text || '');
+  const stroke = Math.max(...Array.from({ length: text.length || 1 }, (_, index) => textStyleAt(layer, Math.min(index, Math.max(0, text.length - 1))).strokeWidth));
+  const blur = layer.shadowEnabled ? Math.max(0, Number(layer.shadowBlur) || 0) : 0;
+  const offsetX = layer.shadowEnabled ? Number(layer.shadowOffsetX) || 0 : 0;
+  const offsetY = layer.shadowEnabled ? Number(layer.shadowOffsetY) || 0 : 0;
+  return {
+    left: Math.ceil(stroke + Math.max(0, blur - offsetX)),
+    top: Math.ceil(stroke + Math.max(0, blur - offsetY)),
+    right: Math.ceil(stroke + Math.max(0, blur + offsetX)),
+    bottom: Math.ceil(stroke + Math.max(0, blur + offsetY))
+  };
+}
+
+async function renderIsolatedLayer(layer, source, photoTransform, paintSource, eraseSource, scale = 1) {
+  const insets = layerEffectInsets(layer);
+  const logicalWidth = layer.width + insets.left + insets.right;
+  const logicalHeight = layer.height + insets.top + insets.bottom;
   const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(layer.width));
-  canvas.height = Math.max(1, Math.round(layer.height));
+  canvas.width = Math.max(1, Math.round(logicalWidth * scale));
+  canvas.height = Math.max(1, Math.round(logicalHeight * scale));
   const ctx = canvas.getContext('2d');
+  ctx.scale(scale, scale);
+  ctx.translate(insets.left, insets.top);
   const drawSource = source ?? layer.src;
   if (layer.type === 'text') drawTextLayer(ctx, layer);
   else {
@@ -617,7 +659,7 @@ async function renderIsolatedLayer(layer, source, photoTransform, paintSource, e
     ctx.drawImage(eraseSource, 0, 0, layer.width, layer.height);
     ctx.restore();
   } else await drawEraseMask(ctx, layer);
-  return canvas;
+  return { canvas, insets, logicalWidth, logicalHeight };
 }
 
 async function renderTemplate(template, replacements, photoTransforms = {}, options = {}) {
@@ -641,8 +683,8 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
     const replacement = typeof replacements === 'string' ? replacements : replacements?.[layer.id];
     const src = layer.type === 'slot' && replacement ? replacement : layer.src;
     if (layer.eraseSrc) {
-      const isolated = await renderIsolatedLayer(layer, layer.type === 'slot' ? replacement : src, photoTransforms[layer.id]);
-      ctx.drawImage(isolated, 0, 0, layer.width, layer.height);
+      const isolated = await renderIsolatedLayer(layer, layer.type === 'slot' ? replacement : src, photoTransforms[layer.id], null, null, scale);
+      ctx.drawImage(isolated.canvas, -isolated.insets.left, -isolated.insets.top, isolated.logicalWidth, isolated.logicalHeight);
       ctx.restore();
       continue;
     }
@@ -1359,6 +1401,12 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   }, [activeTool, selected, selectedLayers.length]);
 
   useEffect(() => {
+    if (activeTool === 'select' || !textEditingId) return;
+    setTextEditingId(null);
+    setTextSelection(null);
+  }, [activeTool, textEditingId]);
+
+  useEffect(() => {
     const available = new Set(draft.layers.map((layer) => layer.id));
     setSelectedIds((current) => current.filter((id) => available.has(id)));
     const groups = new Set(draft.layers.map((layer) => layer.groupId).filter(Boolean));
@@ -1938,8 +1986,11 @@ function RichTextOverlay({ layer, zoom, selectionRange, onChange, onSelectionCha
   const editorRef = useRef();
   const initializedRef = useRef(false);
   const composingRef = useRef(false);
+  const skipNextInputRef = useRef(false);
   const selectionRef = useRef({ start: 0, end: String(layer.text || '').length });
-  const renderSignature = JSON.stringify({ text: layer.text || '', runs: layer.textRuns || [], base: baseTextStyle(layer), selectionRange, zoom });
+  const overlayBaseSize = baseTextStyle(layer).fontSize;
+  const overlayFontScale = overlayBaseSize > 0 ? resolveTextFontSize(layer) / overlayBaseSize : 1;
+  const renderSignature = JSON.stringify({ text: layer.text || '', runs: layer.textRuns || [], base: baseTextStyle(layer), selectionRange, zoom, layout: { width: layer.width, height: layer.height, autoFit: layer.autoFit, backgroundPadding: layer.backgroundPadding, shadowEnabled: layer.shadowEnabled, shadowColor: layer.shadowColor, shadowBlur: layer.shadowBlur, shadowOffsetX: layer.shadowOffsetX, shadowOffsetY: layer.shadowOffsetY } });
   useLayoutEffect(() => {
     const editor = editorRef.current;
     if (!editor || composingRef.current) return;
@@ -1953,7 +2004,7 @@ function RichTextOverlay({ layer, zoom, selectionRange, onChange, onSelectionCha
       if (segment.selected) span.className = 'rich-text-selection';
       Object.assign(span.style, {
         fontFamily: segment.style.fontFamily,
-        fontSize: `${segment.style.fontSize * (layer.fontSize > 0 ? resolveTextFontSize(layer) / layer.fontSize : 1) * zoom}px`,
+        fontSize: `${segment.style.fontSize * overlayFontScale * zoom}px`,
         fontWeight: String(segment.style.fontStyle).includes('bold') ? '700' : '400',
         fontStyle: String(segment.style.fontStyle).includes('italic') ? 'italic' : 'normal',
         textDecoration: segment.style.textDecoration,
@@ -2000,6 +2051,7 @@ function RichTextOverlay({ layer, zoom, selectionRange, onChange, onSelectionCha
       background: layer.background || 'transparent'
     }}
     onInput={(event) => {
+      if (skipNextInputRef.current) { skipNextInputRef.current = false; return; }
       if (composingRef.current) return;
       const selection = readTextSelection(event.currentTarget);
       if (selection) selectionRef.current = selection;
@@ -2012,6 +2064,8 @@ function RichTextOverlay({ layer, zoom, selectionRange, onChange, onSelectionCha
     onCompositionStart={() => { composingRef.current = true; }}
     onCompositionEnd={(event) => {
       composingRef.current = false;
+      skipNextInputRef.current = true;
+      setTimeout(() => { skipNextInputRef.current = false; }, 0);
       const selection = readTextSelection(event.currentTarget);
       if (selection) selectionRef.current = selection;
       onChange(event.currentTarget.textContent.replace(/\r/g, ''));
@@ -2256,15 +2310,19 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
     const pointer = stage?.getPointerPosition();
     const effectiveTool = tool === 'brush' && event.evt.ctrlKey ? 'picker' : tool;
     if (!pointer) return true;
+    const templatePoint = { x: pointer.x / zoom, y: pointer.y / zoom };
     if (effectiveTool === 'picker') {
-      const canvas = stage.toCanvas({ pixelRatio: 1 });
-      const pixel = canvas.getContext('2d').getImageData(clamp(Math.floor(pointer.x), 0, canvas.width - 1), clamp(Math.floor(pointer.y), 0, canvas.height - 1), 1, 1).data;
+      const image = await loadImage(await renderTemplate(template, {}));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, template.width); canvas.height = Math.max(1, template.height);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(image, 0, 0);
+      const pixel = ctx.getImageData(clamp(Math.floor(templatePoint.x), 0, canvas.width - 1), clamp(Math.floor(templatePoint.y), 0, canvas.height - 1), 1, 1).data;
       onPickColor(rgbaToHex(pixel));
       return true;
     }
     const layer = selectedIds.length === 1 ? template.layers.find((item) => item.id === selectedIds[0] && item.visible && !item.locked) : null;
     if (!layer) return true;
-    const templatePoint = { x: pointer.x / zoom, y: pointer.y / zoom };
     if (!pointInLayer(templatePoint.x, templatePoint.y, layer)) return true;
     const local = layerLocalPoint(layer, templatePoint);
     const pointerToken = ++paintPointerRef.current;
@@ -2354,24 +2412,24 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
 }
 
 function useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, revision) {
-  const [canvas, setCanvas] = useState(null);
+  const [result, setResult] = useState(null);
   useEffect(() => {
-    if (!layer.eraseSrc && !eraseSource) { setCanvas(null); return; }
+    if (!layer.eraseSrc && !eraseSource) { setResult(null); return; }
     let alive = true;
     (async () => {
       const output = await renderIsolatedLayer(layer, source, photoTransform, paintSource, eraseSource);
-      if (alive) setCanvas(output);
-    })().catch(() => { if (alive) setCanvas(null); });
+      if (alive) setResult(output);
+    })().catch(() => { if (alive) setResult(null); });
     return () => { alive = false; };
   }, [layer, source, photoTransform, paintSource, eraseSource, revision]);
-  return canvas;
+  return result;
 }
 
 function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, source, paintSource, eraseSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
   const image = useHtmlImage(source ?? layer.src);
   const loadedPaintImage = useHtmlImage(layer.paintSrc);
   const paintImage = paintSource || loadedPaintImage;
-  const maskedCanvas = useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, paintRevision);
+  const maskedResult = useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, paintRevision);
   const crop = image && layer.fit === 'cover' ? getCoverCrop(image, layer.width, layer.height) : undefined;
   const placement = image && layer.type === 'slot' && source ? getPhotoPlacement(image, layer, photoTransform) : null;
   if (!layer.visible) return null;
@@ -2381,7 +2439,7 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
     Object.assign(common, { onDragStart, onDragMove, onDragEnd: onDragEnd || ((event) => onChange({ x: Math.round(event.target.x()), y: Math.round(event.target.y()) })) });
     if (onTransformEnd !== false) common.onTransformEnd = onTransformEnd || ((event) => { const node = event.target; const sx = node.scaleX(), sy = node.scaleY(); node.scaleX(1); node.scaleY(1); onChange({ x: Math.round(node.x()), y: Math.round(node.y()), width: Math.max(10, Math.round(node.width() * sx)), height: Math.max(10, Math.round(node.height() * sy)), rotation: Math.round(node.rotation()) }); });
   }
-  if (maskedCanvas && !cropMode) return <Group {...common}><KonvaImage image={maskedCanvas} width={layer.width} height={layer.height}/></Group>;
+  if (maskedResult && !cropMode) return <Group {...common}><KonvaImage image={maskedResult.canvas} x={-maskedResult.insets.left} y={-maskedResult.insets.top} width={maskedResult.logicalWidth} height={maskedResult.logicalHeight}/></Group>;
   if (layer.type === 'text') {
     return <Group {...common}>
       <Rect width={layer.width} height={layer.height} fill={layer.background || 'rgba(0,0,0,.001)'}/>
@@ -2401,9 +2459,11 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
 function NumericInput({ value, onCommit, min, max, step = 1, integer = true, className = '', ...props }) {
   const [draftValue, setDraftValue] = useState(() => String(value ?? ''));
   const focusedRef = useRef(false);
+  const cancelRef = useRef(false);
   useEffect(() => { if (!focusedRef.current) setDraftValue(String(value ?? '')); }, [value]);
   const commit = () => {
     focusedRef.current = false;
+    if (cancelRef.current) { cancelRef.current = false; setDraftValue(String(value ?? '')); return; }
     const parsed = Number(draftValue);
     if (!Number.isFinite(parsed)) { setDraftValue(String(value ?? '')); return; }
     let next = integer ? Math.round(parsed) : parsed;
@@ -2420,12 +2480,12 @@ function NumericInput({ value, onCommit, min, max, step = 1, integer = true, cla
     max={max}
     step={step}
     value={draftValue}
-    onFocus={() => { focusedRef.current = true; }}
+    onFocus={() => { focusedRef.current = true; cancelRef.current = false; }}
     onChange={(event) => setDraftValue(event.target.value)}
     onBlur={commit}
     onKeyDown={(event) => {
       if (event.key === 'Enter') event.currentTarget.blur();
-      if (event.key === 'Escape') { setDraftValue(String(value ?? '')); event.currentTarget.blur(); }
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelRef.current = true; setDraftValue(String(value ?? '')); event.currentTarget.blur(); }
     }}
   />;
 }
