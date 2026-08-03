@@ -198,17 +198,25 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .editor-paint-tools .icon-button { width: 29px; height: 28px; border-radius: 3px; }
 .editor-paint-tools .icon-button.active { color: var(--accent); background: #fff1ed; }
 .paint-color { width: 31px; height: 28px; margin-left: 3px; padding: 2px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); cursor: pointer; }
-.brush-size { width: 84px; padding: 0 4px; display: grid; grid-template-columns: 30px 1fr; align-items: center; gap: 3px; color: var(--muted); font-size: 8px; }
-.brush-size input { min-width: 0; width: 100%; accent-color: var(--accent); }
+.brush-size { width: 126px; padding: 0 4px; display: grid; grid-template-columns: 42px 1fr; align-items: center; gap: 5px; color: var(--muted); font-size: 8px; }
+.brush-size input[type="number"] { min-width: 0; width: 42px; height: 25px; padding: 0 4px; border: 1px solid var(--line); border-radius: 3px; font-size: 9px; }
+.brush-size input[type="range"] { min-width: 0; width: 100%; accent-color: var(--accent); }
+.eraser-tool-wrap { position: relative; }
+.eraser-mode-menu { position: absolute; z-index: 20; left: 0; top: 34px; width: 116px; padding: 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); box-shadow: 0 8px 22px rgba(25,23,20,.16); }
+.eraser-mode-menu button { width: 100%; height: 28px; padding: 0 7px; border: 0; border-radius: 3px; background: transparent; color: var(--ink); text-align: left; font-size: 10px; cursor: pointer; }
+.eraser-mode-menu button:hover, .eraser-mode-menu button.active { color: var(--accent); background: #fff1ed; }
 .canvas-scroll { flex: 1; min-height: 0; position: relative; overflow: hidden; }
 .stage-shadow { position: absolute; left: 50%; top: 50%; flex: none; background: #fff; box-shadow: 0 10px 35px rgba(32,30,25,.2); }
 .outside-layer-outline { position: absolute; z-index: 4; box-sizing: border-box; border: 2px dashed var(--accent); outline: 1px solid rgba(255,255,255,.8); transform-origin: 0 0; pointer-events: none; }
-.rich-text-overlay { position: absolute; z-index: 5; margin: 0; border: 1px solid var(--accent); outline: 1px dashed rgba(233,78,55,.6); outline-offset: 2px; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; transform-origin: 0 0; caret-color: var(--accent); cursor: text; }
+.rich-text-overlay { position: absolute; z-index: 5; margin: 0; border: 0; outline: 1px dashed rgba(233,78,55,.75); outline-offset: 2px; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; transform-origin: 0 0; caret-color: var(--accent); cursor: text; }
 .rich-text-overlay:focus { box-shadow: 0 0 0 2px rgba(233,78,55,.16); }
-.tool-brush, .tool-fill, .tool-eraser, .tool-picker { cursor: crosshair; }
-.tool-brush.panning, .tool-fill.panning, .tool-eraser.panning, .tool-picker.panning { cursor: crosshair; }
+.rich-text-selection { color: #111 !important; background: #9cc7ff; -webkit-text-stroke-color: transparent; }
+.rich-text-overlay:focus .rich-text-selection { color: inherit !important; background: transparent; -webkit-text-stroke-color: inherit; }
 .pan-viewport { cursor: grab; }
 .pan-viewport.panning, .pan-viewport.panning * { cursor: grabbing !important; user-select: none; }
+.pan-viewport.tool-brush, .pan-viewport.tool-fill, .pan-viewport.tool-eraser, .pan-viewport.tool-picker,
+.pan-viewport.tool-brush canvas, .pan-viewport.tool-fill canvas, .pan-viewport.tool-eraser canvas, .pan-viewport.tool-picker canvas { cursor: none; }
+.tool-cursor { position: absolute; z-index: 12; width: 24px; height: 24px; transform: translate(-3px, -21px); border-radius: 3px; display: grid; place-items: center; color: #171716; background: rgba(255,255,255,.86); box-shadow: 0 1px 4px rgba(0,0,0,.28); pointer-events: none; }
 .property-content { padding: 17px; }
 .text-field, .number-field { display: block; }
 .text-field > span, .number-field > span { display: block; margin-bottom: 6px; color: var(--muted); font-size: 9px; font-weight: 600; }

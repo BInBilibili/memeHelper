@@ -4,7 +4,7 @@ Windows 表情包模板编辑与生成工具。
 
 ## 使用
 
-下载 `MemeHelper-2.3.1-windows-x64.7z`，完整解压后运行其中的 `MemeHelper.exe`。应用已迁移到 Tauri，不再附带 Electron/Chromium 文件。
+下载 `MemeHelper-2.3.3-windows-x64.7z`，完整解压后运行其中的 `MemeHelper.exe`。应用已迁移到 Tauri，不再附带 Electron/Chromium 文件。
 
 - 新建模板：初始画布为 0×0，添加第一个固定图层、照片区域或文字图层时自动匹配其尺寸；也可添加矩形/圆形/圆角矩形/多边形照片区域，多边形支持 3 至 12 边及独立顶点调整，照片区域可切换为纯色图层。
 - 编辑模板：调整图层位置、尺寸、旋转与顺序；可将画布尺寸设为 0，或使用“自动设置”按全部图层边界重设画布；选中图层超出画布时仍显示轮廓。画布缩放时变换控制点保持固定屏幕大小，旋转时按住 `Shift` 可按 45°吸附；支持画笔、填充、橡皮擦和取色器，画笔按住 `Ctrl` 可临时取色，绘画只写入当前图层；支持 Ctrl 多选、Shift 范围选择、组内图层单选、右键组合/取消组合或合并图层、可展开收起和重命名的 Photoshop 式图层组、整组复制粘贴、对齐、等距分布、`Delete` 快速删除和完整右键菜单。复制的图层会粘贴到当前选中图层上方，未选中时置于顶层；左侧空白区域也可右键粘贴。
@@ -67,4 +67,4 @@ npm run dev
 npm run build
 ```
 
-输出位于 `release-tauri/MemeHelper-2.3.1/`。同版本发布目录或压缩包已存在时，构建会停止并要求先更新版本号，不会覆盖正在运行或已经交付的旧版。构建机需要 Rust；Windows SDK 可由 Visual Studio Build Tools 提供，项目构建脚本也会自动使用本机已有的 `cargo-xwin` SDK 缓存。
+输出位于 `release-tauri/MemeHelper-2.3.3/`。同版本发布目录或压缩包已存在时，构建会停止并要求先更新版本号，不会覆盖正在运行或已经交付的旧版。构建机需要 Rust；Windows SDK 可由 Visual Studio Build Tools 提供，项目构建脚本也会自动使用本机已有的 `cargo-xwin` SDK 缓存。
