@@ -187,6 +187,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .canvas-size { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--muted); }
 .canvas-size label { margin-right: 4px; font-weight: 600; }
 .canvas-size input { width: 60px; height: 28px; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; font-size: 10px; }
+.auto-canvas-button { height: 28px; padding: 0 9px; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); font-size: 10px; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.auto-canvas-button:hover { color: var(--accent); border-color: var(--accent); }
 .toolbar-button, .wide-property-button { height: 30px; padding: 0 9px; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); display: inline-flex; align-items: center; justify-content: center; gap: 5px; font-size: 10px; cursor: pointer; }
 .toolbar-button:hover, .wide-property-button:hover { border-color: #e6a092; color: var(--accent); background: #fff9f7; }
 .zoom-control { height: 30px; display: flex; align-items: center; border: 1px solid var(--line); background: #fff; border-radius: 5px; }
@@ -200,6 +202,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .brush-size input { min-width: 0; width: 100%; accent-color: var(--accent); }
 .canvas-scroll { flex: 1; min-height: 0; position: relative; overflow: hidden; }
 .stage-shadow { position: absolute; left: 50%; top: 50%; flex: none; background: #fff; box-shadow: 0 10px 35px rgba(32,30,25,.2); }
+.outside-layer-outline { position: absolute; z-index: 4; box-sizing: border-box; border: 2px dashed var(--accent); outline: 1px solid rgba(255,255,255,.8); transform-origin: 0 0; pointer-events: none; }
 .rich-text-overlay { position: absolute; z-index: 5; margin: 0; border: 1px solid var(--accent); outline: 1px dashed rgba(233,78,55,.6); outline-offset: 2px; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; transform-origin: 0 0; caret-color: var(--accent); cursor: text; }
 .rich-text-overlay:focus { box-shadow: 0 0 0 2px rgba(233,78,55,.16); }
 .tool-brush, .tool-fill, .tool-eraser, .tool-picker { cursor: crosshair; }
@@ -338,6 +341,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 :root[data-theme="dark"] .layer-context-menu,
 :root[data-theme="dark"] .result-context-menu,
 :root[data-theme="dark"] .canvas-toolbar,
+:root[data-theme="dark"] .auto-canvas-button,
 :root[data-theme="dark"] .toolbar-button,
 :root[data-theme="dark"] .wide-property-button,
 :root[data-theme="dark"] .layer-lock-button,
@@ -480,7 +484,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
   .canvas-toolbar { gap: 5px; padding-inline: 7px; }
   .canvas-size { gap: 4px; flex: none; }
   .canvas-size label { display: none; }
-  .canvas-size input { width: 56px; }
+  .canvas-size input { width: 48px; }
+  .auto-canvas-button { width: 54px; padding-inline: 4px; }
 }
 
 @media (max-width: 850px) {

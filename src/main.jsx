@@ -130,6 +130,29 @@ function polygonPointAtRadius(point, percent) {
   return { x: clamp(.5 + dx * distance, 0, 1), y: clamp(.5 + dy * distance, 0, 1) };
 }
 
+function layerBounds(layer) {
+  const radians = (Number(layer.rotation) || 0) * Math.PI / 180;
+  const cosine = Math.cos(radians); const sine = Math.sin(radians);
+  const corners = [[0, 0], [layer.width, 0], [layer.width, layer.height], [0, layer.height]].map(([x, y]) => ({
+    x: layer.x + x * cosine - y * sine,
+    y: layer.y + x * sine + y * cosine
+  }));
+  const xs = corners.map((point) => point.x); const ys = corners.map((point) => point.y);
+  const left = Math.min(...xs); const top = Math.min(...ys);
+  const right = Math.max(...xs); const bottom = Math.max(...ys);
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+function combinedLayerBounds(layers) {
+  if (!layers.length) return null;
+  const bounds = layers.map(layerBounds);
+  const left = Math.min(...bounds.map((item) => item.left));
+  const top = Math.min(...bounds.map((item) => item.top));
+  const right = Math.max(...bounds.map((item) => item.right));
+  const bottom = Math.max(...bounds.map((item) => item.bottom));
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
 function baseTextStyle(layer) {
   return {
     fontSize: clamp(layer.fontSize || 48, 8, 400),
@@ -993,7 +1016,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     const canRestore = autosave?.draft?.layers && (initial ? autosave.draft.id === initial.id && autosave.savedAt > (initial.updatedAt || 0) : autosave.kind === 'new');
     initialStateRef.current = {
       restored: Boolean(canRestore),
-      draft: canRestore ? structuredClone(autosave.draft) : initial ? structuredClone(initial) : { id: uid(), name: '未命名模板', width: 800, height: 800, createdAt: Date.now(), updatedAt: Date.now(), layers: [] }
+      draft: canRestore ? structuredClone(autosave.draft) : initial ? structuredClone(initial) : { id: uid(), name: '未命名模板', width: 0, height: 0, createdAt: Date.now(), updatedAt: Date.now(), layers: [] }
     };
   }
   const [draft, commitDraft, undo, canUndo, redo, canRedo] = useUndoState(() => initialStateRef.current.draft);
@@ -1013,6 +1036,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const [selectedGroupId, setSelectedGroupId] = useState(null);
   const [draggedLayerId, setDraggedLayerId] = useState(null);
   const [layerDrop, setLayerDrop] = useState(null);
+  const [hasCopiedLayers, setHasCopiedLayers] = useState(false);
   const [tagsText, setTagsText] = useState(() => (initialStateRef.current.draft.tags || []).join(', '));
   const memeInput = useRef();
   const clipboardLayersRef = useRef({ layers: [], groupMeta: {} });
@@ -1030,6 +1054,12 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   })), [updateDraft]);
   const undoDraft = useCallback(() => { if (undo()) { setDirty(true); setAutosaveState('pending'); } }, [undo]);
   const redoDraft = useCallback(() => { if (redo()) { setDirty(true); setAutosaveState('pending'); } }, [redo]);
+  const clearSelection = useCallback(() => {
+    setSelectedIds([]);
+    setSelectedGroupId(null);
+    setTextEditingId(null);
+    setTextSelection(null);
+  }, []);
   const selectLayer = useCallback((id, event = {}) => {
     const layer = draft.layers.find((item) => item.id === id);
     if (!layer) return;
@@ -1085,6 +1115,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       layers: structuredClone(layers.map((layer) => layer.groupId && !groupIds.has(layer.groupId) ? { ...layer, groupId: undefined } : layer)),
       groupMeta: Object.fromEntries([...groupIds].map((groupId) => [groupId, structuredClone(draft.groupMeta?.[groupId] || {})]))
     };
+    setHasCopiedLayers(true);
     notify(layers.length === 1 ? `已复制图层“${layers[0].name}”` : `已复制 ${layers.length} 个图层`);
   }, [draft.groupMeta, draft.layers, notify, selectedIds]);
   const pasteLayers = useCallback(() => {
@@ -1097,19 +1128,26 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
         id: uid(),
         groupId: copiedLayer.groupId ? groupMap.get(copiedLayer.groupId) : undefined,
         name: `${copiedLayer.name} 副本`,
-        x: clamp(copiedLayer.x + 20, 0, Math.max(0, draft.width - copiedLayer.width)),
-        y: clamp(copiedLayer.y + 20, 0, Math.max(0, draft.height - copiedLayer.height))
+        x: copiedLayer.x + 20,
+        y: copiedLayer.y + 20
       };
     });
     const copiedGroupMeta = Object.fromEntries([...groupMap].map(([oldId, newId]) => [newId, {
       ...structuredClone(clipboardLayersRef.current.groupMeta[oldId] || {}),
       name: `${clipboardLayersRef.current.groupMeta[oldId]?.name || '图层组'} 副本`
     }]));
-    updateDraft((previous) => ({ ...previous, layers: [...previous.layers, ...layers], groupMeta: { ...(previous.groupMeta || {}), ...copiedGroupMeta } }));
+    updateDraft((previous) => {
+      const selectedIndexes = previous.layers.map((layer, index) => selectedIds.includes(layer.id) ? index : -1).filter((index) => index >= 0);
+      const insertAt = selectedIndexes.length ? Math.max(...selectedIndexes) + 1 : previous.layers.length;
+      const nextLayers = [...previous.layers];
+      nextLayers.splice(insertAt, 0, ...layers);
+      return { ...previous, layers: nextLayers, groupMeta: { ...(previous.groupMeta || {}), ...copiedGroupMeta } };
+    });
     clipboardLayersRef.current = { layers: structuredClone(layers), groupMeta: copiedGroupMeta };
+    setHasCopiedLayers(true);
     setSelectedIds(layers.map((layer) => layer.id));
     setSelectedGroupId(groupMap.size === 1 ? [...groupMap.values()][0] : null);
-  }, [draft.height, draft.width, notify, updateDraft]);
+  }, [notify, selectedIds, updateDraft]);
   const removeSelectedLayers = useCallback(() => {
     const removableIds = draft.layers.filter((layer) => selectedIds.includes(layer.id) && !layer.locked).map((layer) => layer.id);
     if (!removableIds.length) return notify('所选图层已锁定', 'error');
@@ -1226,27 +1264,46 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const addImage = async (file) => {
     try {
       const src = await fileToDataUrl(file); const image = await loadImage(src);
-      const maxW = draft.width * .9; const maxH = draft.height * .9;
+      const initializeCanvas = !draft.layers.length && draft.width === 0 && draft.height === 0;
+      const initialWidth = Math.min(4000, image.width); const initialHeight = Math.min(4000, image.height);
+      const maxW = initializeCanvas ? initialWidth : draft.width * .9; const maxH = initializeCanvas ? initialHeight : draft.height * .9;
       const scale = Math.min(maxW / image.width, maxH / image.height, 1);
       const width = Math.round(image.width * scale); const height = Math.round(image.height * scale);
-      const layer = { id: uid(), name: file.name.replace(/\.[^.]+$/, ''), type: 'static', src, x: Math.round((draft.width - width) / 2), y: Math.round((draft.height - height) / 2), width, height, rotation: 0, visible: true, fit: 'fill' };
-      updateDraft((prev) => ({ ...prev, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
+      const layer = { id: uid(), name: file.name.replace(/\.[^.]+$/, ''), type: 'static', src, x: initializeCanvas ? 0 : Math.round((draft.width - width) / 2), y: initializeCanvas ? 0 : Math.round((draft.height - height) / 2), width, height, rotation: 0, visible: true, fit: 'fill' };
+      updateDraft((prev) => ({ ...prev, width: initializeCanvas ? width : prev.width, height: initializeCanvas ? height : prev.height, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
     } catch (error) { notify(error.message, 'error'); }
   };
 
   const addEmptySlot = (shape) => {
-    const size = Math.round(Math.min(draft.width, draft.height) * .52);
-    const width = shape === 'circle' ? size : Math.round(draft.width * .6);
-    const height = shape === 'circle' ? size : Math.round(draft.height * .48);
+    const initializeCanvas = !draft.layers.length && draft.width === 0 && draft.height === 0;
+    const size = initializeCanvas ? 416 : Math.round(Math.min(draft.width, draft.height) * .52);
+    const width = shape === 'circle' ? size : initializeCanvas ? 480 : Math.round(draft.width * .6);
+    const height = shape === 'circle' ? size : initializeCanvas ? 384 : Math.round(draft.height * .48);
     const shapeName = shape === 'circle' ? '圆形' : shape === 'rounded' ? '圆角矩形' : shape === 'polygon' ? '多边形' : '矩形';
-    const layer = { id: uid(), name: `${shapeName}照片 ${draft.layers.filter((x) => x.type === 'slot').length + 1}`, type: 'slot', shape, src: '', x: Math.round((draft.width - width) / 2), y: Math.round((draft.height - height) / 2), width, height, rotation: 0, visible: true, fit: 'cover', ...(shape === 'polygon' ? { polygonSides: 5, polygonPoints: regularPolygonPoints(5) } : {}) };
-    updateDraft((prev) => ({ ...prev, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
+    const layer = { id: uid(), name: `${shapeName}照片 ${draft.layers.filter((x) => x.type === 'slot').length + 1}`, type: 'slot', shape, src: '', x: initializeCanvas ? 0 : Math.round((draft.width - width) / 2), y: initializeCanvas ? 0 : Math.round((draft.height - height) / 2), width, height, rotation: 0, visible: true, fit: 'cover', ...(shape === 'polygon' ? { polygonSides: 5, polygonPoints: regularPolygonPoints(5) } : {}) };
+    updateDraft((prev) => ({ ...prev, width: initializeCanvas ? width : prev.width, height: initializeCanvas ? height : prev.height, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
     setShapeMenu(false);
   };
 
   const addTextLayer = () => {
-    const layer = { id: uid(), name: `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`, type: 'text', text: '输入文字', x: Math.round(draft.width * .18), y: Math.round(draft.height * .18), width: Math.round(draft.width * .64), height: 130, rotation: 0, visible: true, fontSize: 48, fontFamily: 'Microsoft YaHei', fontStyle: 'normal', textDecoration: '', align: 'center', fill: '#22211f', lineHeight: 1.25, autoFit: false, stroke: '#ffffff', strokeWidth: 0, shadowEnabled: false, shadowColor: '#000000', shadowBlur: 8, shadowOffsetX: 2, shadowOffsetY: 2, background: '', backgroundPadding: 8 };
-    updateDraft((prev) => ({ ...prev, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
+    const initializeCanvas = !draft.layers.length && draft.width === 0 && draft.height === 0;
+    const width = initializeCanvas ? 512 : Math.round(draft.width * .64); const height = 130;
+    const layer = { id: uid(), name: `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`, type: 'text', text: '输入文字', x: initializeCanvas ? 0 : Math.round(draft.width * .18), y: initializeCanvas ? 0 : Math.round(draft.height * .18), width, height, rotation: 0, visible: true, fontSize: 48, fontFamily: 'Microsoft YaHei', fontStyle: 'normal', textDecoration: '', align: 'center', fill: '#22211f', lineHeight: 1.25, autoFit: false, stroke: '#ffffff', strokeWidth: 0, shadowEnabled: false, shadowColor: '#000000', shadowBlur: 8, shadowOffsetX: 2, shadowOffsetY: 2, background: '', backgroundPadding: 8 };
+    updateDraft((prev) => ({ ...prev, width: initializeCanvas ? width : prev.width, height: initializeCanvas ? height : prev.height, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
+  };
+
+  const autoSizeCanvas = () => {
+    const bounds = combinedLayerBounds(draft.layers);
+    if (!bounds) return notify('请先添加图层', 'error');
+    const left = Math.floor(bounds.left); const top = Math.floor(bounds.top);
+    const width = Math.min(4000, Math.max(0, Math.ceil(bounds.right) - left));
+    const height = Math.min(4000, Math.max(0, Math.ceil(bounds.bottom) - top));
+    updateDraft((previous) => ({
+      ...previous,
+      width,
+      height,
+      layers: previous.layers.map((layer) => ({ ...layer, x: layer.x - left, y: layer.y - top }))
+    }));
   };
 
   const editTextLayer = useCallback((id) => {
@@ -1280,6 +1337,13 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     if (!members.length) return;
     if (selectedGroupId !== groupId) selectGroup(groupId, event);
     setLayerMenu({ id: members.at(-1).id, groupId, x: Math.min(event.clientX, window.innerWidth - 166), y: Math.min(event.clientY, window.innerHeight - 334) });
+  };
+  const openLayersBlankMenu = (event) => {
+    if (!hasCopiedLayers) return;
+    if (event.target.closest('button, input, textarea, select, [data-layer-id], [data-group-id], .panel-title, .layer-add-row, .template-tags-field')) return;
+    event.preventDefault(); event.stopPropagation();
+    clearSelection();
+    setLayerMenu({ blank: true, x: Math.min(event.clientX, window.innerWidth - 166), y: Math.min(event.clientY, window.innerHeight - 54) });
   };
 
   const removeLayer = (id) => {
@@ -1495,29 +1559,40 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       layers: structuredClone(layers),
       groupMeta: groupId ? { [groupId]: structuredClone(draft.groupMeta?.[groupId] || {}) } : {}
     };
+    setHasCopiedLayers(true);
     notify(layers.length > 1 ? `已复制 ${layers.length} 个组合图层` : `已复制图层“${layer.name}”`);
   };
-  const duplicateLayerFromMenu = (id, groupId = null) => {
-    const layer = draft.layers.find((item) => item.id === id);
-    if (!layer) return;
-    const sourceLayers = groupId ? draft.layers.filter((item) => item.groupId === groupId) : [layer];
-    const nextGroupId = groupId ? uid() : undefined;
-    const copies = sourceLayers.map((source) => ({
-      ...structuredClone(source),
-      id: uid(),
-      groupId: nextGroupId,
-      name: `${source.name} 副本`,
-      x: clamp(source.x + 20, 0, Math.max(0, draft.width - source.width)),
-      y: clamp(source.y + 20, 0, Math.max(0, draft.height - source.height)),
-      locked: false
-    }));
-    updateDraft((previous) => ({
-      ...previous,
-      layers: [...previous.layers, ...copies],
-      groupMeta: nextGroupId ? { ...(previous.groupMeta || {}), [nextGroupId]: { ...(previous.groupMeta?.[groupId] || {}), name: `${previous.groupMeta?.[groupId]?.name || '图层组'} 副本` } } : previous.groupMeta
-    }));
-    setSelectedIds(copies.map((copy) => copy.id));
-    setSelectedGroupId(nextGroupId || null);
+  const mergeSelectedLayers = async () => {
+    const layers = draft.layers.filter((layer) => selectedIds.includes(layer.id));
+    if (layers.length < 2) return;
+    if (layers.some((layer) => layer.locked)) return notify('请先解锁所选图层', 'error');
+    const bounds = combinedLayerBounds(layers);
+    const left = Math.floor(bounds.left); const top = Math.floor(bounds.top);
+    const width = Math.max(1, Math.ceil(bounds.right) - left); const height = Math.max(1, Math.ceil(bounds.bottom) - top);
+    try {
+      const src = await renderTemplate({
+        width,
+        height,
+        layers: layers.map((layer) => ({ ...structuredClone(layer), x: layer.x - left, y: layer.y - top }))
+      }, {}, {}, { mime: 'image/png', transparent: true });
+      const merged = { id: uid(), name: '合并图层', type: 'static', src, x: left, y: top, width, height, rotation: 0, visible: true, fit: 'fill' };
+      updateDraft((previous) => {
+        const topIndex = Math.max(...previous.layers.map((layer, index) => selectedIds.includes(layer.id) ? index : -1));
+        const nextLayers = [];
+        previous.layers.forEach((layer, index) => {
+          if (!selectedIds.includes(layer.id)) nextLayers.push(layer);
+          else if (index === topIndex) nextLayers.push(merged);
+        });
+        const groupIds = new Set(nextLayers.map((layer) => layer.groupId).filter(Boolean));
+        const groupMeta = Object.fromEntries(Object.entries(previous.groupMeta || {}).filter(([id]) => groupIds.has(id)));
+        return { ...previous, layers: nextLayers, groupMeta };
+      });
+      setSelectedIds([merged.id]);
+      setSelectedGroupId(null);
+      setLayerMenu(null);
+    } catch (error) {
+      notify(`合并图层失败：${error?.message || error}`, 'error');
+    }
   };
   const moveLayerExtreme = (id, toFront, wholeGroup = false) => updateDraft((previous) => {
     const source = previous.layers.find((layer) => layer.id === id);
@@ -1542,7 +1617,6 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const save = async () => {
     if (!draft.name.trim()) return notify('请填写模板名称', 'error');
     if (!draft.layers.length) return notify('请至少添加一个图层', 'error');
-    if (!draft.layers.some((layer) => layer.type === 'slot')) return notify('请至少添加一个照片位置', 'error');
     const finalDraft = { ...draft, name: draft.name.trim(), updatedAt: Date.now() };
     await onSave(finalDraft);
     await onClearDraft(draftKey).catch(() => undefined);
@@ -1591,17 +1665,22 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const contextLocked = contextGroupId ? contextGroupLayers.some((item) => item.locked) : Boolean(contextLayer?.locked);
   const contextAllLocked = contextGroupId && contextGroupLayers.every((item) => item.locked);
   const selectedGroupName = selectedGroupId ? draft.groupMeta?.[selectedGroupId]?.name || `图层组 ${[...seenGroups].indexOf(selectedGroupId) + 1}` : '';
+  const selectedOutsideLayers = draft.layers.filter((layer) => {
+    if (!selectedIds.includes(layer.id) || !layer.visible) return false;
+    const bounds = layerBounds(layer);
+    return bounds.left < 0 || bounds.top < 0 || bounds.right > draft.width || bounds.bottom > draft.height;
+  });
 
   return <main className="editor-page">
     <header className="editor-topbar"><div className="editor-left"><IconButton label="返回模板库" onClick={tryBack}><ArrowLeft size={21}/></IconButton><div className="title-field"><input value={draft.name} onChange={(e) => updateDraft({ ...draft, name: e.target.value })}/><span>{draft.width} x {draft.height}px</span></div></div><div className="editor-center"><span className="status-dot"></span>{autosaveState === 'saving' ? '正在自动保存' : autosaveState === 'error' ? '自动保存失败' : initialStateRef.current.restored ? '已恢复草稿' : dirty ? '已自动保存' : '已保存'}</div><div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undoDraft} disabled={!canUndo}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redoDraft} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={tryBack}>取消</button><button className="primary-button" onClick={save}><Save size={17}/>保存模板</button></div></header>
     <div className="editor-body">
-      <aside className="layers-panel"><div className="panel-title"><div><span>图层</span><small>{draft.layers.length}</small></div><IconButton label="添加可替换照片" onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Plus size={18}/></IconButton></div><div className="layer-add-row"><button onClick={() => memeInput.current.click()}><ImagePlus size={18}/><span>添加固定图层</span></button><div className="shape-picker-wrap"><button onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Shapes size={18}/><span>添加可替换照片</span></button>{shapeMenu && <div className="shape-picker" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => addEmptySlot('rect')}><Square size={17}/><span>矩形</span></button><button onClick={() => addEmptySlot('circle')}><Circle size={17}/><span>圆形</span></button><button onClick={() => addEmptySlot('rounded')}><Shapes size={17}/><span>圆角矩形</span></button><button onClick={() => addEmptySlot('polygon')}><Pentagon size={17}/><span>多边形</span></button></div>}</div><button onClick={addTextLayer}><Type size={18}/><span>添加文字</span></button></div><label className="template-tags-field"><span>模板标签</span><input value={tagsText} onChange={(event) => { const value = event.target.value; setTagsText(value); updateDraft({ ...draft, tags: value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 10) }); }} placeholder="反应、工作、猫"/></label><input ref={memeInput} hidden type="file" accept="image/*" onChange={(event) => event.target.files[0] && addImage(event.target.files[0])}/>
-        <div className="layers-list">{layerListRows}</div>
-        {!draft.layers.length && <div className="layers-empty"><Layers3 size={28}/><p>先添加 Meme 底图，再添加一个照片位置。</p></div>}
+      <aside className="layers-panel" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu}><div className="panel-title"><div><span>图层</span><small>{draft.layers.length}</small></div><IconButton label="添加可替换照片" onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Plus size={18}/></IconButton></div><div className="layer-add-row"><button onClick={() => memeInput.current.click()}><ImagePlus size={18}/><span>添加固定图层</span></button><div className="shape-picker-wrap"><button onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Shapes size={18}/><span>添加可替换照片</span></button>{shapeMenu && <div className="shape-picker" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => addEmptySlot('rect')}><Square size={17}/><span>矩形</span></button><button onClick={() => addEmptySlot('circle')}><Circle size={17}/><span>圆形</span></button><button onClick={() => addEmptySlot('rounded')}><Shapes size={17}/><span>圆角矩形</span></button><button onClick={() => addEmptySlot('polygon')}><Pentagon size={17}/><span>多边形</span></button></div>}</div><button onClick={addTextLayer}><Type size={18}/><span>添加文字</span></button></div><label className="template-tags-field"><span>模板标签</span><input value={tagsText} onChange={(event) => { const value = event.target.value; setTagsText(value); updateDraft({ ...draft, tags: value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 10) }); }} placeholder="反应、工作、猫"/></label><input ref={memeInput} hidden type="file" accept="image/*" onChange={(event) => event.target.files[0] && addImage(event.target.files[0])}/>
+        <div className="layers-list" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu}>{layerListRows}</div>
+        {!draft.layers.length && <div className="layers-empty" onClick={clearSelection} onContextMenu={openLayersBlankMenu}><Layers3 size={28}/><p>添加第一个图层后，画布会自动匹配图层大小。</p></div>}
       </aside>
       <section className="canvas-workspace">
         <div className="canvas-toolbar">
-          <div className="canvas-size"><label>画布</label><input type="number" min="100" max="4000" value={draft.width} onChange={(e) => updateDraft({ ...draft, width: clamp(e.target.value, 100, 4000) })}/><span>×</span><input type="number" min="100" max="4000" value={draft.height} onChange={(e) => updateDraft({ ...draft, height: clamp(e.target.value, 100, 4000) })}/></div>
+          <div className="canvas-size"><label>画布</label><input type="number" min="0" max="4000" value={draft.width} onChange={(e) => updateDraft({ ...draft, width: clamp(e.target.value, 0, 4000) })}/><span>×</span><input type="number" min="0" max="4000" value={draft.height} onChange={(e) => updateDraft({ ...draft, height: clamp(e.target.value, 0, 4000) })}/><button className="auto-canvas-button" onClick={autoSizeCanvas}>自动设置</button></div>
           <div className="editor-paint-tools">
             <IconButton label="选择与移动" className={activeTool === 'select' ? 'active' : ''} onClick={() => setActiveTool('select')}><MousePointer2 size={17}/></IconButton>
             <IconButton label="画笔（按住 Ctrl 临时取色）" className={activeTool === 'brush' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('brush')}><Paintbrush size={17}/></IconButton>
@@ -1613,9 +1692,10 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
           </div>
           <div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>
         </div>
-        <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onMouseDown={(event) => { if (activeTool === 'select' && event.target === event.currentTarget) beginPan(event); }}>
+        <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onMouseDown={(event) => { if (activeTool === 'select' && event.target === event.currentTarget) { clearSelection(); beginPan(event); } }}>
           <div className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}>
-            <EditorStage template={draft} selectedIds={selectedIds} selectLayer={selectLayer} clearSelection={() => { setSelectedIds([]); setSelectedGroupId(null); setTextEditingId(null); setTextSelection(null); }} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, paintSrc) => updateLayer(id, { paintSrc })} onPickColor={setPaintColor} zoom={zoom}/>
+            <EditorStage template={draft} selectedIds={selectedIds} selectLayer={selectLayer} clearSelection={clearSelection} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, paintSrc) => updateLayer(id, { paintSrc })} onPickColor={setPaintColor} zoom={zoom}/>
+            {selectedOutsideLayers.map((layer) => <div key={`outside-outline-${layer.id}`} className="outside-layer-outline" style={{ left: layer.x * zoom, top: layer.y * zoom, width: layer.width * zoom, height: layer.height * zoom, transform: `rotate(${layer.rotation || 0}deg)` }}/>) }
             {textEditingId && draft.layers.find((layer) => layer.id === textEditingId && layer.type === 'text') && <RichTextOverlay
               layer={draft.layers.find((layer) => layer.id === textEditingId)}
               zoom={zoom}
@@ -1629,17 +1709,17 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       <aside className="properties-panel"><div className="panel-title"><span>属性</span></div>{selectedGroupId && selectedGroupLayers.length ? <GroupProperties name={selectedGroupName} layers={selectedGroupLayers} onRename={(name) => updateGroupMeta(selectedGroupId, { name })} onToggleLock={() => updateGroupLayers(selectedGroupId, { locked: selectedGroupLayers.some((layer) => !layer.locked) })} onToggleVisibility={() => updateGroupLayers(selectedGroupId, { visible: !selectedGroupLayers.every((layer) => layer.visible) })} onMove={(axis, value) => moveGroupTo(selectedGroupId, axis, value)} onUngroup={ungroupSelected} onRemove={() => removeGroup(selectedGroupId)} onOrder={(direction) => moveLayer(selectedGroupLayers[0].id, direction, true)}/> : selectedLayers.length > 1 ? <MultiSelectionProperties layers={selectedLayers} grouped={Boolean(uniformlySelectedGroupId)} onGroup={groupSelected} onUngroup={ungroupSelected} onToggleLock={toggleSelectedLock} onAlign={alignSelected} onDistribute={distributeSelected}/> : selected ? <Properties layer={selected} textStyle={selected.type === 'text' ? textStyleAt(selected, Math.min(textSelection?.start ?? 0, textSelection?.end ?? 0)) : null} textSelection={textSelection?.id === selected.id ? textSelection : null} updateTextStyle={applySelectedTextStyle} updateText={updateSelectedText} update={(patch) => updateLayer(selected.id, patch)} toggleLock={() => updateLayer(selected.id, { locked: !selected.locked })} remove={() => removeLayer(selected.id)} move={(direction) => moveLayer(selected.id, direction)}/> : <div className="property-empty"><Pencil size={26}/><p>选择一个图层后，可调整位置、尺寸和旋转。</p></div>}</aside>
     </div>
     {layerMenu && <div className="layer-context-menu" style={{ left: layerMenu.x, top: Math.max(6, layerMenu.y) }} onPointerDown={(event) => event.stopPropagation()}>
+      {layerMenu.blank ? <button onClick={() => { pasteLayers(); setLayerMenu(null); }}><Clipboard size={16}/>粘贴图层</button> : <>
       <button onClick={() => { copyLayerFromMenu(layerMenu.id, contextGroupId); setLayerMenu(null); }}><Copy size={16}/>复制{contextGroupId ? '图层组' : '图层'}</button>
-      <button onClick={() => { duplicateLayerFromMenu(layerMenu.id, contextGroupId); setLayerMenu(null); }}><Plus size={16}/>创建副本</button>
+      {selectedIds.length > 1 && <button disabled={selectedLayers.some((layer) => layer.locked)} onClick={mergeSelectedLayers}><Layers3 size={16}/>合并图层</button>}
       {contextGroupId || contextLayer?.groupId
         ? <button onClick={() => { ungroupGroup(contextGroupId || contextLayer.groupId); setLayerMenu(null); }}><Layers3 size={16}/>取消组合</button>
         : <button disabled={selectedIds.length < 2} onClick={() => { groupSelected(); setLayerMenu(null); }}><Layers3 size={16}/>组合图层</button>}
       <button onClick={() => { if (contextGroupId) updateGroupLayers(contextGroupId, { locked: !contextAllLocked }); else updateLayer(layerMenu.id, { locked: !contextLayer?.locked }); setLayerMenu(null); }}>{contextGroupId ? (contextAllLocked ? <Unlock size={16}/> : <Lock size={16}/>) : (contextLayer?.locked ? <Unlock size={16}/> : <Lock size={16}/>)} {contextGroupId ? (contextAllLocked ? '解锁图层组' : '锁定图层组') : (contextLayer?.locked ? '解锁图层' : '锁定图层')}</button>
-      <button disabled={contextLocked} onClick={() => { moveLayer(layerMenu.id, 1, Boolean(contextGroupId)); setLayerMenu(null); }}><ChevronUp size={16}/>上移{contextGroupId ? '图层组' : '图层'}</button>
-      <button disabled={contextLocked} onClick={() => { moveLayer(layerMenu.id, -1, Boolean(contextGroupId)); setLayerMenu(null); }}><ChevronDown size={16}/>下移{contextGroupId ? '图层组' : '图层'}</button>
       <button disabled={contextLocked} onClick={() => { moveLayerExtreme(layerMenu.id, true, Boolean(contextGroupId)); setLayerMenu(null); }}><ChevronUp size={16}/>置于顶层</button>
       <button disabled={contextLocked} onClick={() => { moveLayerExtreme(layerMenu.id, false, Boolean(contextGroupId)); setLayerMenu(null); }}><ChevronDown size={16}/>置于底层</button>
       <button className="danger" disabled={contextLocked} onClick={() => { if (contextGroupId) removeGroup(contextGroupId); else removeLayer(layerMenu.id); setLayerMenu(null); }}><Trash2 size={16}/>删除{contextGroupId ? '图层组' : '图层'}</button>
+      </>}
     </div>}
   </main>;
 }
