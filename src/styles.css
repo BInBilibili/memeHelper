@@ -202,6 +202,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .brush-size input[type="number"] { min-width: 0; width: 42px; height: 25px; padding: 0 4px; border: 1px solid var(--line); border-radius: 3px; font-size: 9px; }
 .brush-size input[type="range"] { min-width: 0; width: 100%; accent-color: var(--accent); }
 .eraser-tool-wrap { position: relative; }
+.tool-menu-wrap::after { content: ""; position: absolute; right: 3px; bottom: 3px; z-index: 1; width: 0; height: 0; border-top: 4px solid transparent; border-left: 4px solid transparent; border-right: 4px solid currentColor; pointer-events: none; }
 .eraser-mode-menu { position: absolute; z-index: 20; left: 0; top: 34px; width: 116px; padding: 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); box-shadow: 0 8px 22px rgba(25,23,20,.16); }
 .eraser-mode-menu button { width: 100%; height: 28px; padding: 0 7px; border: 0; border-radius: 3px; background: transparent; color: var(--ink); text-align: left; font-size: 10px; cursor: pointer; }
 .eraser-mode-menu button:hover, .eraser-mode-menu button.active { color: var(--accent); background: #fff1ed; }
@@ -216,7 +217,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .pan-viewport.panning, .pan-viewport.panning * { cursor: grabbing !important; user-select: none; }
 .pan-viewport.tool-brush, .pan-viewport.tool-fill, .pan-viewport.tool-eraser, .pan-viewport.tool-picker,
 .pan-viewport.tool-brush canvas, .pan-viewport.tool-fill canvas, .pan-viewport.tool-eraser canvas, .pan-viewport.tool-picker canvas { cursor: none; }
-.tool-cursor { position: absolute; z-index: 12; width: 24px; height: 24px; transform: translate(-3px, -21px); border-radius: 3px; display: grid; place-items: center; color: #171716; background: rgba(255,255,255,.86); box-shadow: 0 1px 4px rgba(0,0,0,.28); pointer-events: none; }
+.tool-cursor { position: absolute; z-index: 12; width: 24px; height: 24px; transform: translate(-3px, -21px); display: grid; place-items: center; color: #171716; background: transparent; filter: drop-shadow(0 1px 1px rgba(255,255,255,.9)) drop-shadow(0 1px 2px rgba(0,0,0,.32)); pointer-events: none; }
 .property-content { padding: 17px; }
 .text-field, .number-field { display: block; }
 .text-field > span, .number-field > span { display: block; margin-bottom: 6px; color: var(--muted); font-size: 9px; font-weight: 600; }
