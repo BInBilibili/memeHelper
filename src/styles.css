@@ -176,13 +176,14 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .shape-thumb { width: 20px; height: 16px; border: 1.5px dashed currentColor; background: rgba(233,78,55,.08); }
 .shape-thumb.circle { width: 19px; height: 19px; border-radius: 50%; }
 .shape-thumb.rounded { border-radius: 5px; }
+.shape-thumb.polygon { width: 21px; height: 21px; clip-path: polygon(50% 0, 98% 36%, 79% 94%, 21% 94%, 2% 36%); border: 0; outline: 1.5px dashed currentColor; }
 .layer-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .layer-copy strong { font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .layer-copy span { font-size: 9px; color: var(--muted); }
 .layers-empty, .property-empty { padding: 50px 25px; color: #9b9890; text-align: center; }
 .layers-empty p, .property-empty p { font-size: 11px; line-height: 1.7; }
 .canvas-workspace { min-width: 0; min-height: 0; display: flex; flex-direction: column; background-color: #e5e3dd; background-image: radial-gradient(#cac7be 1px, transparent 1px); background-size: 16px 16px; }
-.canvas-toolbar { height: 53px; flex: none; padding: 0 14px; background: rgba(255,255,255,.96); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+.canvas-toolbar { height: 53px; flex: none; padding: 0 10px; background: rgba(255,255,255,.96); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .canvas-size { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--muted); }
 .canvas-size label { margin-right: 4px; font-weight: 600; }
 .canvas-size input { width: 60px; height: 28px; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; font-size: 10px; }
@@ -191,8 +192,18 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .zoom-control { height: 30px; display: flex; align-items: center; border: 1px solid var(--line); background: #fff; border-radius: 5px; }
 .zoom-control .icon-button { width: 29px; height: 28px; }
 .zoom-control span { width: 48px; text-align: center; font-size: 10px; }
+.editor-paint-tools { min-width: 0; height: 34px; padding: 2px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); display: flex; align-items: center; gap: 1px; }
+.editor-paint-tools .icon-button { width: 29px; height: 28px; border-radius: 3px; }
+.editor-paint-tools .icon-button.active { color: var(--accent); background: #fff1ed; }
+.paint-color { width: 31px; height: 28px; margin-left: 3px; padding: 2px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); cursor: pointer; }
+.brush-size { width: 84px; padding: 0 4px; display: grid; grid-template-columns: 30px 1fr; align-items: center; gap: 3px; color: var(--muted); font-size: 8px; }
+.brush-size input { min-width: 0; width: 100%; accent-color: var(--accent); }
 .canvas-scroll { flex: 1; min-height: 0; position: relative; overflow: hidden; }
 .stage-shadow { position: absolute; left: 50%; top: 50%; flex: none; background: #fff; box-shadow: 0 10px 35px rgba(32,30,25,.2); }
+.rich-text-overlay { position: absolute; z-index: 5; margin: 0; border: 1px solid var(--accent); outline: 1px dashed rgba(233,78,55,.6); outline-offset: 2px; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; transform-origin: 0 0; caret-color: var(--accent); cursor: text; }
+.rich-text-overlay:focus { box-shadow: 0 0 0 2px rgba(233,78,55,.16); }
+.tool-brush, .tool-fill, .tool-eraser, .tool-picker { cursor: crosshair; }
+.tool-brush.panning, .tool-fill.panning, .tool-eraser.panning, .tool-picker.panning { cursor: crosshair; }
 .pan-viewport { cursor: grab; }
 .pan-viewport.panning, .pan-viewport.panning * { cursor: grabbing !important; user-select: none; }
 .property-content { padding: 17px; }
@@ -225,8 +236,17 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .segmented button { height: 30px; border: 0; border-radius: 3px; background: transparent; font-size: 10px; cursor: pointer; }
 .segmented button.active { background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.1); font-weight: 600; }
 .shape-segmented { display: grid; grid-template-columns: repeat(3, 1fr); padding: 3px; border-radius: 5px; background: #efeee9; }
+.shape-segmented.four { grid-template-columns: repeat(4, 1fr); }
 .shape-segmented button { height: 30px; padding: 0 3px; border: 0; border-radius: 3px; background: transparent; font-size: 9px; cursor: pointer; }
 .shape-segmented button.active { background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.1); font-weight: 600; }
+.polygon-controls { margin-top: 10px; display: flex; flex-direction: column; gap: 7px; }
+.polygon-radius { display: grid; grid-template-columns: 42px minmax(0,1fr) 34px; align-items: center; gap: 6px; color: var(--muted); font-size: 9px; }
+.polygon-radius input { width: 100%; accent-color: var(--accent); }
+.polygon-radius output { color: var(--ink); text-align: right; font-size: 9px; }
+.slot-color-fill { display: grid; grid-template-columns: 38px minmax(0,1fr); gap: 7px; }
+.slot-color-fill input[type="color"] { width: 38px; height: 30px; padding: 2px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+.slot-color-fill .wide-property-button { width: 100%; }
+.slot-color-fill .wide-property-button.active { color: var(--accent); border-color: #e6a092; background: #fff4f1; }
 .help-copy { color: var(--muted); font-size: 9px; line-height: 1.6; }
 .order-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
 .order-buttons button { height: 34px; border-radius: 4px; border: 1px solid var(--line); background: #fff; display: flex; align-items: center; justify-content: center; gap: 5px; font-size: 10px; cursor: pointer; }
@@ -457,6 +477,10 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 @media (max-width: 1120px) {
   .editor-body { grid-template-columns: 225px minmax(0,1fr) 245px; }
   .template-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  .canvas-toolbar { gap: 5px; padding-inline: 7px; }
+  .canvas-size { gap: 4px; flex: none; }
+  .canvas-size label { display: none; }
+  .canvas-size input { width: 56px; }
 }
 
 @media (max-width: 850px) {

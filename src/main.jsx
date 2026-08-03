@@ -1,13 +1,13 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
-import { Stage, Layer, Group, Ellipse, Image as KonvaImage, Line, Rect, Text as KonvaText, Transformer } from 'react-konva';
+import { Stage, Layer, Group, Ellipse, Image as KonvaImage, Line, Rect, Text as KonvaText, Transformer, Circle as KonvaCircle } from 'react-konva';
 import {
   AlignCenter, AlignHorizontalDistributeCenter, AlignHorizontalJustifyCenter, AlignHorizontalJustifyEnd,
   AlignHorizontalJustifyStart, AlignLeft, AlignRight, AlignVerticalDistributeCenter,
   AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowLeft, Bold, Check, ChevronDown, ChevronRight, ChevronUp,
   Circle, Clipboard, Copy, Crop, Download, Eye, EyeOff, FileImage, GripVertical, ImagePlus,
-  Italic, Layers3, LayoutTemplate, Lock, MoreHorizontal, Pencil, Plus, Redo2, RefreshCw, RotateCcw,
+  Eraser, Italic, Layers3, LayoutTemplate, Lock, MoreHorizontal, MousePointer2, Paintbrush, PaintBucket, Pencil, Pentagon, Pipette, Plus, Redo2, RefreshCw, RotateCcw,
   Save, Shapes, Sparkles, Square, Star, Strikethrough, Trash2, Type, Underline, Undo2, Unlock, Upload,
   X, ZoomIn, ZoomOut
 } from 'lucide-react';
@@ -81,6 +81,9 @@ applyTheme('system');
 const uid = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 const clamp = (n, min, max) => Math.max(min, Math.min(max, Number(n) || 0));
 const shapeOf = (layer) => layer.shape || 'rect';
+const POLYGON_MIN_SIDES = 3;
+const POLYGON_MAX_SIDES = 12;
+const TEXT_STYLE_KEYS = ['fontSize', 'fontFamily', 'fontStyle', 'textDecoration', 'fill', 'stroke', 'strokeWidth'];
 const ROTATION_SNAPS = Array.from({ length: 9 }, (_, index) => index * 45);
 const wheelZoom = (current, deltaY, min, max) => deltaY === 0
   ? current
@@ -91,6 +94,154 @@ const isTextEditingTarget = (target) => target instanceof HTMLElement && (
   || ['TEXTAREA', 'SELECT'].includes(target.tagName)
   || (target.tagName === 'INPUT' && !['button', 'checkbox', 'radio', 'file', 'hidden'].includes(target.type))
 );
+
+function regularPolygonPoints(sides = 5) {
+  const count = clamp(Math.round(sides), POLYGON_MIN_SIDES, POLYGON_MAX_SIDES);
+  return Array.from({ length: count }, (_, index) => {
+    const angle = -Math.PI / 2 + index * Math.PI * 2 / count;
+    return { x: .5 + Math.cos(angle) * .5, y: .5 + Math.sin(angle) * .5 };
+  });
+}
+
+function polygonPointsOf(layer, sides = layer.polygonSides || 5) {
+  const count = clamp(Math.round(sides), POLYGON_MIN_SIDES, POLYGON_MAX_SIDES);
+  return Array.isArray(layer.polygonPoints) && layer.polygonPoints.length === count
+    ? layer.polygonPoints.map((point) => ({ x: clamp(point.x, 0, 1), y: clamp(point.y, 0, 1) }))
+    : regularPolygonPoints(count);
+}
+
+function polygonPixelPoints(layer) {
+  return polygonPointsOf(layer).flatMap((point) => [point.x * layer.width, point.y * layer.height]);
+}
+
+function polygonRadiusPercent(point) {
+  const angle = Math.atan2(point.y - .5, point.x - .5);
+  const dx = Math.cos(angle); const dy = Math.sin(angle);
+  const maximum = Math.min(Math.abs(dx) < 1e-6 ? Infinity : .5 / Math.abs(dx), Math.abs(dy) < 1e-6 ? Infinity : .5 / Math.abs(dy));
+  const distance = Math.hypot(point.x - .5, point.y - .5);
+  return Math.round(clamp(distance / maximum * 100, 10, 100));
+}
+
+function polygonPointAtRadius(point, percent) {
+  const angle = Math.atan2(point.y - .5, point.x - .5);
+  const dx = Math.cos(angle); const dy = Math.sin(angle);
+  const maximum = Math.min(Math.abs(dx) < 1e-6 ? Infinity : .5 / Math.abs(dx), Math.abs(dy) < 1e-6 ? Infinity : .5 / Math.abs(dy));
+  const distance = maximum * clamp(percent, 10, 100) / 100;
+  return { x: clamp(.5 + dx * distance, 0, 1), y: clamp(.5 + dy * distance, 0, 1) };
+}
+
+function baseTextStyle(layer) {
+  return {
+    fontSize: clamp(layer.fontSize || 48, 8, 400),
+    fontFamily: layer.fontFamily || 'Microsoft YaHei',
+    fontStyle: layer.fontStyle || 'normal',
+    textDecoration: layer.textDecoration || '',
+    fill: layer.fill || '#22211f',
+    stroke: layer.stroke || '#ffffff',
+    strokeWidth: Math.max(0, Number(layer.strokeWidth) || 0)
+  };
+}
+
+function textStyleAt(layer, index) {
+  const style = baseTextStyle(layer);
+  (layer.textRuns || []).forEach((run) => {
+    if (index >= run.start && index < run.end) Object.assign(style, run.style || {});
+  });
+  return style;
+}
+
+function compressTextStyles(layer, styles) {
+  const runs = [];
+  styles.forEach((style, index) => {
+    const previous = runs.at(-1);
+    const key = JSON.stringify(style);
+    if (previous?.key === key) previous.end = index + 1;
+    else runs.push({ start: index, end: index + 1, style, key });
+  });
+  return runs.map(({ start, end, style }) => ({ start, end, style }));
+}
+
+function applyTextStyle(layer, selection, patch) {
+  const text = String(layer.text || '');
+  const start = clamp(Math.min(selection?.start ?? 0, selection?.end ?? 0), 0, text.length);
+  const end = clamp(Math.max(selection?.start ?? 0, selection?.end ?? 0), 0, text.length);
+  if (start === end) {
+    const nextRuns = (layer.textRuns || []).map((run) => ({
+      ...run,
+      style: Object.fromEntries(Object.entries(run.style || {}).filter(([key]) => !(key in patch)))
+    })).filter((run) => Object.keys(run.style).length);
+    return { ...patch, textRuns: nextRuns };
+  }
+  const styles = Array.from({ length: text.length }, (_, index) => textStyleAt(layer, index));
+  for (let index = start; index < end; index += 1) styles[index] = { ...styles[index], ...patch };
+  return { textRuns: compressTextStyles(layer, styles) };
+}
+
+function updateTextContent(layer, text) {
+  const previous = String(layer.text || '');
+  const next = String(text);
+  if (previous === next) return { text: next };
+  let prefix = 0;
+  while (prefix < previous.length && prefix < next.length && previous[prefix] === next[prefix]) prefix += 1;
+  let suffix = 0;
+  while (suffix < previous.length - prefix && suffix < next.length - prefix && previous[previous.length - 1 - suffix] === next[next.length - 1 - suffix]) suffix += 1;
+  const inherited = textStyleAt(layer, Math.max(0, prefix - 1));
+  const styles = [
+    ...Array.from({ length: prefix }, (_, index) => textStyleAt(layer, index)),
+    ...Array.from({ length: next.length - prefix - suffix }, () => ({ ...inherited })),
+    ...Array.from({ length: suffix }, (_, index) => textStyleAt(layer, previous.length - suffix + index))
+  ];
+  return { text: next, textRuns: compressTextStyles(layer, styles) };
+}
+
+function textFontString(style) {
+  const tokens = String(style.fontStyle || '').split(' ');
+  return `${tokens.includes('italic') ? 'italic ' : ''}${tokens.includes('bold') ? 'bold ' : ''}${style.fontSize}px "${style.fontFamily || 'Microsoft YaHei'}"`;
+}
+
+function layoutStyledText(layer) {
+  const text = String(layer.text || '');
+  const padding = Math.max(0, Number(layer.backgroundPadding) || 0);
+  const availableWidth = Math.max(1, layer.width - padding * 2);
+  const availableHeight = Math.max(1, layer.height - padding * 2);
+  const requestedSize = clamp(layer.fontSize || 48, 8, 400);
+  const fontScale = resolveTextFontSize(layer) / requestedSize;
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  const lines = [];
+  let line = { glyphs: [], width: 0, height: requestedSize * (layer.lineHeight || 1.25) };
+  const pushLine = () => { lines.push(line); line = { glyphs: [], width: 0, height: requestedSize * (layer.lineHeight || 1.25) }; };
+  let textOffset = 0;
+  [...text].forEach((character) => {
+    if (character === '\n') { textOffset += character.length; pushLine(); return; }
+    const style = { ...textStyleAt(layer, textOffset) };
+    style.fontSize = clamp(style.fontSize * fontScale, 8, 400);
+    ctx.font = textFontString(style);
+    const width = ctx.measureText(character).width;
+    if (line.glyphs.length && line.width + width > availableWidth) pushLine();
+    line.glyphs.push({ character, width, style });
+    line.width += width;
+    line.height = Math.max(line.height, style.fontSize * (layer.lineHeight || 1.25));
+    textOffset += character.length;
+  });
+  pushLine();
+  const runs = [];
+  let y = padding;
+  for (const current of lines) {
+    if (y >= padding + availableHeight) break;
+    let x = padding + (layer.align === 'center' ? (availableWidth - current.width) / 2 : layer.align === 'right' ? availableWidth - current.width : 0);
+    current.glyphs.forEach((glyph) => {
+      const previous = runs.at(-1);
+      const key = JSON.stringify(glyph.style);
+      if (previous && previous.key === key && previous.lineY === y && Math.abs(previous.x + previous.width - x) < .01) {
+        previous.text += glyph.character; previous.width += glyph.width;
+      } else runs.push({ text: glyph.character, x, y, width: glyph.width, style: glyph.style, key, lineY: y });
+      x += glyph.width;
+    });
+    y += current.height;
+  }
+  return runs;
+}
 
 function snapLayerPosition(layer, position, template, threshold, excludedIds = [layer.id]) {
   const excluded = new Set(excludedIds);
@@ -262,6 +413,11 @@ function traceLayerShape(ctx, layer) {
     ctx.quadraticCurveTo(width, height, width - radius, height); ctx.lineTo(radius, height);
     ctx.quadraticCurveTo(0, height, 0, height - radius); ctx.lineTo(0, radius);
     ctx.quadraticCurveTo(0, 0, radius, 0);
+  } else if (shape === 'polygon') {
+    polygonPointsOf(layer).forEach((point, index) => {
+      const x = point.x * width; const y = point.y * height;
+      if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
   } else {
     ctx.rect(0, 0, width, height);
   }
@@ -303,49 +459,43 @@ function resolveTextFontSize(layer) {
 }
 
 function drawTextLayer(ctx, layer) {
-  const fontSize = resolveTextFontSize(layer);
-  const fontTokens = String(layer.fontStyle || '').split(' ');
-  const fontStyle = `${fontTokens.includes('italic') ? 'italic ' : ''}${fontTokens.includes('bold') ? 'bold ' : ''}`;
-  const fontFamily = layer.fontFamily || 'Microsoft YaHei';
-  ctx.font = `${fontStyle}${fontSize}px "${fontFamily}"`;
-  ctx.fillStyle = layer.fill || '#22211f';
   ctx.textBaseline = 'top';
-  ctx.textAlign = layer.align || 'left';
-  const padding = Math.max(0, Number(layer.backgroundPadding) || 0);
+  ctx.textAlign = 'left';
   if (layer.background) {
     ctx.save();
     ctx.fillStyle = layer.background;
     ctx.fillRect(0, 0, layer.width, layer.height);
     ctx.restore();
   }
-  const availableWidth = Math.max(1, layer.width - padding * 2);
-  const lines = wrapCanvasText(ctx, layer.text, availableWidth);
-  const lineHeight = fontSize * (layer.lineHeight || 1.25);
-  const anchorX = layer.align === 'center' ? layer.width / 2 : layer.align === 'right' ? layer.width - padding : padding;
-  const decorations = String(layer.textDecoration || '').split(' ');
-  lines.forEach((line, index) => {
-    const y = padding + index * lineHeight;
-    if (y + fontSize > layer.height) return;
+  layoutStyledText(layer).forEach((run) => {
+    const style = run.style;
+    ctx.font = textFontString(style);
+    ctx.fillStyle = style.fill;
     if (layer.shadowEnabled) {
       ctx.shadowColor = layer.shadowColor || '#000000';
       ctx.shadowBlur = Math.max(0, Number(layer.shadowBlur) || 0);
       ctx.shadowOffsetX = Number(layer.shadowOffsetX) || 0;
       ctx.shadowOffsetY = Number(layer.shadowOffsetY) || 0;
     }
-    if ((Number(layer.strokeWidth) || 0) > 0) {
-      ctx.strokeStyle = layer.stroke || '#ffffff';
-      ctx.lineWidth = Number(layer.strokeWidth) * 2;
+    if (style.strokeWidth > 0) {
+      ctx.strokeStyle = style.stroke;
+      ctx.lineWidth = style.strokeWidth * 2;
       ctx.lineJoin = 'round';
-      ctx.strokeText(line, anchorX, y, availableWidth);
+      ctx.strokeText(run.text, run.x, run.y);
     }
-    ctx.fillText(line, anchorX, y, availableWidth);
+    ctx.fillText(run.text, run.x, run.y);
     ctx.shadowColor = 'transparent';
-    const metrics = ctx.measureText(line);
-    const startX = layer.align === 'center' ? anchorX - metrics.width / 2 : layer.align === 'right' ? anchorX - metrics.width : anchorX;
-    ctx.strokeStyle = layer.fill || '#22211f'; ctx.lineWidth = Math.max(1, fontSize / 18);
-    if (decorations.includes('underline')) { ctx.beginPath(); ctx.moveTo(startX, y + fontSize * 1.05); ctx.lineTo(startX + metrics.width, y + fontSize * 1.05); ctx.stroke(); }
-    if (decorations.includes('line-through')) { ctx.beginPath(); ctx.moveTo(startX, y + fontSize * .55); ctx.lineTo(startX + metrics.width, y + fontSize * .55); ctx.stroke(); }
+    const decorations = String(style.textDecoration || '').split(' ');
+    ctx.strokeStyle = style.fill; ctx.lineWidth = Math.max(1, style.fontSize / 18);
+    if (decorations.includes('underline')) { ctx.beginPath(); ctx.moveTo(run.x, run.y + style.fontSize * 1.05); ctx.lineTo(run.x + run.width, run.y + style.fontSize * 1.05); ctx.stroke(); }
+    if (decorations.includes('line-through')) { ctx.beginPath(); ctx.moveTo(run.x, run.y + style.fontSize * .55); ctx.lineTo(run.x + run.width, run.y + style.fontSize * .55); ctx.stroke(); }
   });
+}
+
+async function drawPaintOverlay(ctx, layer) {
+  if (!layer.paintSrc) return;
+  const image = await loadImage(layer.paintSrc);
+  ctx.drawImage(image, 0, 0, layer.width, layer.height);
 }
 
 async function renderTemplate(template, replacements, photoTransforms = {}, options = {}) {
@@ -368,6 +518,7 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
     ctx.rotate((layer.rotation || 0) * Math.PI / 180);
     if (layer.type === 'text') {
       drawTextLayer(ctx, layer);
+      await drawPaintOverlay(ctx, layer);
       ctx.restore();
       continue;
     }
@@ -375,10 +526,13 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
     const src = layer.type === 'slot' && replacement ? replacement : layer.src;
     if (layer.type === 'slot') { traceLayerShape(ctx, layer); ctx.clip(); }
     if (!src) {
-      ctx.fillStyle = '#e8e6df';
+      ctx.fillStyle = layer.slotFill || '#e8e6df';
       traceLayerShape(ctx, layer); ctx.fill();
-      ctx.strokeStyle = '#9d9b94'; ctx.lineWidth = 3; ctx.setLineDash([10, 8]);
-      traceLayerShape(ctx, layer); ctx.stroke();
+      if (!layer.slotFill) {
+        ctx.strokeStyle = '#9d9b94'; ctx.lineWidth = 3; ctx.setLineDash([10, 8]);
+        traceLayerShape(ctx, layer); ctx.stroke();
+      }
+      await drawPaintOverlay(ctx, layer);
       ctx.restore();
       continue;
     }
@@ -393,6 +547,7 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
       } else {
         ctx.drawImage(image, 0, 0, layer.width, layer.height);
       }
+      await drawPaintOverlay(ctx, layer);
     } finally { ctx.restore(); }
   }
   return canvas.toDataURL(mime, mime === 'image/jpeg' ? .92 : undefined);
@@ -549,6 +704,14 @@ function App() {
   const draftSaveQueue = useRef(Promise.resolve());
   const useSessionsRef = useRef({});
   const useSessionSaveQueue = useRef(Promise.resolve());
+
+  useEffect(() => {
+    const suppressBlankContextMenu = (event) => {
+      if (!isTextEditingTarget(event.target)) event.preventDefault();
+    };
+    window.addEventListener('contextmenu', suppressBlankContextMenu);
+    return () => window.removeEventListener('contextmenu', suppressBlankContextMenu);
+  }, []);
 
   const notify = useCallback((message, kind = '') => {
     clearTimeout(toastTimer.current); setToast({ message, kind });
@@ -837,6 +1000,11 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const [selectedIds, setSelectedIds] = useState(() => draft.layers.at(-1)?.id ? [draft.layers.at(-1).id] : []);
   const selectedId = selectedIds.at(-1) || null;
   const { zoom, pan, panning, setZoom, zoomAtPointer, beginPan } = useCanvasViewport(.72, .2, 1.3);
+  const [activeTool, setActiveTool] = useState('select');
+  const [paintColor, setPaintColor] = useState('#202124');
+  const [brushSize, setBrushSize] = useState(18);
+  const [textEditingId, setTextEditingId] = useState(null);
+  const [textSelection, setTextSelection] = useState(null);
   const [dirty, setDirty] = useState(initialStateRef.current.restored);
   const [autosaveState, setAutosaveState] = useState(initialStateRef.current.restored ? 'saved' : 'idle');
   const [shapeMenu, setShapeMenu] = useState(false);
@@ -866,6 +1034,8 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     const layer = draft.layers.find((item) => item.id === id);
     if (!layer) return;
     if (event.shiftKey) event.preventDefault?.();
+    setTextEditingId((current) => current === id ? current : null);
+    setTextSelection((current) => current?.id === id ? current : null);
     const rangeSelect = event.shiftKey && !event.ctrlKey && !event.metaKey;
     const additive = event.ctrlKey || event.metaKey;
     setSelectedGroupId(null);
@@ -1026,14 +1196,21 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       }
       if (event.key === 'Escape' && !event.repeat) {
         event.preventDefault();
-        tryBack();
+        if (textEditingId) {
+          setTextEditingId(null);
+          setTextSelection(null);
+        } else tryBack();
       }
     };
     const closeMenus = () => { setShapeMenu(false); setLayerMenu(null); };
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('pointerdown', closeMenus);
     return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('pointerdown', closeMenus); };
-  }, [copySelectedLayers, nudgeSelectedLayers, pasteLayers, redoDraft, removeSelectedLayers, selectedIds.length, tryBack, undoDraft]);
+  }, [copySelectedLayers, nudgeSelectedLayers, pasteLayers, redoDraft, removeSelectedLayers, selectedIds.length, textEditingId, tryBack, undoDraft]);
+
+  useEffect(() => {
+    if (activeTool !== 'select' && (selectedLayers.length !== 1 || selected?.locked)) setActiveTool('select');
+  }, [activeTool, selected, selectedLayers.length]);
 
   useEffect(() => {
     const available = new Set(draft.layers.map((layer) => layer.id));
@@ -1061,8 +1238,8 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     const size = Math.round(Math.min(draft.width, draft.height) * .52);
     const width = shape === 'circle' ? size : Math.round(draft.width * .6);
     const height = shape === 'circle' ? size : Math.round(draft.height * .48);
-    const shapeName = shape === 'circle' ? '圆形' : shape === 'rounded' ? '圆角矩形' : '矩形';
-    const layer = { id: uid(), name: `${shapeName}照片 ${draft.layers.filter((x) => x.type === 'slot').length + 1}`, type: 'slot', shape, src: '', x: Math.round((draft.width - width) / 2), y: Math.round((draft.height - height) / 2), width, height, rotation: 0, visible: true, fit: 'cover' };
+    const shapeName = shape === 'circle' ? '圆形' : shape === 'rounded' ? '圆角矩形' : shape === 'polygon' ? '多边形' : '矩形';
+    const layer = { id: uid(), name: `${shapeName}照片 ${draft.layers.filter((x) => x.type === 'slot').length + 1}`, type: 'slot', shape, src: '', x: Math.round((draft.width - width) / 2), y: Math.round((draft.height - height) / 2), width, height, rotation: 0, visible: true, fit: 'cover', ...(shape === 'polygon' ? { polygonSides: 5, polygonPoints: regularPolygonPoints(5) } : {}) };
     updateDraft((prev) => ({ ...prev, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
     setShapeMenu(false);
   };
@@ -1071,6 +1248,26 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     const layer = { id: uid(), name: `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`, type: 'text', text: '输入文字', x: Math.round(draft.width * .18), y: Math.round(draft.height * .18), width: Math.round(draft.width * .64), height: 130, rotation: 0, visible: true, fontSize: 48, fontFamily: 'Microsoft YaHei', fontStyle: 'normal', textDecoration: '', align: 'center', fill: '#22211f', lineHeight: 1.25, autoFit: false, stroke: '#ffffff', strokeWidth: 0, shadowEnabled: false, shadowColor: '#000000', shadowBlur: 8, shadowOffsetX: 2, shadowOffsetY: 2, background: '', backgroundPadding: 8 };
     updateDraft((prev) => ({ ...prev, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
   };
+
+  const editTextLayer = useCallback((id) => {
+    const layer = draft.layers.find((item) => item.id === id && item.type === 'text' && !item.locked);
+    if (!layer) return;
+    setSelectedIds([id]);
+    setSelectedGroupId(null);
+    setTextEditingId(id);
+    setTextSelection({ id, start: 0, end: String(layer.text || '').length });
+    setActiveTool('select');
+  }, [draft.layers]);
+
+  const applySelectedTextStyle = useCallback((patch) => {
+    if (!selected || selected.type !== 'text') return;
+    updateLayer(selected.id, applyTextStyle(selected, textSelection?.id === selected.id ? textSelection : null, patch));
+  }, [selected, textSelection]);
+
+  const updateSelectedText = useCallback((text) => {
+    if (!selected || selected.type !== 'text') return;
+    updateLayer(selected.id, updateTextContent(selected, text));
+  }, [selected]);
 
   const openLayerMenu = (id, event) => {
     event.preventDefault(); event.stopPropagation();
@@ -1360,7 +1557,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       className={`layer-row ${child ? 'layer-child' : ''} ${selectedIds.includes(layer.id) ? 'selected' : ''} ${draggedLayerId === layer.id ? 'dragging' : ''} ${dropClass} ${layer.locked ? 'locked' : ''}`}
       onClick={(event) => selectLayer(layer.id, event)}
       onContextMenu={(event) => openLayerMenu(layer.id, event)}
-    ><span className="layer-grip" title={layer.locked ? '图层已锁定' : '拖动排序'} onPointerDown={(event) => { if (!layer.locked) beginLayerReorder(event, layer.id); }}><GripVertical size={15}/></span><div className={`layer-thumb ${layer.type}`}><LayerThumb layer={layer}/></div><div className="layer-copy"><strong>{layer.name}</strong><span>{layer.type === 'slot' ? `${shapeOf(layer) === 'circle' ? '圆形' : shapeOf(layer) === 'rounded' ? '圆角矩形' : '矩形'}照片` : layer.type === 'text' ? '文字图层' : '固定图层'}</span></div><IconButton label={layer.locked ? '解锁图层' : '锁定图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { locked: !layer.locked }); }}>{layer.locked ? <Lock size={15}/> : <Unlock size={15}/>}</IconButton><IconButton label={layer.visible ? '隐藏图层' : '显示图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { visible: !layer.visible }); }}>{layer.visible ? <Eye size={16}/> : <EyeOff size={16}/>}</IconButton></div>;
+    ><span className="layer-grip" title={layer.locked ? '图层已锁定' : '拖动排序'} onPointerDown={(event) => { if (!layer.locked) beginLayerReorder(event, layer.id); }}><GripVertical size={15}/></span><div className={`layer-thumb ${layer.type}`}><LayerThumb layer={layer}/></div><div className="layer-copy"><strong>{layer.name}</strong><span>{layer.type === 'slot' ? `${shapeOf(layer) === 'circle' ? '圆形' : shapeOf(layer) === 'rounded' ? '圆角矩形' : shapeOf(layer) === 'polygon' ? '多边形' : '矩形'}照片` : layer.type === 'text' ? '文字图层' : '固定图层'}</span></div><IconButton label={layer.locked ? '解锁图层' : '锁定图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { locked: !layer.locked }); }}>{layer.locked ? <Lock size={15}/> : <Unlock size={15}/>}</IconButton><IconButton label={layer.visible ? '隐藏图层' : '显示图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { visible: !layer.visible }); }}>{layer.visible ? <Eye size={16}/> : <EyeOff size={16}/>}</IconButton></div>;
   };
   const layerListRows = [];
   const seenGroups = new Set();
@@ -1398,12 +1595,38 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   return <main className="editor-page">
     <header className="editor-topbar"><div className="editor-left"><IconButton label="返回模板库" onClick={tryBack}><ArrowLeft size={21}/></IconButton><div className="title-field"><input value={draft.name} onChange={(e) => updateDraft({ ...draft, name: e.target.value })}/><span>{draft.width} x {draft.height}px</span></div></div><div className="editor-center"><span className="status-dot"></span>{autosaveState === 'saving' ? '正在自动保存' : autosaveState === 'error' ? '自动保存失败' : initialStateRef.current.restored ? '已恢复草稿' : dirty ? '已自动保存' : '已保存'}</div><div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undoDraft} disabled={!canUndo}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redoDraft} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={tryBack}>取消</button><button className="primary-button" onClick={save}><Save size={17}/>保存模板</button></div></header>
     <div className="editor-body">
-      <aside className="layers-panel"><div className="panel-title"><div><span>图层</span><small>{draft.layers.length}</small></div><IconButton label="添加可替换照片" onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Plus size={18}/></IconButton></div><div className="layer-add-row"><button onClick={() => memeInput.current.click()}><ImagePlus size={18}/><span>添加固定图层</span></button><div className="shape-picker-wrap"><button onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Shapes size={18}/><span>添加可替换照片</span></button>{shapeMenu && <div className="shape-picker" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => addEmptySlot('rect')}><Square size={17}/><span>矩形</span></button><button onClick={() => addEmptySlot('circle')}><Circle size={17}/><span>圆形</span></button><button onClick={() => addEmptySlot('rounded')}><Shapes size={17}/><span>圆角矩形</span></button></div>}</div><button onClick={addTextLayer}><Type size={18}/><span>添加文字</span></button></div><label className="template-tags-field"><span>模板标签</span><input value={tagsText} onChange={(event) => { const value = event.target.value; setTagsText(value); updateDraft({ ...draft, tags: value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 10) }); }} placeholder="反应、工作、猫"/></label><input ref={memeInput} hidden type="file" accept="image/*" onChange={(event) => event.target.files[0] && addImage(event.target.files[0])}/>
+      <aside className="layers-panel"><div className="panel-title"><div><span>图层</span><small>{draft.layers.length}</small></div><IconButton label="添加可替换照片" onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Plus size={18}/></IconButton></div><div className="layer-add-row"><button onClick={() => memeInput.current.click()}><ImagePlus size={18}/><span>添加固定图层</span></button><div className="shape-picker-wrap"><button onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Shapes size={18}/><span>添加可替换照片</span></button>{shapeMenu && <div className="shape-picker" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => addEmptySlot('rect')}><Square size={17}/><span>矩形</span></button><button onClick={() => addEmptySlot('circle')}><Circle size={17}/><span>圆形</span></button><button onClick={() => addEmptySlot('rounded')}><Shapes size={17}/><span>圆角矩形</span></button><button onClick={() => addEmptySlot('polygon')}><Pentagon size={17}/><span>多边形</span></button></div>}</div><button onClick={addTextLayer}><Type size={18}/><span>添加文字</span></button></div><label className="template-tags-field"><span>模板标签</span><input value={tagsText} onChange={(event) => { const value = event.target.value; setTagsText(value); updateDraft({ ...draft, tags: value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 10) }); }} placeholder="反应、工作、猫"/></label><input ref={memeInput} hidden type="file" accept="image/*" onChange={(event) => event.target.files[0] && addImage(event.target.files[0])}/>
         <div className="layers-list">{layerListRows}</div>
         {!draft.layers.length && <div className="layers-empty"><Layers3 size={28}/><p>先添加 Meme 底图，再添加一个照片位置。</p></div>}
       </aside>
-      <section className="canvas-workspace"><div className="canvas-toolbar"><div className="canvas-size"><label>画布</label><input type="number" min="100" max="4000" value={draft.width} onChange={(e) => updateDraft({ ...draft, width: clamp(e.target.value, 100, 4000) })}/><span>×</span><input type="number" min="100" max="4000" value={draft.height} onChange={(e) => updateDraft({ ...draft, height: clamp(e.target.value, 100, 4000) })}/></div><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div></div><div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''}`} onWheel={zoomAtPointer} onMouseDown={(event) => { if (event.target === event.currentTarget) beginPan(event); }}><div className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}><EditorStage template={draft} selectedIds={selectedIds} selectLayer={selectLayer} clearSelection={() => { setSelectedIds([]); setSelectedGroupId(null); }} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onPanStart={beginPan} zoom={zoom}/></div></div></section>
-      <aside className="properties-panel"><div className="panel-title"><span>属性</span></div>{selectedGroupId && selectedGroupLayers.length ? <GroupProperties name={selectedGroupName} layers={selectedGroupLayers} onRename={(name) => updateGroupMeta(selectedGroupId, { name })} onToggleLock={() => updateGroupLayers(selectedGroupId, { locked: selectedGroupLayers.some((layer) => !layer.locked) })} onToggleVisibility={() => updateGroupLayers(selectedGroupId, { visible: !selectedGroupLayers.every((layer) => layer.visible) })} onMove={(axis, value) => moveGroupTo(selectedGroupId, axis, value)} onUngroup={ungroupSelected} onRemove={() => removeGroup(selectedGroupId)} onOrder={(direction) => moveLayer(selectedGroupLayers[0].id, direction, true)}/> : selectedLayers.length > 1 ? <MultiSelectionProperties layers={selectedLayers} grouped={Boolean(uniformlySelectedGroupId)} onGroup={groupSelected} onUngroup={ungroupSelected} onToggleLock={toggleSelectedLock} onAlign={alignSelected} onDistribute={distributeSelected}/> : selected ? <Properties layer={selected} update={(patch) => updateLayer(selected.id, patch)} toggleLock={() => updateLayer(selected.id, { locked: !selected.locked })} remove={() => removeLayer(selected.id)} move={(direction) => moveLayer(selected.id, direction)}/> : <div className="property-empty"><Pencil size={26}/><p>选择一个图层后，可调整位置、尺寸和旋转。</p></div>}</aside>
+      <section className="canvas-workspace">
+        <div className="canvas-toolbar">
+          <div className="canvas-size"><label>画布</label><input type="number" min="100" max="4000" value={draft.width} onChange={(e) => updateDraft({ ...draft, width: clamp(e.target.value, 100, 4000) })}/><span>×</span><input type="number" min="100" max="4000" value={draft.height} onChange={(e) => updateDraft({ ...draft, height: clamp(e.target.value, 100, 4000) })}/></div>
+          <div className="editor-paint-tools">
+            <IconButton label="选择与移动" className={activeTool === 'select' ? 'active' : ''} onClick={() => setActiveTool('select')}><MousePointer2 size={17}/></IconButton>
+            <IconButton label="画笔（按住 Ctrl 临时取色）" className={activeTool === 'brush' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('brush')}><Paintbrush size={17}/></IconButton>
+            <IconButton label="填充当前图层" className={activeTool === 'fill' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('fill')}><PaintBucket size={17}/></IconButton>
+            <IconButton label="橡皮擦" className={activeTool === 'eraser' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('eraser')}><Eraser size={17}/></IconButton>
+            <IconButton label="颜色选取器" className={activeTool === 'picker' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('picker')}><Pipette size={17}/></IconButton>
+            <input className="paint-color" type="color" aria-label="绘画颜色" title="绘画颜色" value={paintColor} onChange={(event) => setPaintColor(event.target.value)}/>
+            <label className="brush-size" title="画笔和橡皮擦大小"><span>{brushSize}px</span><input type="range" min="1" max="160" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))}/></label>
+          </div>
+          <div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>
+        </div>
+        <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onMouseDown={(event) => { if (activeTool === 'select' && event.target === event.currentTarget) beginPan(event); }}>
+          <div className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}>
+            <EditorStage template={draft} selectedIds={selectedIds} selectLayer={selectLayer} clearSelection={() => { setSelectedIds([]); setSelectedGroupId(null); setTextEditingId(null); setTextSelection(null); }} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, paintSrc) => updateLayer(id, { paintSrc })} onPickColor={setPaintColor} zoom={zoom}/>
+            {textEditingId && draft.layers.find((layer) => layer.id === textEditingId && layer.type === 'text') && <RichTextOverlay
+              layer={draft.layers.find((layer) => layer.id === textEditingId)}
+              zoom={zoom}
+              onChange={updateSelectedText}
+              onSelectionChange={(selection) => setTextSelection({ id: textEditingId, ...selection })}
+              onDone={() => { setTextEditingId(null); setTextSelection(null); }}
+            />}
+          </div>
+        </div>
+      </section>
+      <aside className="properties-panel"><div className="panel-title"><span>属性</span></div>{selectedGroupId && selectedGroupLayers.length ? <GroupProperties name={selectedGroupName} layers={selectedGroupLayers} onRename={(name) => updateGroupMeta(selectedGroupId, { name })} onToggleLock={() => updateGroupLayers(selectedGroupId, { locked: selectedGroupLayers.some((layer) => !layer.locked) })} onToggleVisibility={() => updateGroupLayers(selectedGroupId, { visible: !selectedGroupLayers.every((layer) => layer.visible) })} onMove={(axis, value) => moveGroupTo(selectedGroupId, axis, value)} onUngroup={ungroupSelected} onRemove={() => removeGroup(selectedGroupId)} onOrder={(direction) => moveLayer(selectedGroupLayers[0].id, direction, true)}/> : selectedLayers.length > 1 ? <MultiSelectionProperties layers={selectedLayers} grouped={Boolean(uniformlySelectedGroupId)} onGroup={groupSelected} onUngroup={ungroupSelected} onToggleLock={toggleSelectedLock} onAlign={alignSelected} onDistribute={distributeSelected}/> : selected ? <Properties layer={selected} textStyle={selected.type === 'text' ? textStyleAt(selected, Math.min(textSelection?.start ?? 0, textSelection?.end ?? 0)) : null} textSelection={textSelection?.id === selected.id ? textSelection : null} updateTextStyle={applySelectedTextStyle} updateText={updateSelectedText} update={(patch) => updateLayer(selected.id, patch)} toggleLock={() => updateLayer(selected.id, { locked: !selected.locked })} remove={() => removeLayer(selected.id)} move={(direction) => moveLayer(selected.id, direction)}/> : <div className="property-empty"><Pencil size={26}/><p>选择一个图层后，可调整位置、尺寸和旋转。</p></div>}</aside>
     </div>
     {layerMenu && <div className="layer-context-menu" style={{ left: layerMenu.x, top: Math.max(6, layerMenu.y) }} onPointerDown={(event) => event.stopPropagation()}>
       <button onClick={() => { copyLayerFromMenu(layerMenu.id, contextGroupId); setLayerMenu(null); }}><Copy size={16}/>复制{contextGroupId ? '图层组' : '图层'}</button>
@@ -1425,22 +1648,191 @@ function LayerThumb({ layer }) {
   const image = useHtmlImage(layer.src);
   if (layer.type === 'text') return <Type size={18}/>;
   if (image) return <img src={layer.src} alt=""/>;
-  return <span className={`shape-thumb ${shapeOf(layer)}`}></span>;
+  return <span className={`shape-thumb ${shapeOf(layer)}`} style={layer.slotFill ? { background: layer.slotFill } : undefined}></span>;
 }
 
-function EditorStage({ template, selectedIds, selectLayer, clearSelection, updateLayer, updateLayers, onLayerContextMenu, onPanStart, zoom }) {
+function richTextSegments(layer) {
+  const text = String(layer.text || '');
+  const boundaries = new Set([0, text.length]);
+  (layer.textRuns || []).forEach((run) => { boundaries.add(clamp(run.start, 0, text.length)); boundaries.add(clamp(run.end, 0, text.length)); });
+  const points = [...boundaries].sort((a, b) => a - b);
+  return points.slice(0, -1).map((start, index) => ({ start, end: points[index + 1], text: text.slice(start, points[index + 1]), style: textStyleAt(layer, start) })).filter((segment) => segment.text);
+}
+
+function readTextSelection(root) {
+  const selection = window.getSelection();
+  if (!root || !selection?.rangeCount || !root.contains(selection.anchorNode) || !root.contains(selection.focusNode)) return null;
+  const offsetOf = (node, offset) => {
+    const range = document.createRange();
+    range.selectNodeContents(root);
+    range.setEnd(node, offset);
+    return range.toString().length;
+  };
+  return { start: offsetOf(selection.anchorNode, selection.anchorOffset), end: offsetOf(selection.focusNode, selection.focusOffset) };
+}
+
+function restoreTextSelection(root, selectionRange) {
+  if (!root || !selectionRange) return;
+  const textNodes = [];
+  const collect = (node) => {
+    node.childNodes.forEach((child) => {
+      if (child.nodeType === Node.TEXT_NODE) textNodes.push(child);
+      else collect(child);
+    });
+  };
+  collect(root);
+  const total = textNodes.reduce((sum, node) => sum + node.textContent.length, 0);
+  const positionAt = (requested) => {
+    let offset = clamp(requested, 0, total);
+    for (const node of textNodes) {
+      if (offset <= node.textContent.length) return { node, offset };
+      offset -= node.textContent.length;
+    }
+    return textNodes.length ? { node: textNodes.at(-1), offset: textNodes.at(-1).textContent.length } : { node: root, offset: 0 };
+  };
+  const start = positionAt(Math.min(selectionRange.start, selectionRange.end));
+  const end = positionAt(Math.max(selectionRange.start, selectionRange.end));
+  const range = document.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function RichTextOverlay({ layer, zoom, onChange, onSelectionChange, onDone }) {
+  const editorRef = useRef();
+  const initializedRef = useRef(false);
+  const selectionRef = useRef({ start: 0, end: String(layer.text || '').length });
+  const renderSignature = JSON.stringify({ text: layer.text || '', runs: layer.textRuns || [], base: baseTextStyle(layer), zoom });
+  useLayoutEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const activeSelection = document.activeElement === editor ? readTextSelection(editor) : null;
+    if (activeSelection) selectionRef.current = activeSelection;
+    const spans = richTextSegments(layer).map((segment) => {
+      const span = document.createElement('span');
+      span.textContent = segment.text;
+      Object.assign(span.style, {
+        fontFamily: segment.style.fontFamily,
+        fontSize: `${segment.style.fontSize * zoom}px`,
+        fontWeight: String(segment.style.fontStyle).includes('bold') ? '700' : '400',
+        fontStyle: String(segment.style.fontStyle).includes('italic') ? 'italic' : 'normal',
+        textDecoration: segment.style.textDecoration,
+        color: segment.style.fill,
+        WebkitTextStroke: segment.style.strokeWidth ? `${segment.style.strokeWidth * 2 * zoom}px ${segment.style.stroke}` : '',
+        paintOrder: 'stroke fill'
+      });
+      return span;
+    });
+    editor.replaceChildren(...spans);
+    editor.focus({ preventScroll: true });
+    if (!initializedRef.current) {
+      initializedRef.current = true;
+      selectionRef.current = { start: 0, end: String(layer.text || '').length };
+    }
+    restoreTextSelection(editor, selectionRef.current);
+    onSelectionChange(selectionRef.current);
+  }, [layer.id, renderSignature]);
+  const recordSelection = () => {
+    const selection = readTextSelection(editorRef.current);
+    if (selection) {
+      selectionRef.current = selection;
+      onSelectionChange(selection);
+    }
+  };
+  return <div
+    ref={editorRef}
+    className="rich-text-overlay"
+    contentEditable
+    suppressContentEditableWarning
+    spellCheck={false}
+    style={{
+      left: layer.x * zoom,
+      top: layer.y * zoom,
+      width: layer.width * zoom,
+      height: layer.height * zoom,
+      padding: `${Math.max(0, Number(layer.backgroundPadding) || 0) * zoom}px`,
+      transform: `rotate(${layer.rotation || 0}deg)`,
+      textAlign: layer.align || 'left',
+      lineHeight: layer.lineHeight || 1.25,
+      background: layer.background || 'transparent'
+    }}
+    onInput={(event) => {
+      const selection = readTextSelection(event.currentTarget);
+      if (selection) selectionRef.current = selection;
+      onChange(event.currentTarget.innerText.replace(/\r/g, ''));
+    }}
+    onMouseUp={recordSelection}
+    onKeyUp={recordSelection}
+    onPointerDown={(event) => event.stopPropagation()}
+    onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); onDone(); } }}
+  />;
+}
+
+function hexToRgba(color) {
+  const value = String(color || '#000000').replace('#', '');
+  const expanded = value.length === 3 ? [...value].map((part) => part + part).join('') : value.padEnd(6, '0').slice(0, 6);
+  return [parseInt(expanded.slice(0, 2), 16), parseInt(expanded.slice(2, 4), 16), parseInt(expanded.slice(4, 6), 16), 255];
+}
+
+function rgbaToHex([red, green, blue]) {
+  return `#${[red, green, blue].map((value) => clamp(Math.round(value), 0, 255).toString(16).padStart(2, '0')).join('')}`;
+}
+
+function layerLocalPoint(layer, point) {
+  const radians = -(layer.rotation || 0) * Math.PI / 180;
+  const dx = point.x - layer.x; const dy = point.y - layer.y;
+  return { x: dx * Math.cos(radians) - dy * Math.sin(radians), y: dx * Math.sin(radians) + dy * Math.cos(radians) };
+}
+
+function floodFillCanvas(canvas, x, y, color) {
+  const width = canvas.width; const height = canvas.height;
+  const startX = clamp(Math.floor(x), 0, width - 1); const startY = clamp(Math.floor(y), 0, height - 1);
+  const ctx = canvas.getContext('2d');
+  const image = ctx.getImageData(0, 0, width, height);
+  const data = image.data; const replacement = hexToRgba(color);
+  const startOffset = (startY * width + startX) * 4;
+  const target = [data[startOffset], data[startOffset + 1], data[startOffset + 2], data[startOffset + 3]];
+  if (target.every((value, index) => value === replacement[index])) return;
+  if (target[3] === 0 && !data.some((value) => value !== 0)) {
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, width, height);
+    return;
+  }
+  const matches = (offset) => target.every((value, index) => data[offset + index] === value);
+  const stack = [startY * width + startX];
+  while (stack.length) {
+    const pixel = stack.pop();
+    const currentX = pixel % width; const currentY = Math.floor(pixel / width);
+    const offset = pixel * 4;
+    if (!matches(offset)) continue;
+    replacement.forEach((value, index) => { data[offset + index] = value; });
+    if (currentX + 1 < width) stack.push(pixel + 1);
+    if (currentX > 0) stack.push(pixel - 1);
+    if (currentY + 1 < height) stack.push(pixel + width);
+    if (currentY > 0) stack.push(pixel - width);
+  }
+  ctx.putImageData(image, 0, 0);
+}
+
+function EditorStage({ template, selectedIds, selectLayer, clearSelection, updateLayer, updateLayers, onLayerContextMenu, onPanStart, onEditText, textEditingId, tool, paintColor, brushSize, onPaintCommit, onPickColor, zoom }) {
+  const stageRef = useRef();
   const trRef = useRef();
   const nodeRefs = useRef({});
   const dragRef = useRef(null);
+  const paintSurfacesRef = useRef({});
+  const paintingRef = useRef(null);
+  const [paintPreview, setPaintPreview] = useState(null);
   const [guides, setGuides] = useState([]);
   const [shiftPressed, setShiftPressed] = useState(false);
 
   useEffect(() => {
-    const nodes = selectedIds
+    const nodes = tool === 'select' ? selectedIds
       .map((id) => template.layers.find((layer) => layer.id === id))
-      .filter((layer) => layer && !layer.locked && layer.visible)
+      .filter((layer) => layer && layer.id !== textEditingId && !layer.locked && layer.visible)
       .map((layer) => nodeRefs.current[layer.id])
-      .filter(Boolean);
+      .filter(Boolean) : [];
     if (trRef.current) {
       trRef.current.nodes(nodes);
       trRef.current.setAttrs({
@@ -1452,7 +1844,7 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
       trRef.current.forceUpdate();
       trRef.current.getLayer()?.batchDraw();
     }
-  }, [selectedIds, template.layers, zoom]);
+  }, [selectedIds, template.layers, textEditingId, tool, zoom]);
 
   useEffect(() => {
     const updateShift = (event) => setShiftPressed(event.type === 'keydown');
@@ -1534,11 +1926,137 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
     if (Object.keys(patches).length) updateLayers(patches);
   };
 
-  return <Stage width={template.width * zoom} height={template.height * zoom} scaleX={zoom} scaleY={zoom} onWheel={(event) => event.target.stopDrag?.()} onMouseDown={(event) => { trRef.current?.rotationSnaps(event.evt.shiftKey || shiftPressed ? ROTATION_SNAPS : []); if (event.target === event.target.getStage() || event.target.name() === 'editor-background') { clearSelection(); onPanStart(event); } }}><Layer><Rect name="editor-background" width={template.width} height={template.height} fill="#fff"/>{template.layers.map((layer) => <EditorLayer key={layer.id} layer={layer} interactive={!layer.locked} selectable setRef={(node) => nodeRefs.current[layer.id] = node} onPointerDown={(event) => { if (!selectedIds.includes(layer.id) && !event.evt.ctrlKey && !event.evt.metaKey && !event.evt.shiftKey) selectLayer(layer.id, event.evt); }} onSelect={(event) => selectLayer(layer.id, event.evt)} onContextMenu={(event) => onLayerContextMenu(layer.id, event.evt)} onChange={(patch) => updateLayer(layer.id, patch)} onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)} onTransformEnd={false}/>)}{template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}{guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94e37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }<Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} enabledAnchors={['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/></Layer></Stage>;
+  const ensurePaintSurface = async (layer) => {
+    const key = `${layer.paintSrc || ''}|${Math.round(layer.width)}x${Math.round(layer.height)}`;
+    const cached = paintSurfacesRef.current[layer.id];
+    if (cached?.key === key) return cached.canvas;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(layer.width));
+    canvas.height = Math.max(1, Math.round(layer.height));
+    if (layer.paintSrc) {
+      const image = await loadImage(layer.paintSrc);
+      canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+    }
+    paintSurfacesRef.current[layer.id] = { key, canvas };
+    return canvas;
+  };
+
+  const drawPaintSegment = (painting, point) => {
+    const ctx = painting.canvas.getContext('2d');
+    const scaleX = painting.canvas.width / painting.layer.width;
+    const scaleY = painting.canvas.height / painting.layer.height;
+    ctx.save();
+    ctx.globalCompositeOperation = painting.mode === 'eraser' ? 'destination-out' : 'source-over';
+    ctx.strokeStyle = paintColor;
+    ctx.lineWidth = Math.max(1, brushSize * (scaleX + scaleY) / 2);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(painting.last.x * scaleX, painting.last.y * scaleY);
+    ctx.lineTo(point.x * scaleX, point.y * scaleY);
+    ctx.stroke();
+    ctx.restore();
+    painting.last = point;
+  };
+
+  const beginPaint = async (event) => {
+    if (tool === 'select') return false;
+    event.evt.preventDefault();
+    const layer = selectedIds.length === 1 ? template.layers.find((item) => item.id === selectedIds[0] && item.visible && !item.locked) : null;
+    const stage = stageRef.current;
+    const pointer = stage?.getPointerPosition();
+    if (!layer || !pointer) return true;
+    const templatePoint = { x: pointer.x / zoom, y: pointer.y / zoom };
+    if (!pointInLayer(templatePoint.x, templatePoint.y, layer)) return true;
+    const effectiveTool = tool === 'brush' && event.evt.ctrlKey ? 'picker' : tool;
+    if (effectiveTool === 'picker') {
+      const canvas = stage.toCanvas({ pixelRatio: 1 });
+      const pixel = canvas.getContext('2d').getImageData(clamp(Math.floor(pointer.x), 0, canvas.width - 1), clamp(Math.floor(pointer.y), 0, canvas.height - 1), 1, 1).data;
+      onPickColor(rgbaToHex(pixel));
+      return true;
+    }
+    const local = layerLocalPoint(layer, templatePoint);
+    const canvas = await ensurePaintSurface(layer);
+    if (effectiveTool === 'fill') {
+      floodFillCanvas(canvas, local.x * canvas.width / layer.width, local.y * canvas.height / layer.height, paintColor);
+      const paintSrc = canvas.toDataURL('image/png');
+      paintSurfacesRef.current[layer.id] = { key: `${paintSrc}|${Math.round(layer.width)}x${Math.round(layer.height)}`, canvas };
+      onPaintCommit(layer.id, paintSrc);
+      return true;
+    }
+    const painting = { layer, canvas, mode: effectiveTool, last: local };
+    paintingRef.current = painting;
+    drawPaintSegment(painting, { x: local.x + .01, y: local.y + .01 });
+    setPaintPreview({ id: layer.id, canvas, revision: 1 });
+    return true;
+  };
+
+  const movePaint = (event) => {
+    const painting = paintingRef.current;
+    const pointer = stageRef.current?.getPointerPosition();
+    if (!painting || !pointer) return;
+    const local = layerLocalPoint(painting.layer, { x: pointer.x / zoom, y: pointer.y / zoom });
+    drawPaintSegment(painting, { x: clamp(local.x, 0, painting.layer.width), y: clamp(local.y, 0, painting.layer.height) });
+    setPaintPreview((current) => ({ id: painting.layer.id, canvas: painting.canvas, revision: (current?.revision || 0) + 1 }));
+  };
+
+  const finishPaint = () => {
+    const painting = paintingRef.current;
+    if (!painting) return;
+    paintingRef.current = null;
+    const paintSrc = painting.canvas.toDataURL('image/png');
+    paintSurfacesRef.current[painting.layer.id] = { key: `${paintSrc}|${Math.round(painting.layer.width)}x${Math.round(painting.layer.height)}`, canvas: painting.canvas };
+    onPaintCommit(painting.layer.id, paintSrc);
+    setPaintPreview(null);
+  };
+
+  useEffect(() => {
+    const finishOutsideStage = () => finishPaint();
+    window.addEventListener('mouseup', finishOutsideStage);
+    return () => window.removeEventListener('mouseup', finishOutsideStage);
+  });
+
+  const selectedPolygon = tool === 'select' && selectedIds.length === 1
+    ? template.layers.find((layer) => layer.id === selectedIds[0] && layer.type === 'slot' && shapeOf(layer) === 'polygon' && !layer.locked)
+    : null;
+
+  return <Stage ref={stageRef} width={template.width * zoom} height={template.height * zoom} scaleX={zoom} scaleY={zoom}
+    onWheel={(event) => event.target.stopDrag?.()}
+    onMouseDown={(event) => {
+      if (tool !== 'select') { beginPaint(event); return; }
+      trRef.current?.rotationSnaps(event.evt.shiftKey || shiftPressed ? ROTATION_SNAPS : []);
+      if (event.target === event.target.getStage() || event.target.name() === 'editor-background') { clearSelection(); onPanStart(event); }
+    }}
+    onMouseMove={tool !== 'select' ? movePaint : undefined}
+    onMouseUp={tool !== 'select' ? finishPaint : undefined}
+  >
+    <Layer>
+      <Rect name="editor-background" width={template.width} height={template.height} fill="#fff"/>
+      {template.layers.map((layer) => {
+        if (layer.id === textEditingId) return null;
+        const interactive = tool === 'select' && !layer.locked;
+        const selectable = tool === 'select';
+        return <EditorLayer key={layer.id} layer={layer} interactive={interactive} selectable={selectable}
+          paintSource={paintPreview?.id === layer.id ? paintPreview.canvas : null}
+          setRef={(node) => nodeRefs.current[layer.id] = node}
+          onPointerDown={(event) => { if (!selectedIds.includes(layer.id) && !event.evt.ctrlKey && !event.evt.metaKey && !event.evt.shiftKey) selectLayer(layer.id, event.evt); }}
+          onSelect={(event) => selectLayer(layer.id, event.evt)}
+          onEnterCrop={(event) => { if (layer.type === 'text') { event.cancelBubble = true; onEditText(layer.id); } }}
+          onContextMenu={(event) => onLayerContextMenu(layer.id, event.evt)}
+          onChange={(patch) => updateLayer(layer.id, patch)}
+          onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)} onTransformEnd={false}/>;
+      })}
+      {template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
+      {guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94b37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }
+      <Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} enabledAnchors={['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/>
+      {selectedPolygon && <Group x={selectedPolygon.x} y={selectedPolygon.y} rotation={selectedPolygon.rotation || 0}>{polygonPointsOf(selectedPolygon).map((point, index) => <KonvaCircle key={`polygon-handle-${selectedPolygon.id}-${index}`} x={point.x * selectedPolygon.width} y={point.y * selectedPolygon.height} radius={6 / zoom} fill="#fff" stroke="#e24b35" strokeWidth={1.5 / zoom} draggable onMouseDown={(event) => { event.cancelBubble = true; }} onDragMove={(event) => { event.cancelBubble = true; event.target.position({ x: clamp(event.target.x(), 0, selectedPolygon.width), y: clamp(event.target.y(), 0, selectedPolygon.height) }); }} onDragEnd={(event) => { event.cancelBubble = true; const next = { x: clamp(event.target.x() / selectedPolygon.width, 0, 1), y: clamp(event.target.y() / selectedPolygon.height, 0, 1) }; updateLayer(selectedPolygon.id, { polygonPoints: polygonPointsOf(selectedPolygon).map((item, itemIndex) => itemIndex === index ? next : item) }); }} />)}</Group>}
+    </Layer>
+  </Stage>;
 }
 
-function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, source, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
+function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, source, paintSource, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
   const image = useHtmlImage(source ?? layer.src);
+  const loadedPaintImage = useHtmlImage(layer.paintSrc);
+  const paintImage = paintSource || loadedPaintImage;
   const crop = image && layer.fit === 'cover' ? getCoverCrop(image, layer.width, layer.height) : undefined;
   const placement = image && layer.type === 'slot' && source ? getPhotoPlacement(image, layer, photoTransform) : null;
   if (!layer.visible) return null;
@@ -1549,16 +2067,17 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
     if (onTransformEnd !== false) common.onTransformEnd = onTransformEnd || ((event) => { const node = event.target; const sx = node.scaleX(), sy = node.scaleY(); node.scaleX(1); node.scaleY(1); onChange({ x: Math.round(node.x()), y: Math.round(node.y()), width: Math.max(10, Math.round(node.width() * sx)), height: Math.max(10, Math.round(node.height() * sy)), rotation: Math.round(node.rotation()) }); });
   }
   if (layer.type === 'text') {
-    const padding = Math.max(0, Number(layer.backgroundPadding) || 0);
     return <Group {...common}>
-      {layer.background && <Rect width={layer.width} height={layer.height} fill={layer.background}/>}
-      <KonvaText x={padding} y={padding} width={Math.max(1, layer.width - padding * 2)} height={Math.max(1, layer.height - padding * 2)} text={layer.text || ''} fontSize={resolveTextFontSize(layer)} fontFamily={layer.fontFamily || 'Microsoft YaHei'} fontStyle={layer.fontStyle || 'normal'} textDecoration={layer.textDecoration || ''} align={layer.align || 'left'} fill={layer.fill || '#22211f'} stroke={(layer.strokeWidth || 0) > 0 ? layer.stroke || '#ffffff' : undefined} strokeWidth={Number(layer.strokeWidth) || 0} lineJoin="round" shadowEnabled={Boolean(layer.shadowEnabled)} shadowColor={layer.shadowColor || '#000000'} shadowBlur={Number(layer.shadowBlur) || 0} shadowOffsetX={Number(layer.shadowOffsetX) || 0} shadowOffsetY={Number(layer.shadowOffsetY) || 0} lineHeight={layer.lineHeight || 1.25} wrap="char" verticalAlign="top"/>
+      <Rect width={layer.width} height={layer.height} fill={layer.background || 'rgba(0,0,0,.001)'}/>
+      {layoutStyledText(layer).map((run, index) => <KonvaText key={`${run.x}-${run.y}-${index}`} x={run.x} y={run.y} text={run.text} fontSize={run.style.fontSize} fontFamily={run.style.fontFamily} fontStyle={run.style.fontStyle} textDecoration={run.style.textDecoration} fill={run.style.fill} stroke={run.style.strokeWidth > 0 ? run.style.stroke : undefined} strokeWidth={run.style.strokeWidth * 2} fillAfterStrokeEnabled lineJoin="round" shadowEnabled={Boolean(layer.shadowEnabled)} shadowColor={layer.shadowColor || '#000000'} shadowBlur={Number(layer.shadowBlur) || 0} shadowOffsetX={Number(layer.shadowOffsetX) || 0} shadowOffsetY={Number(layer.shadowOffsetY) || 0}/>) }
+      {paintImage && <KonvaImage image={paintImage} width={layer.width} height={layer.height} listening={false}/>}
     </Group>;
   }
   const clipFunc = (ctx) => traceLayerShape(ctx, layer);
-  const placeholderProps = { fill: highlight ? 'rgba(233,78,55,.14)' : '#eceae4', stroke: highlight ? '#e94e37' : '#77746d', strokeWidth: highlight ? 5 : 2, dash: [12, 8] };
+  const placeholderProps = { fill: layer.slotFill || (highlight ? 'rgba(233,78,55,.14)' : '#eceae4'), stroke: highlight ? '#e94e37' : layer.slotFill ? undefined : '#77746d', strokeWidth: highlight ? 5 : 2, dash: layer.slotFill && !highlight ? undefined : [12, 8] };
   return <Group {...common} clipFunc={layer.type === 'slot' ? clipFunc : undefined}>
-    {image ? <KonvaImage image={image} x={placement?.x || 0} y={placement?.y || 0} width={placement?.width || layer.width} height={placement?.height || layer.height} crop={placement ? undefined : crop} draggable={cropMode} onDragMove={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); onPhotoTransformMove ? onPhotoTransformMove({ event, x, y, placement }) : event.target.position({ x, y }); } : undefined} onDragEnd={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); event.target.position({ x, y }); if (onPhotoTransformEnd) onPhotoTransformEnd({ event, x, y, placement }); else onPhotoTransform?.({ offsetX: x - placement.centeredX, offsetY: y - placement.centeredY }); } : undefined}/> : shapeOf(layer) === 'circle' ? <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={layer.width / 2} radiusY={layer.height / 2} {...placeholderProps}/> : <Rect width={layer.width} height={layer.height} cornerRadius={shapeOf(layer) === 'rounded' ? Math.min(36, layer.width / 4, layer.height / 4) : 0} {...placeholderProps}/>}
+    {image ? <KonvaImage image={image} x={placement?.x || 0} y={placement?.y || 0} width={placement?.width || layer.width} height={placement?.height || layer.height} crop={placement ? undefined : crop} draggable={cropMode} onDragMove={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); onPhotoTransformMove ? onPhotoTransformMove({ event, x, y, placement }) : event.target.position({ x, y }); } : undefined} onDragEnd={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); event.target.position({ x, y }); if (onPhotoTransformEnd) onPhotoTransformEnd({ event, x, y, placement }); else onPhotoTransform?.({ offsetX: x - placement.centeredX, offsetY: y - placement.centeredY }); } : undefined}/> : shapeOf(layer) === 'circle' ? <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={layer.width / 2} radiusY={layer.height / 2} {...placeholderProps}/> : shapeOf(layer) === 'polygon' ? <Line points={polygonPixelPoints(layer)} closed {...placeholderProps}/> : <Rect width={layer.width} height={layer.height} cornerRadius={shapeOf(layer) === 'rounded' ? Math.min(36, layer.width / 4, layer.height / 4) : 0} {...placeholderProps}/>}
+    {paintImage && <KonvaImage image={paintImage} width={layer.width} height={layer.height} listening={false}/>}
     {cropMode && <Rect x={1} y={1} width={Math.max(0, layer.width - 2)} height={Math.max(0, layer.height - 2)} stroke="#e94e37" strokeWidth={3} dash={[10, 7]} listening={false}/>}
   </Group>;
 }
@@ -1604,24 +2123,29 @@ function MultiSelectionProperties({ layers, grouped, onGroup, onUngroup, onToggl
   </div>;
 }
 
-function Properties({ layer, update, toggleLock, remove, move }) {
-  const fontTokens = String(layer.fontStyle || '').split(' ').filter((token) => token && token !== 'normal');
-  const decorationTokens = String(layer.textDecoration || '').split(' ').filter(Boolean);
-  const toggleFont = (token) => update({ fontStyle: fontTokens.includes(token) ? fontTokens.filter((item) => item !== token).join(' ') || 'normal' : [...fontTokens, token].join(' ') });
-  const toggleDecoration = (token) => update({ textDecoration: decorationTokens.includes(token) ? decorationTokens.filter((item) => item !== token).join(' ') : [...decorationTokens, token].join(' ') });
+function Properties({ layer, textStyle, textSelection, updateTextStyle, updateText, update, toggleLock, remove, move }) {
+  const activeTextStyle = textStyle || baseTextStyle(layer);
+  const fontTokens = String(activeTextStyle.fontStyle || '').split(' ').filter((token) => token && token !== 'normal');
+  const decorationTokens = String(activeTextStyle.textDecoration || '').split(' ').filter(Boolean);
+  const toggleFont = (token) => updateTextStyle({ fontStyle: fontTokens.includes(token) ? fontTokens.filter((item) => item !== token).join(' ') || 'normal' : [...fontTokens, token].join(' ') });
+  const toggleDecoration = (token) => updateTextStyle({ textDecoration: decorationTokens.includes(token) ? decorationTokens.filter((item) => item !== token).join(' ') : [...decorationTokens, token].join(' ') });
 
   return <div className="property-content">
     <button className={`layer-lock-button ${layer.locked ? 'active' : ''}`} onClick={toggleLock}>{layer.locked ? <Lock size={16}/> : <Unlock size={16}/>}<span>{layer.locked ? '图层已锁定' : '锁定图层'}</span></button>
     <label className="text-field"><span>图层名称</span><input value={layer.name} onChange={(event) => update({ name: event.target.value })}/></label>
     {layer.type === 'text' && <>
-      <div className="property-section text-content-section"><h4>文字内容</h4><textarea value={layer.text || ''} onChange={(event) => update({ text: event.target.value })}/></div>
-      <div className="property-section"><h4>字体</h4><select className="property-select" value={layer.fontFamily || 'Microsoft YaHei'} onChange={(event) => update({ fontFamily: event.target.value })}><option value="Microsoft YaHei">微软雅黑</option><option value="SimHei">黑体</option><option value="SimSun">宋体</option><option value="KaiTi">楷体</option><option value="Arial">Arial</option><option value="Segoe UI">Segoe UI</option></select><div className="text-format-row"><label><span>字号</span><input type="number" min="8" max="400" value={layer.fontSize || 48} onChange={(event) => update({ fontSize: clamp(event.target.value, 8, 400) })}/></label><input className="color-swatch" type="color" title="文字颜色" value={layer.fill || '#22211f'} onChange={(event) => update({ fill: event.target.value })}/></div><label className="check-row"><input type="checkbox" checked={Boolean(layer.autoFit)} onChange={(event) => update({ autoFit: event.target.checked })}/><span>文字自动适配文本框</span></label><div className="format-buttons"><button title="加粗" className={fontTokens.includes('bold') ? 'active' : ''} onClick={() => toggleFont('bold')}><Bold size={17}/></button><button title="斜体" className={fontTokens.includes('italic') ? 'active' : ''} onClick={() => toggleFont('italic')}><Italic size={17}/></button><button title="下划线" className={decorationTokens.includes('underline') ? 'active' : ''} onClick={() => toggleDecoration('underline')}><Underline size={17}/></button><button title="删除线" className={decorationTokens.includes('line-through') ? 'active' : ''} onClick={() => toggleDecoration('line-through')}><Strikethrough size={17}/></button></div><div className="format-buttons align-buttons"><button title="左对齐" className={layer.align === 'left' ? 'active' : ''} onClick={() => update({ align: 'left' })}><AlignLeft size={17}/></button><button title="居中" className={layer.align === 'center' ? 'active' : ''} onClick={() => update({ align: 'center' })}><AlignCenter size={17}/></button><button title="右对齐" className={layer.align === 'right' ? 'active' : ''} onClick={() => update({ align: 'right' })}><AlignRight size={17}/></button></div></div>
-      <div className="property-section"><h4>文字效果</h4><div className="effect-grid"><label><span>描边</span><input type="color" value={layer.stroke || '#ffffff'} onChange={(event) => update({ stroke: event.target.value })}/></label><NumberField label="描边宽度" value={layer.strokeWidth || 0} onChange={(strokeWidth) => update({ strokeWidth: clamp(strokeWidth, 0, 30) })}/><label><span>背景</span><input type="color" value={layer.background || '#ffffff'} onChange={(event) => update({ background: event.target.value })}/></label><NumberField label="背景内边距" value={layer.backgroundPadding || 0} onChange={(backgroundPadding) => update({ backgroundPadding: clamp(backgroundPadding, 0, 100) })}/></div><button className="wide-property-button subtle" onClick={() => update({ background: layer.background ? '' : '#ffffff' })}>{layer.background ? '移除文字背景' : '启用文字背景'}</button><label className="check-row"><input type="checkbox" checked={Boolean(layer.shadowEnabled)} onChange={(event) => update({ shadowEnabled: event.target.checked })}/><span>启用文字阴影</span></label>{layer.shadowEnabled && <div className="effect-grid"><label><span>阴影颜色</span><input type="color" value={layer.shadowColor || '#000000'} onChange={(event) => update({ shadowColor: event.target.value })}/></label><NumberField label="模糊" value={layer.shadowBlur || 0} onChange={(shadowBlur) => update({ shadowBlur: clamp(shadowBlur, 0, 50) })}/><NumberField label="水平偏移" value={layer.shadowOffsetX || 0} onChange={(shadowOffsetX) => update({ shadowOffsetX })}/><NumberField label="垂直偏移" value={layer.shadowOffsetY || 0} onChange={(shadowOffsetY) => update({ shadowOffsetY })}/></div>}</div>
+      <div className="property-section text-content-section"><h4>文字内容</h4><textarea value={layer.text || ''} onChange={(event) => updateText(event.target.value)}/></div>
+      <div className="property-section"><h4>字体{textSelection && textSelection.start !== textSelection.end ? ` · 已选 ${Math.abs(textSelection.end - textSelection.start)} 字` : ''}</h4><select className="property-select" value={activeTextStyle.fontFamily} onChange={(event) => updateTextStyle({ fontFamily: event.target.value })}><option value="Microsoft YaHei">微软雅黑</option><option value="SimHei">黑体</option><option value="SimSun">宋体</option><option value="KaiTi">楷体</option><option value="Arial">Arial</option><option value="Segoe UI">Segoe UI</option></select><div className="text-format-row"><label><span>字号</span><input type="number" min="8" max="400" value={Math.round(activeTextStyle.fontSize)} onChange={(event) => updateTextStyle({ fontSize: clamp(event.target.value, 8, 400) })}/></label><input className="color-swatch" type="color" title="文字颜色" value={activeTextStyle.fill} onChange={(event) => updateTextStyle({ fill: event.target.value })}/></div><label className="check-row"><input type="checkbox" checked={Boolean(layer.autoFit)} onChange={(event) => update({ autoFit: event.target.checked })}/><span>文字自动适配文本框</span></label><div className="format-buttons"><button title="加粗" className={fontTokens.includes('bold') ? 'active' : ''} onClick={() => toggleFont('bold')}><Bold size={17}/></button><button title="斜体" className={fontTokens.includes('italic') ? 'active' : ''} onClick={() => toggleFont('italic')}><Italic size={17}/></button><button title="下划线" className={decorationTokens.includes('underline') ? 'active' : ''} onClick={() => toggleDecoration('underline')}><Underline size={17}/></button><button title="删除线" className={decorationTokens.includes('line-through') ? 'active' : ''} onClick={() => toggleDecoration('line-through')}><Strikethrough size={17}/></button></div><div className="format-buttons align-buttons"><button title="左对齐" className={layer.align === 'left' ? 'active' : ''} onClick={() => update({ align: 'left' })}><AlignLeft size={17}/></button><button title="居中" className={layer.align === 'center' ? 'active' : ''} onClick={() => update({ align: 'center' })}><AlignCenter size={17}/></button><button title="右对齐" className={layer.align === 'right' ? 'active' : ''} onClick={() => update({ align: 'right' })}><AlignRight size={17}/></button></div></div>
+      <div className="property-section"><h4>文字效果</h4><div className="effect-grid"><label><span>外描边</span><input type="color" value={activeTextStyle.stroke} onChange={(event) => updateTextStyle({ stroke: event.target.value })}/></label><NumberField label="外描边宽度" value={activeTextStyle.strokeWidth} onChange={(strokeWidth) => updateTextStyle({ strokeWidth: clamp(strokeWidth, 0, 30) })}/><label><span>背景</span><input type="color" value={layer.background || '#ffffff'} onChange={(event) => update({ background: event.target.value })}/></label><NumberField label="背景内边距" value={layer.backgroundPadding || 0} onChange={(backgroundPadding) => update({ backgroundPadding: clamp(backgroundPadding, 0, 100) })}/></div><button className="wide-property-button subtle" onClick={() => update({ background: layer.background ? '' : '#ffffff' })}>{layer.background ? '移除文字背景' : '启用文字背景'}</button><label className="check-row"><input type="checkbox" checked={Boolean(layer.shadowEnabled)} onChange={(event) => update({ shadowEnabled: event.target.checked })}/><span>启用文字阴影</span></label>{layer.shadowEnabled && <div className="effect-grid"><label><span>阴影颜色</span><input type="color" value={layer.shadowColor || '#000000'} onChange={(event) => update({ shadowColor: event.target.value })}/></label><NumberField label="模糊" value={layer.shadowBlur || 0} onChange={(shadowBlur) => update({ shadowBlur: clamp(shadowBlur, 0, 50) })}/><NumberField label="水平偏移" value={layer.shadowOffsetX || 0} onChange={(shadowOffsetX) => update({ shadowOffsetX })}/><NumberField label="垂直偏移" value={layer.shadowOffsetY || 0} onChange={(shadowOffsetY) => update({ shadowOffsetY })}/></div>}</div>
     </>}
     <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} onChange={(y) => update({ y })}/></div></div>
     <div className="property-section"><h4>尺寸</h4><div className="property-grid"><NumberField label="宽" value={layer.width} onChange={(width) => update({ width: Math.max(10, width) })}/><NumberField label="高" value={layer.height} onChange={(height) => update({ height: Math.max(10, height) })}/></div></div>
     <div className="property-section"><h4>旋转</h4><NumberField label="角度" value={layer.rotation} onChange={(rotation) => update({ rotation })} suffix="°"/><input className="range" type="range" min="-180" max="180" value={layer.rotation} onChange={(event) => update({ rotation: Number(event.target.value) })}/></div>
-    {layer.type === 'slot' && <><div className="property-section"><h4>槽位形状</h4><div className="shape-segmented"><button className={shapeOf(layer) === 'rect' ? 'active' : ''} onClick={() => update({ shape: 'rect' })}>矩形</button><button className={shapeOf(layer) === 'circle' ? 'active' : ''} onClick={() => update({ shape: 'circle' })}>圆形</button><button className={shapeOf(layer) === 'rounded' ? 'active' : ''} onClick={() => update({ shape: 'rounded' })}>圆角</button></div></div><div className="property-section"><h4>照片填充</h4><div className="segmented"><button className={layer.fit === 'cover' ? 'active' : ''} onClick={() => update({ fit: 'cover' })}>裁切铺满</button><button className={layer.fit === 'fill' ? 'active' : ''} onClick={() => update({ fit: 'fill' })}>拉伸填满</button></div></div></>}
+    {layer.type === 'slot' && <>
+      <div className="property-section"><h4>槽位形状</h4><div className="shape-segmented four"><button className={shapeOf(layer) === 'rect' ? 'active' : ''} onClick={() => update({ shape: 'rect' })}>矩形</button><button className={shapeOf(layer) === 'circle' ? 'active' : ''} onClick={() => update({ shape: 'circle' })}>圆形</button><button className={shapeOf(layer) === 'rounded' ? 'active' : ''} onClick={() => update({ shape: 'rounded' })}>圆角</button><button className={shapeOf(layer) === 'polygon' ? 'active' : ''} onClick={() => update({ shape: 'polygon', polygonSides: layer.polygonSides || 5, polygonPoints: polygonPointsOf(layer) })}>多边形</button></div>{shapeOf(layer) === 'polygon' && <div className="polygon-controls"><NumberField label="边数" value={layer.polygonSides || 5} onChange={(polygonSides) => { const count = clamp(Math.round(polygonSides), POLYGON_MIN_SIDES, POLYGON_MAX_SIDES); update({ polygonSides: count, polygonPoints: regularPolygonPoints(count) }); }}/>{polygonPointsOf(layer).map((point, index) => <label key={index} className="polygon-radius"><span>顶点 {index + 1}</span><input type="range" min="10" max="100" value={polygonRadiusPercent(point)} onChange={(event) => update({ polygonPoints: polygonPointsOf(layer).map((item, itemIndex) => itemIndex === index ? polygonPointAtRadius(item, Number(event.target.value)) : item) })}/><output>{polygonRadiusPercent(point)}%</output></label>)}</div>}</div>
+      <div className="property-section"><h4>照片填充</h4><div className="segmented"><button className={layer.fit === 'cover' ? 'active' : ''} onClick={() => update({ fit: 'cover' })}>裁切铺满</button><button className={layer.fit === 'fill' ? 'active' : ''} onClick={() => update({ fit: 'fill' })}>拉伸填满</button></div></div>
+      <div className="property-section"><h4>颜色填充</h4><div className="slot-color-fill"><input type="color" value={layer.slotFill || '#e24b35'} onChange={(event) => update({ slotFill: event.target.value })}/><button className={`wide-property-button ${layer.slotFill ? 'active' : ''}`} onClick={() => update({ slotFill: layer.slotFill ? '' : '#e24b35' })}>{layer.slotFill ? '取消颜色图层' : '启用颜色图层'}</button></div></div>
+    </>}
     <div className="property-section"><h4>图层顺序</h4><div className="order-buttons"><button disabled={layer.locked} onClick={() => move(1)}><ChevronUp size={17}/>上移</button><button disabled={layer.locked} onClick={() => move(-1)}><ChevronDown size={17}/>下移</button></div></div>
     <button className="delete-button" disabled={layer.locked} onClick={remove}><Trash2 size={17}/>删除图层</button>
   </div>;
@@ -1633,6 +2157,17 @@ function pointInLayer(x, y, layer) {
   const localX = dx * Math.cos(radians) - dy * Math.sin(radians);
   const localY = dx * Math.sin(radians) + dy * Math.cos(radians);
   if (localX < 0 || localY < 0 || localX > layer.width || localY > layer.height) return false;
+  if (shapeOf(layer) === 'polygon') {
+    const points = polygonPointsOf(layer).map((point) => ({ x: point.x * layer.width, y: point.y * layer.height }));
+    let inside = false;
+    for (let index = 0, previous = points.length - 1; index < points.length; previous = index, index += 1) {
+      const currentPoint = points[index]; const previousPoint = points[previous];
+      const intersects = ((currentPoint.y > localY) !== (previousPoint.y > localY))
+        && (localX < (previousPoint.x - currentPoint.x) * (localY - currentPoint.y) / (previousPoint.y - currentPoint.y || 1e-9) + currentPoint.x);
+      if (intersects) inside = !inside;
+    }
+    return inside;
+  }
   if (shapeOf(layer) !== 'circle') return true;
   const nx = (localX - layer.width / 2) / (layer.width / 2);
   const ny = (localY - layer.height / 2) / (layer.height / 2);
@@ -2148,4 +2683,6 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
   </main>;
 }
 
-createRoot(document.getElementById('root')).render(<React.StrictMode><App/></React.StrictMode>);
+const appRoot = globalThis.__memeHelperReactRoot || createRoot(document.getElementById('root'));
+globalThis.__memeHelperReactRoot = appRoot;
+appRoot.render(<React.StrictMode><App/></React.StrictMode>);
