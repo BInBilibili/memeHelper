@@ -6,8 +6,8 @@ import {
   AlignCenter, AlignHorizontalDistributeCenter, AlignHorizontalJustifyCenter, AlignHorizontalJustifyEnd,
   AlignHorizontalJustifyStart, AlignLeft, AlignRight, AlignVerticalDistributeCenter,
   AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowLeft, Bold, Check, ChevronDown, ChevronRight, ChevronUp,
-  Circle, Clipboard, Copy, Crop, Download, Eye, EyeOff, FileImage, GripVertical, ImagePlus,
-  Eraser, Italic, Layers3, LayoutTemplate, Lock, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Pentagon, Pipette, Plus, Redo2, RefreshCw, RotateCcw,
+  BoxSelect, Circle, Clipboard, Copy, Crop, Download, Eye, EyeOff, FileImage, Grid2X2, GripVertical, ImagePlus,
+  Eraser, Italic, Layers3, LayoutTemplate, Lock, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Pentagon, Pipette, Plus, Redo2, RefreshCw, RotateCcw, Scissors,
   Save, Shapes, Sparkles, Square, Star, Strikethrough, Trash2, Type, Underline, Undo2, Unlock, Upload,
   X, ZoomIn, ZoomOut
 } from 'lucide-react';
@@ -594,6 +594,12 @@ async function drawPaintOverlay(ctx, layer) {
   ctx.drawImage(image, 0, 0, layer.width, layer.height);
 }
 
+async function drawMosaicOverlay(ctx, layer) {
+  if (!layer.mosaicSrc) return;
+  const image = await loadImage(layer.mosaicSrc);
+  ctx.drawImage(image, 0, 0, layer.width, layer.height);
+}
+
 async function drawEraseMask(ctx, layer) {
   if (!layer.eraseSrc) return;
   const image = await loadImage(layer.eraseSrc);
@@ -618,7 +624,7 @@ function layerEffectInsets(layer) {
   };
 }
 
-async function renderIsolatedLayer(layer, source, photoTransform, paintSource, eraseSource, scale = 1) {
+async function renderIsolatedLayer(layer, source, photoTransform, paintSource, eraseSource, scale = 1, mosaicSource = null) {
   const insets = layerEffectInsets(layer);
   const logicalWidth = layer.width + insets.left + insets.right;
   const logicalHeight = layer.height + insets.top + insets.bottom;
@@ -653,6 +659,8 @@ async function renderIsolatedLayer(layer, source, photoTransform, paintSource, e
   }
   if (paintSource) ctx.drawImage(paintSource, 0, 0, layer.width, layer.height);
   else await drawPaintOverlay(ctx, layer);
+  if (mosaicSource) ctx.drawImage(mosaicSource, 0, 0, layer.width, layer.height);
+  else await drawMosaicOverlay(ctx, layer);
   if (eraseSource) {
     ctx.save();
     ctx.globalCompositeOperation = 'destination-out';
@@ -691,6 +699,7 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
     if (layer.type === 'text') {
       drawTextLayer(ctx, layer);
       await drawPaintOverlay(ctx, layer);
+      await drawMosaicOverlay(ctx, layer);
       ctx.restore();
       continue;
     }
@@ -703,6 +712,7 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
         traceLayerShape(ctx, layer); ctx.stroke();
       }
       await drawPaintOverlay(ctx, layer);
+      await drawMosaicOverlay(ctx, layer);
       ctx.restore();
       continue;
     }
@@ -718,6 +728,7 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
         ctx.drawImage(image, 0, 0, layer.width, layer.height);
       }
       await drawPaintOverlay(ctx, layer);
+      await drawMosaicOverlay(ctx, layer);
     } finally { ctx.restore(); }
   }
   return canvas.toDataURL(mime, mime === 'image/jpeg' ? .92 : undefined);
@@ -1187,6 +1198,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const [selectedGroupId, setSelectedGroupId] = useState(null);
   const [draggedLayerId, setDraggedLayerId] = useState(null);
   const [layerDrop, setLayerDrop] = useState(null);
+  const [editingLayerName, setEditingLayerName] = useState(null);
   const [hasCopiedLayers, setHasCopiedLayers] = useState(false);
   const [tagsText, setTagsText] = useState(() => (initialStateRef.current.draft.tags || []).join(', '));
   const memeInput = useRef();
@@ -1265,17 +1277,31 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     });
     setSelectedGroupId(additive ? null : groupId);
   }, [draft.layers]);
-  const copySelectedLayers = useCallback(() => {
-    const layers = draft.layers.filter((item) => selectedIds.includes(item.id));
+  const copyLayersByIds = useCallback((ids) => {
+    const layers = draft.layers.filter((item) => ids.includes(item.id));
     if (!layers.length) return;
-    const groupIds = new Set(layers.map((layer) => layer.groupId).filter((groupId) => groupId && draft.layers.filter((candidate) => candidate.groupId === groupId).every((candidate) => selectedIds.includes(candidate.id))));
+    const idSet = new Set(ids);
+    const groupIds = new Set(layers.map((layer) => layer.groupId).filter((groupId) => groupId && draft.layers.filter((candidate) => candidate.groupId === groupId).every((candidate) => idSet.has(candidate.id))));
     clipboardLayersRef.current = {
       layers: structuredClone(layers.map((layer) => layer.groupId && !groupIds.has(layer.groupId) ? { ...layer, groupId: undefined } : layer)),
       groupMeta: Object.fromEntries([...groupIds].map((groupId) => [groupId, structuredClone(draft.groupMeta?.[groupId] || {})]))
     };
     setHasCopiedLayers(true);
     notify(layers.length === 1 ? `已复制图层“${layers[0].name}”` : `已复制 ${layers.length} 个图层`);
-  }, [draft.groupMeta, draft.layers, notify, selectedIds]);
+  }, [draft.groupMeta, draft.layers, notify]);
+  const copySelectedLayers = useCallback(() => copyLayersByIds(selectedIds), [copyLayersByIds, selectedIds]);
+  const cutLayersByIds = useCallback((ids) => {
+    const removableIds = draft.layers.filter((layer) => ids.includes(layer.id) && !layer.locked).map((layer) => layer.id);
+    if (!removableIds.length) return notify('选框内没有可剪切的未锁定图层', 'error');
+    copyLayersByIds(removableIds);
+    updateDraft((previous) => {
+      const layers = previous.layers.filter((layer) => !removableIds.includes(layer.id));
+      const groupIds = new Set(layers.map((layer) => layer.groupId).filter(Boolean));
+      const groupMeta = Object.fromEntries(Object.entries(previous.groupMeta || {}).filter(([groupId]) => groupIds.has(groupId)));
+      return { ...previous, layers, groupMeta };
+    });
+    setSelectedIds((current) => current.filter((id) => !removableIds.includes(id)));
+  }, [copyLayersByIds, draft.layers, notify, updateDraft]);
   const pasteLayers = useCallback(() => {
     if (!clipboardLayersRef.current.layers.length) return notify('请先选择并复制图层', 'error');
     const groupMap = new Map();
@@ -1405,7 +1431,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   }, [copySelectedLayers, nudgeSelectedLayers, pasteLayers, redoDraft, removeSelectedLayers, selectedIds.length, textEditingId, tryBack, undoDraft]);
 
   useEffect(() => {
-    if (!['select', 'picker'].includes(activeTool) && (selectedLayers.length !== 1 || selected?.locked)) setActiveTool('select');
+    if (!['select', 'picker', 'marquee'].includes(activeTool) && (selectedLayers.length !== 1 || selected?.locked)) setActiveTool('select');
   }, [activeTool, selected, selectedLayers.length]);
 
   useEffect(() => {
@@ -1546,6 +1572,12 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     clearSelection();
     setLayerMenu({ blank: true, x: Math.min(event.clientX, window.innerWidth - 166), y: Math.min(event.clientY, window.innerHeight - 54) });
   };
+  const openMarqueeMenu = (ids, event) => {
+    event.preventDefault(); event.stopPropagation();
+    setSelectedIds(ids);
+    setSelectedGroupId(null);
+    setLayerMenu({ marqueeIds: ids, x: Math.min(event.clientX, window.innerWidth - 206), y: Math.min(event.clientY, window.innerHeight - 120) });
+  };
 
   const removeLayer = (id) => {
     const layer = draft.layers.find((item) => item.id === id);
@@ -1614,7 +1646,6 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   };
   const beginLayerReorder = (event, sourceId, sourceGroupId = null) => {
     if (event.button !== 0) return;
-    event.preventDefault();
     event.stopPropagation();
     if (sourceGroupId) selectGroup(sourceGroupId, event); else selectLayer(sourceId, event);
     const start = { x: event.clientX, y: event.clientY };
@@ -1645,6 +1676,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     const move = (pointerEvent) => {
       if (!layerReorderRef.current?.active && Math.hypot(pointerEvent.clientX - start.x, pointerEvent.clientY - start.y) < 4) return;
       if (layerReorderRef.current) layerReorderRef.current.active = true;
+      pointerEvent.preventDefault();
       setDraggedLayerId(sourceId);
       const target = resolveTarget(pointerEvent);
       setLayerDrop((current) => current?.id === target?.id && current?.placement === target?.placement ? current : target);
@@ -1814,12 +1846,42 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     const rest = previous.layers.filter((item) => !ids.includes(item.id));
     return { ...previous, layers: toFront ? [...rest, ...moving] : [...moving, ...rest] };
   });
+  const beginLayerNameEdit = (event, kind, id, value) => {
+    event.preventDefault(); event.stopPropagation();
+    setEditingLayerName({ kind, id, value });
+  };
+  const commitLayerNameEdit = () => {
+    if (!editingLayerName) return;
+    const value = editingLayerName.value.trim();
+    if (value) {
+      if (editingLayerName.kind === 'group') updateGroupMeta(editingLayerName.id, { name: value });
+      else updateLayer(editingLayerName.id, { name: value });
+    }
+    setEditingLayerName(null);
+  };
+  const layerNameEditor = (kind, id, value) => editingLayerName?.kind === kind && editingLayerName.id === id
+    ? <input className="layer-name-input" autoFocus value={editingLayerName.value} onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()} onFocus={(event) => event.currentTarget.select()} onChange={(event) => setEditingLayerName((current) => ({ ...current, value: event.target.value }))} onBlur={commitLayerNameEdit} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Enter') { event.preventDefault(); commitLayerNameEdit(); } else if (event.key === 'Escape') { event.preventDefault(); setEditingLayerName(null); } }}/>
+    : <strong onDoubleClick={(event) => beginLayerNameEdit(event, kind, id, value)}>{value}</strong>;
   useEffect(() => () => layerReorderRef.current?.cleanup?.(), []);
+  const bakeStaticLayerEdits = async (layer) => {
+    if (layer.type !== 'static' || !layer.src || !(layer.paintSrc || layer.mosaicSrc || layer.eraseSrc)) return layer;
+    const sourceImage = await loadImage(layer.src);
+    const sourceScale = Math.max(1, (sourceImage.width || layer.width) / Math.max(1, layer.width), (sourceImage.height || layer.height) / Math.max(1, layer.height));
+    const isolated = await renderIsolatedLayer(layer, layer.src, null, null, null, Math.min(4, sourceScale));
+    const { paintSrc, mosaicSrc, eraseSrc, ...base } = layer;
+    return { ...base, src: isolated.canvas.toDataURL('image/png') };
+  };
   const save = async () => {
     if (!draft.name.trim()) return notify('请填写模板名称', 'error');
     if (!draft.layers.length) return notify('请至少添加一个图层', 'error');
-    const finalDraft = { ...draft, name: draft.name.trim(), updatedAt: Date.now() };
-    await onSave(finalDraft);
+    try {
+      const layers = await Promise.all(draft.layers.map((layer) => bakeStaticLayerEdits(layer)));
+      const finalDraft = { ...draft, layers, name: draft.name.trim(), updatedAt: Date.now() };
+      await onSave(finalDraft);
+    } catch (error) {
+      notify(`保存图层修改失败：${error?.message || error}`, 'error');
+      return;
+    }
     await onClearDraft(draftKey).catch(() => undefined);
   };
 
@@ -1830,9 +1892,10 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       data-layer-id={layer.id}
       data-parent-group-id={child ? layer.groupId : undefined}
       className={`layer-row ${child ? 'layer-child' : ''} ${selectedIds.includes(layer.id) ? 'selected' : ''} ${draggedLayerId === layer.id ? 'dragging' : ''} ${dropClass} ${layer.locked ? 'locked' : ''}`}
+      onPointerDown={(event) => { if (!layer.locked && !event.target.closest('button, input')) beginLayerReorder(event, layer.id); }}
       onClick={(event) => selectLayer(layer.id, event)}
       onContextMenu={(event) => openLayerMenu(layer.id, event)}
-    ><span className="layer-grip" title={layer.locked ? '图层已锁定' : '拖动排序'} onPointerDown={(event) => { if (!layer.locked) beginLayerReorder(event, layer.id); }}><GripVertical size={15}/></span><div className={`layer-thumb ${layer.type}`}><LayerThumb layer={layer}/></div><div className="layer-copy"><strong>{layer.name}</strong><span>{layer.type === 'slot' ? `${shapeOf(layer) === 'circle' ? '圆形' : shapeOf(layer) === 'rounded' ? '圆角矩形' : shapeOf(layer) === 'polygon' ? '多边形' : '矩形'}照片` : layer.type === 'text' ? '文字图层' : '固定图层'}</span></div><IconButton label={layer.locked ? '解锁图层' : '锁定图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { locked: !layer.locked }); }}>{layer.locked ? <Lock size={15}/> : <Unlock size={15}/>}</IconButton><IconButton label={layer.visible ? '隐藏图层' : '显示图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { visible: !layer.visible }); }}>{layer.visible ? <Eye size={16}/> : <EyeOff size={16}/>}</IconButton></div>;
+    ><span className="layer-grip" title={layer.locked ? '图层已锁定' : '拖动排序'}><GripVertical size={15}/></span><div className={`layer-thumb ${layer.type}`}><LayerThumb layer={layer}/></div><div className="layer-copy">{layerNameEditor('layer', layer.id, layer.name)}<span>{layer.type === 'slot' ? `${shapeOf(layer) === 'circle' ? '圆形' : shapeOf(layer) === 'rounded' ? '圆角矩形' : shapeOf(layer) === 'polygon' ? '多边形' : '矩形'}照片` : layer.type === 'text' ? '文字图层' : '固定图层'}</span></div><IconButton label={layer.locked ? '解锁图层' : '锁定图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { locked: !layer.locked }); }}>{layer.locked ? <Lock size={15}/> : <Unlock size={15}/>}</IconButton><IconButton label={layer.visible ? '隐藏图层' : '显示图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { visible: !layer.visible }); }}>{layer.visible ? <Eye size={16}/> : <EyeOff size={16}/>}</IconButton></div>;
   };
   const layerListRows = [];
   const seenGroups = new Set();
@@ -1855,9 +1918,10 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       data-layer-id={members[0].id}
       data-group-id={layer.groupId}
       className={`layer-group-row ${groupSelected ? 'selected' : ''} ${draggedLayerId === members[0].id ? 'dragging' : ''} ${dropClass}`}
+      onPointerDown={(event) => { if (!event.target.closest('button, input')) beginLayerReorder(event, members[0].id, layer.groupId); }}
       onClick={(event) => selectGroup(layer.groupId, event)}
       onContextMenu={(event) => openGroupMenu(layer.groupId, event)}
-    ><span className="layer-grip" title="拖动整组排序" onPointerDown={(event) => beginLayerReorder(event, members[0].id, layer.groupId)}><GripVertical size={15}/></span><IconButton label={collapsed ? '展开图层组' : '收起图层组'} className="group-toggle" onClick={(event) => { event.stopPropagation(); setCollapsedGroups((current) => { const next = new Set(current); if (next.has(layer.groupId)) next.delete(layer.groupId); else next.add(layer.groupId); return next; }); }}>{collapsed ? <ChevronRight size={15}/> : <ChevronDown size={15}/>}</IconButton><div className="layer-group-icon"><Layers3 size={17}/></div><div className="layer-copy"><strong>{groupName}</strong><span>{members.length} 个图层</span></div></div>);
+    ><span className="layer-grip" title="拖动整组排序"><GripVertical size={15}/></span><IconButton label={collapsed ? '展开图层组' : '收起图层组'} className="group-toggle" onClick={(event) => { event.stopPropagation(); setCollapsedGroups((current) => { const next = new Set(current); if (next.has(layer.groupId)) next.delete(layer.groupId); else next.add(layer.groupId); return next; }); }}>{collapsed ? <ChevronRight size={15}/> : <ChevronDown size={15}/>}</IconButton><div className="layer-group-icon"><Layers3 size={17}/></div><div className="layer-copy">{layerNameEditor('group', layer.groupId, groupName)}<span>{members.length} 个图层</span></div></div>);
     if (!collapsed) members.forEach((member) => layerListRows.push(renderLayerRow(member, true)));
   });
   const contextLayer = layerMenu ? draft.layers.find((item) => item.id === layerMenu.id) : null;
@@ -1882,20 +1946,22 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       <section className="canvas-workspace">
         <div className="canvas-toolbar">
           <div className="canvas-size"><label>画布</label><NumericInput min={0} max={4000} value={draft.width} onCommit={(width) => updateDraft({ ...draft, width })}/><span>×</span><NumericInput min={0} max={4000} value={draft.height} onCommit={(height) => updateDraft({ ...draft, height })}/><button className="auto-canvas-button" onClick={autoSizeCanvas}>自动设置</button></div>
-          <div className="editor-paint-tools">
+          <div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>
+        </div>
+        <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, ctrlKey: event.ctrlKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { if (activeTool === 'select' && event.target === event.currentTarget) { clearSelection(); beginPan(event); } }}>
+          <div className="canvas-tool-dock"><div className="tool-rail-trigger" aria-hidden="true"></div><div className="editor-paint-tools">
             <IconButton label="选择与移动" className={activeTool === 'select' ? 'active' : ''} onClick={() => setActiveTool('select')}><MousePointer2 size={17}/></IconButton>
+            <IconButton label="选框工具：拖动后右键复制或剪切图层" className={activeTool === 'marquee' ? 'active' : ''} onClick={() => setActiveTool('marquee')}><BoxSelect size={17}/></IconButton>
             <IconButton label="画笔（按住 Ctrl 临时取色）" className={activeTool === 'brush' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('brush')}><Pencil size={17}/></IconButton>
+            <IconButton label="马赛克" className={activeTool === 'mosaic' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('mosaic')}><Grid2X2 size={17}/></IconButton>
             <IconButton label="填充当前图层" className={activeTool === 'fill' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('fill')}><PaintBucket size={17}/></IconButton>
             <div className="tool-menu-wrap eraser-tool-wrap"><IconButton label={`橡皮擦：${eraserMode === 'paint' ? '仅擦除画笔' : '擦除图层'}`} className={activeTool === 'eraser' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('eraser')} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setEraserMenu(true); }}><Eraser size={17}/></IconButton>{eraserMenu && <div className="eraser-mode-menu" onPointerDown={(event) => event.stopPropagation()}><button className={eraserMode === 'paint' ? 'active' : ''} onClick={() => { setEraserMode('paint'); setEraserMenu(false); setActiveTool('eraser'); }}>仅擦除画笔</button><button className={eraserMode === 'layer' ? 'active' : ''} onClick={() => { setEraserMode('layer'); setEraserMenu(false); setActiveTool('eraser'); }}>擦除图层</button></div>}</div>
             <IconButton label="颜色选取器（可从所有图层取色）" className={activeTool === 'picker' ? 'active' : ''} onClick={() => setActiveTool('picker')}><Pipette size={17}/></IconButton>
             <input className="paint-color" type="color" aria-label="绘画颜色" title="绘画颜色" value={paintColor} onChange={(event) => setPaintColor(event.target.value)}/>
             <label className="brush-size" title="画笔和橡皮擦大小"><NumericInput aria-label="画笔大小" min={1} max={160} value={brushSize} onCommit={setBrushSize}/><input type="range" min="1" max="160" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))}/></label>
-          </div>
-          <div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>
-        </div>
-        <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, ctrlKey: event.ctrlKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { if (activeTool === 'select' && event.target === event.currentTarget) { clearSelection(); beginPan(event); } }}>
+          </div></div>
           <div className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}>
-            <EditorStage template={draft} selectedIds={selectedIds} selectLayer={selectLayer} clearSelection={clearSelection} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} eraserMode={eraserMode} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, patch) => updateLayer(id, patch)} onPickColor={setPaintColor} zoom={zoom}/>
+            <EditorStage template={draft} selectedIds={selectedIds} selectLayer={selectLayer} clearSelection={clearSelection} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onMarqueeContextMenu={openMarqueeMenu} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} eraserMode={eraserMode} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, patch) => updateLayer(id, patch)} onPickColor={setPaintColor} zoom={zoom}/>
             {selectedOutsideLayers.map((layer) => <div key={`outside-outline-${layer.id}`} className="outside-layer-outline" style={{ left: layer.x * zoom, top: layer.y * zoom, width: layer.width * zoom, height: layer.height * zoom, transform: `rotate(${layer.rotation || 0}deg)` }}/>) }
             {textEditingId && draft.layers.find((layer) => layer.id === textEditingId && layer.type === 'text') && <RichTextOverlay
               layer={draft.layers.find((layer) => layer.id === textEditingId)}
@@ -1906,13 +1972,13 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
               onDone={() => { setTextEditingId(null); setTextSelection(null); }}
             />}
           </div>
-          {toolPointer && activeTool !== 'select' && !panning && <div className="tool-cursor" style={{ left: toolPointer.x, top: toolPointer.y }}>{activeTool === 'picker' || (activeTool === 'brush' && toolPointer.ctrlKey) ? <Pipette size={19}/> : activeTool === 'fill' ? <PaintBucket size={19}/> : activeTool === 'eraser' ? <Eraser size={19}/> : <Pencil size={19}/>}</div>}
+          {toolPointer && activeTool !== 'select' && !panning && <div className="tool-cursor" style={{ left: toolPointer.x, top: toolPointer.y }}>{activeTool === 'picker' || (activeTool === 'brush' && toolPointer.ctrlKey) ? <Pipette size={19}/> : activeTool === 'fill' ? <PaintBucket size={19}/> : activeTool === 'eraser' ? <Eraser size={19}/> : activeTool === 'mosaic' ? <Grid2X2 size={19}/> : activeTool === 'marquee' ? <BoxSelect size={19}/> : <Pencil size={19}/>}</div>}
         </div>
       </section>
       <aside className="properties-panel"><div className="panel-title"><span>属性</span></div>{selectedGroupId && selectedGroupLayers.length ? <GroupProperties name={selectedGroupName} layers={selectedGroupLayers} onRename={(name) => updateGroupMeta(selectedGroupId, { name })} onToggleLock={() => updateGroupLayers(selectedGroupId, { locked: selectedGroupLayers.some((layer) => !layer.locked) })} onToggleVisibility={() => updateGroupLayers(selectedGroupId, { visible: !selectedGroupLayers.every((layer) => layer.visible) })} onMove={(axis, value) => moveGroupTo(selectedGroupId, axis, value)} onUngroup={ungroupSelected} onRemove={() => removeGroup(selectedGroupId)} onOrder={(direction) => moveLayer(selectedGroupLayers[0].id, direction, true)}/> : selectedLayers.length > 1 ? <MultiSelectionProperties layers={selectedLayers} grouped={Boolean(uniformlySelectedGroupId)} onGroup={groupSelected} onUngroup={ungroupSelected} onToggleLock={toggleSelectedLock} onAlign={alignSelected} onDistribute={distributeSelected}/> : selected ? <Properties layer={selected} textStyle={selected.type === 'text' ? textStyleAt(selected, Math.min(Math.max(0, String(selected.text || '').length - 1), Math.min(activeTextSelection?.start ?? 0, activeTextSelection?.end ?? 0))) : null} textSelection={activeTextSelection} onBeginTextInteraction={beginPropertyTextInteraction} onTextSelectionChange={(selection) => setPropertyTextSelection({ id: selected.id, ...selection })} updateTextStyle={applySelectedTextStyle} updateText={updateSelectedText} update={updateSelectedProperties} toggleLock={() => updateLayer(selected.id, { locked: !selected.locked })} remove={() => removeLayer(selected.id)} move={(direction) => moveLayer(selected.id, direction)}/> : <div className="property-empty"><Pencil size={26}/><p>选择一个图层后，可调整位置、尺寸和旋转。</p></div>}</aside>
     </div>
     {layerMenu && <div className="layer-context-menu" style={{ left: layerMenu.x, top: Math.max(6, layerMenu.y) }} onPointerDown={(event) => event.stopPropagation()}>
-      {layerMenu.blank ? <button onClick={() => { pasteLayers(); setLayerMenu(null); }}><Clipboard size={16}/>粘贴图层</button> : <>
+      {layerMenu.marqueeIds ? <><button onClick={() => { copyLayersByIds(layerMenu.marqueeIds); setLayerMenu(null); }}><Copy size={16}/>复制选框内图层</button><button className="danger" onClick={() => { cutLayersByIds(layerMenu.marqueeIds); setLayerMenu(null); }}><Scissors size={16}/>剪切选框内图层</button></> : layerMenu.blank ? <button onClick={() => { pasteLayers(); setLayerMenu(null); }}><Clipboard size={16}/>粘贴图层</button> : <>
       <button onClick={() => { copyLayerFromMenu(layerMenu.id, contextGroupId); setLayerMenu(null); }}><Copy size={16}/>复制{contextGroupId ? '图层组' : '图层'}</button>
       {selectedIds.length > 1 && <button disabled={selectedLayers.some((layer) => layer.locked)} onClick={mergeSelectedLayers}><Layers3 size={16}/>合并图层</button>}
       {contextGroupId || contextLayer?.groupId
@@ -2029,7 +2095,7 @@ function RichTextOverlay({ layer, zoom, selectionRange, onChange, onSelectionCha
         lineHeight: String(segment.style.lineHeight),
         display: 'inline-block',
         position: 'relative',
-        top: `${-leadingOffset}px`,
+        top: `${-leadingOffset + .75}px`,
         verticalAlign: 'top',
         WebkitTextStroke: segment.style.strokeWidth ? `${segment.style.strokeWidth * 2 * zoom}px ${segment.style.stroke}` : '',
         paintOrder: 'stroke fill'
@@ -2177,17 +2243,21 @@ function floodFillCanvas(canvas, x, y, color) {
   ctx.putImageData(image, 0, 0);
 }
 
-function EditorStage({ template, selectedIds, selectLayer, clearSelection, updateLayer, updateLayers, onLayerContextMenu, onPanStart, onEditText, textEditingId, tool, eraserMode, paintColor, brushSize, onPaintCommit, onPickColor, zoom }) {
+function EditorStage({ template, selectedIds, selectLayer, clearSelection, updateLayer, updateLayers, onLayerContextMenu, onMarqueeContextMenu, onPanStart, onEditText, textEditingId, tool, eraserMode, paintColor, brushSize, onPaintCommit, onPickColor, zoom }) {
   const stageRef = useRef();
   const trRef = useRef();
   const nodeRefs = useRef({});
   const dragRef = useRef(null);
   const paintSurfacesRef = useRef({});
   const eraseSurfacesRef = useRef({});
+  const mosaicSurfacesRef = useRef({});
+  const mosaicBaseRef = useRef({});
   const paintingRef = useRef(null);
   const paintPointerRef = useRef(0);
   const [paintPreview, setPaintPreview] = useState(null);
   const [guides, setGuides] = useState([]);
+  const [marquee, setMarquee] = useState(null);
+  const marqueeRef = useRef(null);
   const [shiftPressed, setShiftPressed] = useState(false);
 
   useEffect(() => {
@@ -2222,6 +2292,13 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
       window.removeEventListener('blur', releaseShift);
     };
   }, []);
+
+  useEffect(() => {
+    if (tool !== 'marquee') {
+      marqueeRef.current = null;
+      setMarquee(null);
+    }
+  }, [tool]);
 
   const startDrag = (layer) => {
     const requestedIds = selectedIds.includes(layer.id) ? selectedIds : [layer.id];
@@ -2290,8 +2367,8 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
   };
 
   const ensurePaintSurface = async (layer, kind = 'paint') => {
-    const source = kind === 'erase' ? layer.eraseSrc : layer.paintSrc;
-    const surfaces = kind === 'erase' ? eraseSurfacesRef : paintSurfacesRef;
+    const source = kind === 'erase' ? layer.eraseSrc : kind === 'mosaic' ? layer.mosaicSrc : layer.paintSrc;
+    const surfaces = kind === 'erase' ? eraseSurfacesRef : kind === 'mosaic' ? mosaicSurfacesRef : paintSurfacesRef;
     const key = `${source || ''}|${Math.round(layer.width)}x${Math.round(layer.height)}`;
     const cached = surfaces.current[layer.id];
     if (cached?.key === key) return cached.canvas;
@@ -2303,6 +2380,18 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
       canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
     }
     surfaces.current[layer.id] = { key, canvas };
+    return canvas;
+  };
+
+  const ensureMosaicBase = async (layer) => {
+    const key = JSON.stringify(layer);
+    if (mosaicBaseRef.current.key === key) return mosaicBaseRef.current.canvas;
+    const isolated = await renderIsolatedLayer(layer, layer.src, null, null, null);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(layer.width));
+    canvas.height = Math.max(1, Math.round(layer.height));
+    canvas.getContext('2d').drawImage(isolated.canvas, -isolated.insets.left, -isolated.insets.top, isolated.logicalWidth, isolated.logicalHeight);
+    mosaicBaseRef.current = { key, canvas };
     return canvas;
   };
 
@@ -2321,6 +2410,72 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
     ctx.stroke();
     ctx.restore();
     painting.last = point;
+  };
+
+  const drawMosaicSegment = (painting, point) => {
+    const ctx = painting.canvas.getContext('2d');
+    const base = painting.baseCanvas;
+    const pixels = painting.basePixels;
+    const scaleX = painting.canvas.width / painting.layer.width;
+    const scaleY = painting.canvas.height / painting.layer.height;
+    const radius = Math.max(6, brushSize) * (scaleX + scaleY) / 2;
+    const block = Math.max(4, Math.round(brushSize * .55 * (scaleX + scaleY) / 2));
+    const distance = Math.hypot(point.x - painting.last.x, point.y - painting.last.y) * Math.max(scaleX, scaleY);
+    const steps = Math.max(1, Math.ceil(distance / Math.max(1, block / 2)));
+    for (let step = 1; step <= steps; step += 1) {
+      const ratio = step / steps;
+      const x = painting.last.x + (point.x - painting.last.x) * ratio;
+      const y = painting.last.y + (point.y - painting.last.y) * ratio;
+      for (let offsetY = -radius; offsetY <= radius; offsetY += block) {
+        for (let offsetX = -radius; offsetX <= radius; offsetX += block) {
+          const px = clamp(Math.floor((x + offsetX / scaleX) * scaleX), 0, base.width - 1);
+          const py = clamp(Math.floor((y + offsetY / scaleY) * scaleY), 0, base.height - 1);
+          const pixel = (py * base.width + px) * 4;
+          ctx.fillStyle = `rgba(${pixels[pixel]},${pixels[pixel + 1]},${pixels[pixel + 2]},${pixels[pixel + 3] / 255})`;
+          ctx.fillRect((x + offsetX / scaleX) * scaleX, (y + offsetY / scaleY) * scaleY, block, block);
+        }
+      }
+    }
+    painting.last = point;
+  };
+
+  const beginMarquee = (event) => {
+    event.evt.preventDefault();
+    const pointer = stageRef.current?.getPointerPosition();
+    if (!pointer) return;
+    const point = { x: pointer.x / zoom, y: pointer.y / zoom };
+    marqueeRef.current = { start: point, current: point };
+    setMarquee({ x: point.x, y: point.y, width: 0, height: 0 });
+    clearSelection();
+  };
+
+  const moveMarquee = () => {
+    const drag = marqueeRef.current;
+    const pointer = stageRef.current?.getPointerPosition();
+    if (!drag || !pointer) return;
+    const current = { x: pointer.x / zoom, y: pointer.y / zoom };
+    drag.current = current;
+    setMarquee({ x: Math.min(drag.start.x, current.x), y: Math.min(drag.start.y, current.y), width: Math.abs(current.x - drag.start.x), height: Math.abs(current.y - drag.start.y) });
+  };
+
+  const finishMarquee = () => {
+    const drag = marqueeRef.current;
+    marqueeRef.current = null;
+    if (!drag) return;
+    const current = drag.current;
+    const rect = { x: Math.min(drag.start.x, current.x), y: Math.min(drag.start.y, current.y), width: Math.abs(current.x - drag.start.x), height: Math.abs(current.y - drag.start.y) };
+    if (rect.width < 2 || rect.height < 2) { setMarquee(null); return; }
+    setMarquee(rect);
+  };
+
+  const marqueeIds = () => {
+    if (!marquee || marquee.width < 2 || marquee.height < 2) return [];
+    const right = marquee.x + marquee.width; const bottom = marquee.y + marquee.height;
+    return template.layers.filter((layer) => {
+      if (!layer.visible) return false;
+      const bounds = layerBounds(layer);
+      return bounds.left >= marquee.x && bounds.top >= marquee.y && bounds.right <= right && bounds.bottom <= bottom;
+    }).map((layer) => layer.id);
   };
 
   const beginPaint = async (event) => {
@@ -2348,6 +2503,17 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
     const pointerToken = ++paintPointerRef.current;
     const mode = effectiveTool === 'eraser' ? (eraserMode === 'layer' ? 'erase-layer' : 'erase-paint') : effectiveTool;
     const surfaceKind = mode === 'erase-layer' ? 'erase' : 'paint';
+    if (effectiveTool === 'mosaic') {
+      const canvas = await ensurePaintSurface(layer, 'mosaic');
+      const baseCanvas = await ensureMosaicBase(layer);
+      if (pointerToken !== paintPointerRef.current) return true;
+      const basePixels = baseCanvas.getContext('2d').getImageData(0, 0, baseCanvas.width, baseCanvas.height).data;
+      const painting = { layer, canvas, baseCanvas, basePixels, mode: 'mosaic', surfaceKind: 'mosaic', last: local };
+      paintingRef.current = painting;
+      drawMosaicSegment(painting, { x: local.x + .01, y: local.y + .01 });
+      setPaintPreview({ id: layer.id, canvas, kind: 'mosaic', revision: 1 });
+      return true;
+    }
     const canvas = await ensurePaintSurface(layer, surfaceKind);
     if (pointerToken !== paintPointerRef.current) return true;
     if (effectiveTool === 'fill') {
@@ -2369,7 +2535,9 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
     const pointer = stageRef.current?.getPointerPosition();
     if (!painting || !pointer) return;
     const local = layerLocalPoint(painting.layer, { x: pointer.x / zoom, y: pointer.y / zoom });
-    drawPaintSegment(painting, { x: clamp(local.x, 0, painting.layer.width), y: clamp(local.y, 0, painting.layer.height) });
+    const point = { x: clamp(local.x, 0, painting.layer.width), y: clamp(local.y, 0, painting.layer.height) };
+    if (painting.mode === 'mosaic') drawMosaicSegment(painting, point);
+    else drawPaintSegment(painting, point);
     setPaintPreview((current) => ({ id: painting.layer.id, canvas: painting.canvas, kind: painting.surfaceKind, revision: (current?.revision || 0) + 1 }));
   };
 
@@ -2379,9 +2547,9 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
     if (!painting) return;
     paintingRef.current = null;
     const source = painting.canvas.toDataURL('image/png');
-    const surfaces = painting.surfaceKind === 'erase' ? eraseSurfacesRef : paintSurfacesRef;
+    const surfaces = painting.surfaceKind === 'erase' ? eraseSurfacesRef : painting.surfaceKind === 'mosaic' ? mosaicSurfacesRef : paintSurfacesRef;
     surfaces.current[painting.layer.id] = { key: `${source}|${Math.round(painting.layer.width)}x${Math.round(painting.layer.height)}`, canvas: painting.canvas };
-    onPaintCommit(painting.layer.id, painting.surfaceKind === 'erase' ? { eraseSrc: source } : { paintSrc: source });
+    onPaintCommit(painting.layer.id, painting.surfaceKind === 'erase' ? { eraseSrc: source } : painting.surfaceKind === 'mosaic' ? { mosaicSrc: source } : { paintSrc: source });
     setPaintPreview(null);
   };
 
@@ -2398,12 +2566,14 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
   return <Stage ref={stageRef} width={template.width * zoom} height={template.height * zoom} scaleX={zoom} scaleY={zoom}
     onWheel={(event) => event.target.stopDrag?.()}
     onMouseDown={(event) => {
+      if (tool === 'marquee') { beginMarquee(event); return; }
       if (tool !== 'select') { beginPaint(event); return; }
       trRef.current?.rotationSnaps(event.evt.shiftKey || shiftPressed ? ROTATION_SNAPS : []);
       if (event.target === event.target.getStage() || event.target.name() === 'editor-background') { clearSelection(); onPanStart(event); }
     }}
-    onMouseMove={tool !== 'select' ? movePaint : undefined}
-    onMouseUp={tool !== 'select' ? finishPaint : undefined}
+    onMouseMove={tool === 'marquee' ? moveMarquee : tool !== 'select' ? movePaint : undefined}
+    onMouseUp={tool === 'marquee' ? finishMarquee : tool !== 'select' ? finishPaint : undefined}
+    onContextMenu={(event) => { if (tool !== 'marquee') return; event.evt.preventDefault(); event.evt.stopPropagation(); const ids = marqueeIds(); if (ids.length) onMarqueeContextMenu(ids, event.evt); }}
   >
     <Layer>
       <Rect name="editor-background" width={template.width} height={template.height} fill="#fff"/>
@@ -2412,8 +2582,9 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
         const interactive = tool === 'select' && !layer.locked;
         const selectable = tool === 'select';
         return <EditorLayer key={layer.id} layer={layer} interactive={interactive} selectable={selectable}
-          paintSource={paintPreview?.id === layer.id && paintPreview.kind !== 'erase' ? paintPreview.canvas : null}
+          paintSource={paintPreview?.id === layer.id && paintPreview.kind === 'paint' ? paintPreview.canvas : null}
           eraseSource={paintPreview?.id === layer.id && paintPreview.kind === 'erase' ? paintPreview.canvas : null}
+          mosaicSource={paintPreview?.id === layer.id && paintPreview.kind === 'mosaic' ? paintPreview.canvas : null}
           paintRevision={paintPreview?.id === layer.id ? paintPreview.revision : 0}
           setRef={(node) => nodeRefs.current[layer.id] = node}
           onPointerDown={(event) => { if (!selectedIds.includes(layer.id) && !event.evt.ctrlKey && !event.evt.metaKey && !event.evt.shiftKey) selectLayer(layer.id, event.evt); }}
@@ -2424,6 +2595,7 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
           onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)} onTransformEnd={false}/>;
       })}
       {template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
+      {tool === 'marquee' && marquee && <Rect name="marquee-selection" x={marquee.x} y={marquee.y} width={marquee.width} height={marquee.height} fill="rgba(67,132,255,.12)" stroke="#4384ff" strokeWidth={1 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>}
       {guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94b37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }
       <Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} enabledAnchors={['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/>
       {selectedPolygon && <Group x={selectedPolygon.x} y={selectedPolygon.y} rotation={selectedPolygon.rotation || 0}>{polygonPointsOf(selectedPolygon).map((point, index) => <KonvaCircle key={`polygon-handle-${selectedPolygon.id}-${index}`} x={point.x * selectedPolygon.width} y={point.y * selectedPolygon.height} radius={6 / zoom} fill="#fff" stroke="#e24b35" strokeWidth={1.5 / zoom} draggable onMouseDown={(event) => { event.cancelBubble = true; }} onDragMove={(event) => { event.cancelBubble = true; event.target.position({ x: clamp(event.target.x(), 0, selectedPolygon.width), y: clamp(event.target.y(), 0, selectedPolygon.height) }); }} onDragEnd={(event) => { event.cancelBubble = true; const next = { x: clamp(event.target.x() / selectedPolygon.width, 0, 1), y: clamp(event.target.y() / selectedPolygon.height, 0, 1) }; updateLayer(selectedPolygon.id, { polygonPoints: polygonPointsOf(selectedPolygon).map((item, itemIndex) => itemIndex === index ? next : item) }); }} />)}</Group>}
@@ -2431,25 +2603,27 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
   </Stage>;
 }
 
-function useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, revision) {
+function useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, mosaicSource, revision) {
   const [result, setResult] = useState(null);
   useEffect(() => {
     if (!layer.eraseSrc && !eraseSource) { setResult(null); return; }
     let alive = true;
     (async () => {
-      const output = await renderIsolatedLayer(layer, source, photoTransform, paintSource, eraseSource);
+      const output = await renderIsolatedLayer(layer, source, photoTransform, paintSource, eraseSource, 1, mosaicSource);
       if (alive) setResult(output);
     })().catch(() => { if (alive) setResult(null); });
     return () => { alive = false; };
-  }, [layer, source, photoTransform, paintSource, eraseSource, revision]);
+  }, [layer, source, photoTransform, paintSource, eraseSource, mosaicSource, revision]);
   return result;
 }
 
-function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, source, paintSource, eraseSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
+function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, source, paintSource, eraseSource, mosaicSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
   const image = useHtmlImage(source ?? layer.src);
   const loadedPaintImage = useHtmlImage(layer.paintSrc);
+  const loadedMosaicImage = useHtmlImage(layer.mosaicSrc);
   const paintImage = paintSource || loadedPaintImage;
-  const maskedResult = useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, paintRevision);
+  const mosaicImage = mosaicSource || loadedMosaicImage;
+  const maskedResult = useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, mosaicImage, paintRevision);
   const crop = image && layer.fit === 'cover' ? getCoverCrop(image, layer.width, layer.height) : undefined;
   const placement = image && layer.type === 'slot' && source ? getPhotoPlacement(image, layer, photoTransform) : null;
   if (!layer.visible) return null;
@@ -2465,6 +2639,7 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
       <Rect width={layer.width} height={layer.height} fill={layer.background || 'rgba(0,0,0,.001)'}/>
       {layoutStyledText(layer).map((run, index) => <KonvaText key={`${run.x}-${run.y}-${index}`} x={run.x} y={run.y} text={run.text} fontSize={run.style.fontSize} fontFamily={run.style.fontFamily} fontStyle={run.style.fontStyle} textDecoration={run.style.textDecoration} fill={run.style.fill} stroke={run.style.strokeWidth > 0 ? run.style.stroke : undefined} strokeWidth={run.style.strokeWidth * 2} fillAfterStrokeEnabled lineJoin="round" shadowEnabled={Boolean(layer.shadowEnabled)} shadowColor={layer.shadowColor || '#000000'} shadowBlur={Number(layer.shadowBlur) || 0} shadowOffsetX={Number(layer.shadowOffsetX) || 0} shadowOffsetY={Number(layer.shadowOffsetY) || 0}/>) }
       {paintImage && <KonvaImage image={paintImage} width={layer.width} height={layer.height} listening={false}/>}
+      {mosaicImage && <KonvaImage image={mosaicImage} width={layer.width} height={layer.height} listening={false}/>}
     </Group>;
   }
   const clipFunc = (ctx) => traceLayerShape(ctx, layer);
@@ -2472,6 +2647,7 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
   return <Group {...common} clipFunc={layer.type === 'slot' ? clipFunc : undefined}>
     {image ? <KonvaImage image={image} x={placement?.x || 0} y={placement?.y || 0} width={placement?.width || layer.width} height={placement?.height || layer.height} crop={placement ? undefined : crop} draggable={cropMode} onDragMove={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); onPhotoTransformMove ? onPhotoTransformMove({ event, x, y, placement }) : event.target.position({ x, y }); } : undefined} onDragEnd={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); event.target.position({ x, y }); if (onPhotoTransformEnd) onPhotoTransformEnd({ event, x, y, placement }); else onPhotoTransform?.({ offsetX: x - placement.centeredX, offsetY: y - placement.centeredY }); } : undefined}/> : shapeOf(layer) === 'circle' ? <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={layer.width / 2} radiusY={layer.height / 2} {...placeholderProps}/> : shapeOf(layer) === 'polygon' ? <Line points={polygonPixelPoints(layer)} closed {...placeholderProps}/> : <Rect width={layer.width} height={layer.height} cornerRadius={shapeOf(layer) === 'rounded' ? Math.min(36, layer.width / 4, layer.height / 4) : 0} {...placeholderProps}/>}
     {paintImage && <KonvaImage image={paintImage} width={layer.width} height={layer.height} listening={false}/>}
+    {mosaicImage && <KonvaImage image={mosaicImage} width={layer.width} height={layer.height} listening={false}/>}
     {cropMode && <Rect x={1} y={1} width={Math.max(0, layer.width - 2)} height={Math.max(0, layer.height - 2)} stroke="#e94e37" strokeWidth={3} dash={[10, 7]} listening={false}/>}
   </Group>;
 }

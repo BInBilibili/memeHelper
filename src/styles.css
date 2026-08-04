@@ -180,6 +180,9 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .layer-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .layer-copy strong { font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .layer-copy span { font-size: 9px; color: var(--muted); }
+.layer-name-input { width: 100%; height: 23px; min-width: 0; padding: 0 5px; border: 1px solid var(--accent); border-radius: 3px; background: var(--surface); color: var(--ink); font-size: 11px; user-select: text; }
+.layer-row:not(.locked), .layer-group-row { cursor: grab; }
+.layer-row.dragging, .layer-group-row.dragging { cursor: grabbing; }
 .layers-empty, .property-empty { padding: 50px 25px; color: #9b9890; text-align: center; }
 .layers-empty p, .property-empty p { font-size: 11px; line-height: 1.7; }
 .canvas-workspace { min-width: 0; min-height: 0; display: flex; flex-direction: column; background-color: #e5e3dd; background-image: radial-gradient(#cac7be 1px, transparent 1px); background-size: 16px 16px; }
@@ -194,29 +197,32 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .zoom-control { height: 30px; display: flex; align-items: center; border: 1px solid var(--line); background: #fff; border-radius: 5px; }
 .zoom-control .icon-button { width: 29px; height: 28px; }
 .zoom-control span { width: 48px; text-align: center; font-size: 10px; }
-.editor-paint-tools { min-width: 0; height: 34px; padding: 2px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); display: flex; align-items: center; gap: 1px; }
-.editor-paint-tools .icon-button { width: 29px; height: 28px; border-radius: 3px; }
+.canvas-tool-dock { position: absolute; z-index: 20; inset: 0 auto 0 0; width: 24px; }
+.tool-rail-trigger { position: absolute; inset: 0; }
+.editor-paint-tools { position: absolute; left: 24px; top: 50%; width: 40px; min-width: 0; height: auto; max-height: calc(100% - 16px); padding: 5px 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); box-shadow: 0 8px 22px rgba(25,23,20,.16); display: flex; flex-direction: column; align-items: center; gap: 2px; opacity: 0; transform: translate(-10px,-50%); transition: opacity .14s, transform .14s; pointer-events: none; overflow: visible; }
+.canvas-tool-dock:hover .editor-paint-tools, .editor-paint-tools:focus-within { opacity: 1; transform: translate(0,-50%); pointer-events: auto; }
+.editor-paint-tools .icon-button { width: 30px; height: 28px; border-radius: 3px; }
 .editor-paint-tools .icon-button.active { color: var(--accent); background: #fff1ed; }
-.paint-color { width: 31px; height: 28px; margin-left: 3px; padding: 2px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); cursor: pointer; }
-.brush-size { width: 126px; padding: 0 4px; display: grid; grid-template-columns: 42px 1fr; align-items: center; gap: 5px; color: var(--muted); font-size: 8px; }
-.brush-size input[type="number"] { min-width: 0; width: 42px; height: 25px; padding: 0 4px; border: 1px solid var(--line); border-radius: 3px; font-size: 9px; }
-.brush-size input[type="range"] { min-width: 0; width: 100%; accent-color: var(--accent); }
+.paint-color { width: 30px; height: 28px; margin: 2px 0 0; padding: 2px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); cursor: pointer; }
+.brush-size { width: 30px; padding: 0; display: grid; grid-template-rows: 25px 54px; justify-items: center; align-items: center; gap: 4px; color: var(--muted); font-size: 8px; }
+.brush-size input[type="number"] { min-width: 0; width: 30px; height: 25px; padding: 0 3px; border: 1px solid var(--line); border-radius: 3px; font-size: 8px; text-align: center; }
+.brush-size input[type="range"] { min-width: 0; width: 18px; height: 54px; margin: 0; accent-color: var(--accent); writing-mode: vertical-lr; direction: rtl; }
 .eraser-tool-wrap { position: relative; }
 .tool-menu-wrap::after { content: ""; position: absolute; right: 3px; bottom: 3px; z-index: 1; width: 0; height: 0; border-top: 4px solid transparent; border-left: 4px solid transparent; border-right: 4px solid currentColor; pointer-events: none; }
-.eraser-mode-menu { position: absolute; z-index: 20; left: 0; top: 34px; width: 116px; padding: 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); box-shadow: 0 8px 22px rgba(25,23,20,.16); }
+.eraser-mode-menu { position: absolute; z-index: 20; left: 36px; top: 0; width: 116px; padding: 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); box-shadow: 0 8px 22px rgba(25,23,20,.16); }
 .eraser-mode-menu button { width: 100%; height: 28px; padding: 0 7px; border: 0; border-radius: 3px; background: transparent; color: var(--ink); text-align: left; font-size: 10px; cursor: pointer; }
 .eraser-mode-menu button:hover, .eraser-mode-menu button.active { color: var(--accent); background: #fff1ed; }
 .canvas-scroll { flex: 1; min-height: 0; position: relative; overflow: hidden; }
 .stage-shadow { position: absolute; left: 50%; top: 50%; flex: none; background: #fff; box-shadow: 0 10px 35px rgba(32,30,25,.2); }
 .outside-layer-outline { position: absolute; z-index: 4; box-sizing: border-box; border: 2px dashed var(--accent); outline: 1px solid rgba(255,255,255,.8); transform-origin: 0 0; pointer-events: none; }
-.rich-text-overlay { position: absolute; z-index: 5; margin: 0; border: 0; outline: 1px dashed rgba(233,78,55,.75); outline-offset: 2px; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; transform-origin: 0 0; caret-color: var(--accent); cursor: text; }
+.rich-text-overlay { position: absolute; z-index: 5; margin: 0; border: 0; outline: 1px dashed rgba(233,78,55,.75); outline-offset: 2px; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; transform-origin: 0 0; caret-color: var(--accent); cursor: text; font-synthesis: style weight; }
 .rich-text-overlay:focus { box-shadow: 0 0 0 2px rgba(233,78,55,.16); }
 .rich-text-selection { color: #111 !important; background: #9cc7ff; -webkit-text-stroke-color: transparent; }
 .rich-text-overlay:focus .rich-text-selection { color: inherit !important; background: transparent; -webkit-text-stroke-color: inherit; }
 .pan-viewport { cursor: grab; }
 .pan-viewport.panning, .pan-viewport.panning * { cursor: grabbing !important; user-select: none; }
-.pan-viewport.tool-brush, .pan-viewport.tool-fill, .pan-viewport.tool-eraser, .pan-viewport.tool-picker,
-.pan-viewport.tool-brush canvas, .pan-viewport.tool-fill canvas, .pan-viewport.tool-eraser canvas, .pan-viewport.tool-picker canvas { cursor: none; }
+.pan-viewport.tool-brush, .pan-viewport.tool-fill, .pan-viewport.tool-eraser, .pan-viewport.tool-picker, .pan-viewport.tool-mosaic, .pan-viewport.tool-marquee,
+.pan-viewport.tool-brush canvas, .pan-viewport.tool-fill canvas, .pan-viewport.tool-eraser canvas, .pan-viewport.tool-picker canvas, .pan-viewport.tool-mosaic canvas, .pan-viewport.tool-marquee canvas { cursor: none; }
 .tool-cursor { position: absolute; z-index: 12; width: 24px; height: 24px; transform: translate(-3px, -21px); display: grid; place-items: center; color: #171716; background: transparent; filter: drop-shadow(0 1px 1px rgba(255,255,255,.9)) drop-shadow(0 1px 2px rgba(0,0,0,.32)); pointer-events: none; }
 .property-content { padding: 17px; }
 .text-field, .number-field { display: block; }

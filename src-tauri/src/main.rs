@@ -310,10 +310,55 @@ fn referenced_assets(template: &Value) -> HashSet<PathBuf> {
         .collect()
 }
 
+fn layer_asset_paths(template: &Value) -> HashMap<String, PathBuf> {
+    template
+        .get("layers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|layer| {
+            let id = layer.get("id").and_then(Value::as_str)?;
+            let source = layer.get("src").and_then(Value::as_str)?;
+            Some((id.to_string(), safe_relative_path(source)?))
+        })
+        .collect()
+}
+
+fn asset_path_for_layer(
+    layer: &Value,
+    index: usize,
+    extension: &str,
+    old_assets_by_layer: &HashMap<String, PathBuf>,
+) -> PathBuf {
+    if let Some(previous) = layer
+        .get("id")
+        .and_then(Value::as_str)
+        .and_then(|id| old_assets_by_layer.get(id))
+    {
+        let mut reused = previous.clone();
+        reused.set_extension(extension);
+        return reused;
+    }
+    let layer_id = layer
+        .get("id")
+        .and_then(Value::as_str)
+        .map(|id| safe_name(id, "image", 64))
+        .unwrap_or_else(|| format!("image-{}", index + 1));
+    PathBuf::from(format!("layer-{layer_id}.{extension}"))
+}
+
+fn relative_path_string(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 fn write_template_directory(directory: &Path, template: &Value) -> Result<(), String> {
     fs::create_dir_all(directory).map_err(|error| error.to_string())?;
     let old_template = read_template_file(&directory.join(TEMPLATE_FILE_NAME), false);
     let old_assets = old_template.as_ref().map(referenced_assets).unwrap_or_default();
+    let old_assets_by_layer = old_template
+        .as_ref()
+        .map(layer_asset_paths)
+        .unwrap_or_default();
     let mut stored = template.clone();
     let Some(layers) = layers_mut(&mut stored) else {
         return Err("模板图层数据格式无效".to_string());
@@ -324,15 +369,14 @@ fn write_template_directory(directory: &Path, template: &Value) -> Result<(), St
             continue;
         };
         if let Some((extension, bytes)) = decode_template_asset(source)? {
-            let layer_id = layer
-                .get("id")
-                .and_then(Value::as_str)
-                .map(|id| safe_name(id, "image", 64))
-                .unwrap_or_else(|| format!("image-{}", index + 1));
-            let file_name = format!("layer-{layer_id}.{extension}");
-            fs::write(directory.join(&file_name), bytes).map_err(|error| error.to_string())?;
-            layer["src"] = Value::String(file_name.clone());
-            current_assets.insert(PathBuf::from(file_name));
+            let relative = asset_path_for_layer(layer, index, extension, &old_assets_by_layer);
+            let path = directory.join(&relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            }
+            fs::write(path, bytes).map_err(|error| error.to_string())?;
+            layer["src"] = Value::String(relative_path_string(&relative));
+            current_assets.insert(relative);
         } else if let Some(relative) = safe_relative_path(source) {
             current_assets.insert(relative);
         }
@@ -348,7 +392,7 @@ fn write_template_directory(directory: &Path, template: &Value) -> Result<(), St
     Ok(())
 }
 
-fn new_template_directory(root: &Path, template: &Value, used: &HashSet<PathBuf>) -> PathBuf {
+fn template_directory_base(root: &Path, template: &Value) -> PathBuf {
     let name = template
         .get("name")
         .and_then(Value::as_str)
@@ -357,21 +401,47 @@ fn new_template_directory(root: &Path, template: &Value, used: &HashSet<PathBuf>
     let id = template_id(template)
         .map(|id| safe_name(id, "id", 12))
         .unwrap_or_else(|| "id".to_string());
-    let mut candidate = root.join(format!("template-{name}-{id}"));
+    root.join(format!("template-{name}-{id}"))
+}
+
+fn available_template_directory(
+    root: &Path,
+    template: &Value,
+    used: &HashSet<PathBuf>,
+    current: Option<&Path>,
+) -> PathBuf {
+    let mut candidate = template_directory_base(root, template);
     let mut suffix = 2;
-    while candidate.exists() || used.contains(&candidate) {
-        candidate = root.join(format!("template-{name}-{id}-{suffix}"));
+    let base_name = candidate
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("template")
+        .to_string();
+    while current.is_none_or(|path| candidate != path) && (candidate.exists() || used.contains(&candidate)) {
+        candidate = root.join(format!("{base_name}-{suffix}"));
         suffix += 1;
     }
     candidate
 }
 
+fn new_template_directory(root: &Path, template: &Value, used: &HashSet<PathBuf>) -> PathBuf {
+    available_template_directory(root, template, used, None)
+}
+
 fn write_template_directories(root: &Path, templates: &[Value]) -> Result<(), String> {
     fs::create_dir_all(root).map_err(|error| error.to_string())?;
     let existing = template_directories(root, false);
-    let existing_by_id: HashMap<String, PathBuf> = existing
+    let existing_by_id: HashMap<String, (PathBuf, Option<String>)> = existing
         .iter()
-        .map(|(id, directory, _)| (id.clone(), directory.clone()))
+        .map(|(id, directory, template)| {
+            (
+                id.clone(),
+                (
+                    directory.clone(),
+                    template.get("name").and_then(Value::as_str).map(str::to_string),
+                ),
+            )
+        })
         .collect();
     let target_ids: HashSet<String> = templates
         .iter()
@@ -384,12 +454,24 @@ fn write_template_directories(root: &Path, templates: &[Value]) -> Result<(), St
     let mut used_directories = HashSet::new();
     for template in templates {
         let id = template_id(template).expect("template IDs were validated");
-        let directory = existing_by_id
-            .get(id)
-            .cloned()
+        let existing_entry = existing_by_id.get(id).cloned();
+        let directory = existing_entry
+            .as_ref()
+            .map(|(directory, _)| directory.clone())
             .unwrap_or_else(|| new_template_directory(root, template, &used_directories));
         write_template_directory(&directory, template)?;
-        used_directories.insert(directory);
+        let old_name = existing_entry.as_ref().and_then(|(_, name)| name.as_deref());
+        let new_name = template.get("name").and_then(Value::as_str);
+        let final_directory = if existing_entry.is_some() && old_name != new_name {
+            let renamed = available_template_directory(root, template, &used_directories, Some(&directory));
+            if renamed != directory {
+                fs::rename(&directory, &renamed).map_err(|error| error.to_string())?;
+            }
+            renamed
+        } else {
+            directory
+        };
+        used_directories.insert(final_directory);
     }
     for (id, directory, _) in existing {
         if !target_ids.contains(&id) && directory.starts_with(root) {
@@ -694,6 +776,73 @@ mod tests {
 
         let hydrated = read_template_directories(&root);
         assert_eq!(hydrated[0]["layers"][0]["src"], source);
+        fs::remove_dir_all(root).expect("test directory must be removable");
+    }
+
+    #[test]
+    fn reuses_static_layer_asset_name_when_image_is_edited() {
+        let root = test_directory("reuse-asset");
+        let directory = root.join("template");
+        fs::create_dir_all(&directory).expect("template directory must be created");
+        let stored = template("one", "First", "original-photo.jpg");
+        fs::write(
+            directory.join(TEMPLATE_FILE_NAME),
+            serde_json::to_string_pretty(&stored).expect("template must serialize"),
+        )
+        .expect("template must be written");
+        fs::write(directory.join("original-photo.jpg"), b"old-jpeg")
+            .expect("old asset must be written");
+
+        let jpeg_source = format!(
+            "data:image/jpeg;base64,{}",
+            STANDARD.encode(b"painted-jpeg")
+        );
+        write_template_directory(&directory, &template("one", "First", &jpeg_source))
+            .expect("edited JPEG must be written");
+        let jpeg_template = read_template_file(&directory.join(TEMPLATE_FILE_NAME), false)
+            .expect("stored JPEG template must be readable");
+        assert_eq!(jpeg_template["layers"][0]["src"], "original-photo.jpg");
+        assert_eq!(
+            fs::read(directory.join("original-photo.jpg")).expect("JPEG asset must be readable"),
+            b"painted-jpeg"
+        );
+
+        let png_source = format!(
+            "data:image/png;base64,{}",
+            STANDARD.encode(b"painted-png")
+        );
+        write_template_directory(&directory, &template("one", "First", &png_source))
+            .expect("edited PNG must be written");
+        let png_template = read_template_file(&directory.join(TEMPLATE_FILE_NAME), false)
+            .expect("stored PNG template must be readable");
+        assert_eq!(png_template["layers"][0]["src"], "original-photo.png");
+        assert!(!directory.join("original-photo.jpg").exists());
+        assert_eq!(
+            fs::read(directory.join("original-photo.png")).expect("PNG asset must be readable"),
+            b"painted-png"
+        );
+        fs::remove_dir_all(root).expect("test directory must be removable");
+    }
+
+    #[test]
+    fn renames_template_directory_when_template_name_changes() {
+        let root = test_directory("rename");
+        let png = format!("data:image/png;base64,{}", STANDARD.encode(b"png"));
+        let original = template("one", "First Name", &png);
+        write_template_directories(&root, &[original]).expect("template must be written");
+        let old_directory = template_directories(&root, false)[0].1.clone();
+
+        let renamed = template("one", "Second Name", &png);
+        write_template_directories(&root, &[renamed]).expect("renamed template must be written");
+        let directories = template_directories(&root, false);
+        assert_eq!(directories.len(), 1);
+        assert_ne!(directories[0].1, old_directory);
+        assert!(!old_directory.exists());
+        assert!(directories[0]
+            .1
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains("Second-Name")));
         fs::remove_dir_all(root).expect("test directory must be removable");
     }
 
