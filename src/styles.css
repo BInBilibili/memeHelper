@@ -213,6 +213,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .canvas-scroll { flex: 1; min-height: 0; position: relative; overflow: hidden; }
 .stage-shadow { position: absolute; left: 50%; top: 50%; flex: none; background: #fff; box-shadow: 0 10px 35px rgba(32,30,25,.2); }
 .outside-layer-outline { position: absolute; z-index: 4; box-sizing: border-box; border: 2px dashed var(--accent); outline: 1px solid rgba(255,255,255,.8); transform-origin: 0 0; pointer-events: none; }
+.marquee-selection-overlay { position: absolute; z-index: 6; box-sizing: border-box; border: 1px dashed #4384ff; background: rgba(67,132,255,.12); cursor: default; }
 .rich-text-overlay { position: absolute; z-index: 5; margin: 0; border: 0; outline: 1px dashed rgba(233,78,55,.75); outline-offset: 2px; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; transform-origin: 0 0; caret-color: var(--accent); cursor: text; font-synthesis: style weight; }
 .rich-text-overlay:focus { box-shadow: 0 0 0 2px rgba(233,78,55,.16); }
 .rich-text-selection { color: #111 !important; background: #9cc7ff; -webkit-text-stroke-color: transparent; }

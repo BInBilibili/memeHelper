@@ -1574,8 +1574,6 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   };
   const openMarqueeMenu = (ids, event) => {
     event.preventDefault(); event.stopPropagation();
-    setSelectedIds(ids);
-    setSelectedGroupId(null);
     setLayerMenu({ marqueeIds: ids, x: Math.min(event.clientX, window.innerWidth - 206), y: Math.min(event.clientY, window.innerHeight - 120) });
   };
 
@@ -2262,6 +2260,7 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
   const [guides, setGuides] = useState([]);
   const [marquee, setMarquee] = useState(null);
   const marqueeRef = useRef(null);
+  const marqueeTrackingRef = useRef(null);
   const [shiftPressed, setShiftPressed] = useState(false);
 
   useEffect(() => {
@@ -2299,9 +2298,15 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
 
   useEffect(() => {
     if (tool !== 'marquee') {
+      marqueeTrackingRef.current?.();
+      marqueeTrackingRef.current = null;
       marqueeRef.current = null;
       setMarquee(null);
     }
+    return () => {
+      marqueeTrackingRef.current?.();
+      marqueeTrackingRef.current = null;
+    };
   }, [tool]);
 
   const startDrag = (layer) => {
@@ -2446,41 +2451,57 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
   const beginMarquee = (event) => {
     if (event.evt.button !== 0) return;
     event.evt.preventDefault();
-    const pointer = stageRef.current?.getPointerPosition();
-    if (!pointer) return;
-    const point = { x: pointer.x / zoom, y: pointer.y / zoom };
+    const container = stageRef.current?.container();
+    if (!container) return;
+    const bounds = container.getBoundingClientRect();
+    const pointAt = (clientX, clientY) => ({ x: (clientX - bounds.left) / zoom, y: (clientY - bounds.top) / zoom });
+    const point = pointAt(event.evt.clientX, event.evt.clientY);
     marqueeRef.current = { start: point, current: point };
     setMarquee({ x: point.x, y: point.y, width: 0, height: 0 });
-    clearSelection();
-  };
-
-  const moveMarquee = () => {
-    const drag = marqueeRef.current;
-    const pointer = stageRef.current?.getPointerPosition();
-    if (!drag || !pointer) return;
-    const current = { x: pointer.x / zoom, y: pointer.y / zoom };
-    drag.current = current;
-    setMarquee({ x: Math.min(drag.start.x, current.x), y: Math.min(drag.start.y, current.y), width: Math.abs(current.x - drag.start.x), height: Math.abs(current.y - drag.start.y) });
-  };
-
-  const finishMarquee = () => {
-    const drag = marqueeRef.current;
-    marqueeRef.current = null;
-    if (!drag) return;
-    const current = drag.current;
-    const rect = { x: Math.min(drag.start.x, current.x), y: Math.min(drag.start.y, current.y), width: Math.abs(current.x - drag.start.x), height: Math.abs(current.y - drag.start.y) };
-    if (rect.width < 2 || rect.height < 2) { setMarquee(null); return; }
-    setMarquee(rect);
+    const update = (mouseEvent) => {
+      const drag = marqueeRef.current;
+      if (!drag) return;
+      const current = pointAt(mouseEvent.clientX, mouseEvent.clientY);
+      drag.current = current;
+      setMarquee({ x: Math.min(drag.start.x, current.x), y: Math.min(drag.start.y, current.y), width: Math.abs(current.x - drag.start.x), height: Math.abs(current.y - drag.start.y) });
+    };
+    const cleanup = () => {
+      window.removeEventListener('mousemove', update);
+      window.removeEventListener('mouseup', finish);
+      if (marqueeTrackingRef.current === cleanup) marqueeTrackingRef.current = null;
+    };
+    const finish = (mouseEvent) => {
+      update(mouseEvent);
+      const drag = marqueeRef.current;
+      marqueeRef.current = null;
+      cleanup();
+      if (!drag) return;
+      const rect = { x: Math.min(drag.start.x, drag.current.x), y: Math.min(drag.start.y, drag.current.y), width: Math.abs(drag.current.x - drag.start.x), height: Math.abs(drag.current.y - drag.start.y) };
+      setMarquee(rect.width < 2 || rect.height < 2 ? null : rect);
+    };
+    marqueeTrackingRef.current?.();
+    marqueeTrackingRef.current = cleanup;
+    window.addEventListener('mousemove', update);
+    window.addEventListener('mouseup', finish);
   };
 
   const marqueeIds = () => {
     if (!marquee || marquee.width < 2 || marquee.height < 2) return [];
     const right = marquee.x + marquee.width; const bottom = marquee.y + marquee.height;
-    return template.layers.filter((layer) => {
+    const intersecting = template.layers.filter((layer) => {
       if (!layer.visible) return false;
       const bounds = layerBounds(layer);
-      return bounds.left >= marquee.x && bounds.top >= marquee.y && bounds.right <= right && bounds.bottom <= bottom;
+      return bounds.right > marquee.x && bounds.bottom > marquee.y && bounds.left < right && bounds.top < bottom;
     }).map((layer) => layer.id);
+    return selectedIds.length ? selectedIds.filter((id) => intersecting.includes(id)) : intersecting;
+  };
+
+  const openMarqueeContextMenu = (event) => {
+    const nativeEvent = event.evt || event.nativeEvent || event;
+    nativeEvent.preventDefault();
+    nativeEvent.stopPropagation();
+    const ids = marqueeIds();
+    if (ids.length) onMarqueeContextMenu(ids, nativeEvent);
   };
 
   const beginPaint = async (event) => {
@@ -2568,7 +2589,7 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
     ? template.layers.find((layer) => layer.id === selectedIds[0] && layer.type === 'slot' && shapeOf(layer) === 'polygon' && !layer.locked)
     : null;
 
-  return <Stage ref={stageRef} width={template.width * zoom} height={template.height * zoom} scaleX={zoom} scaleY={zoom}
+  return <><Stage ref={stageRef} width={template.width * zoom} height={template.height * zoom} scaleX={zoom} scaleY={zoom}
     onWheel={(event) => event.target.stopDrag?.()}
     onMouseDown={(event) => {
       if (tool === 'marquee') { beginMarquee(event); return; }
@@ -2576,9 +2597,9 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
       trRef.current?.rotationSnaps(event.evt.shiftKey || shiftPressed ? ROTATION_SNAPS : []);
       if (event.target === event.target.getStage() || event.target.name() === 'editor-background') { clearSelection(); onPanStart(event); }
     }}
-    onMouseMove={tool === 'marquee' ? moveMarquee : tool !== 'select' ? movePaint : undefined}
-    onMouseUp={tool === 'marquee' ? finishMarquee : tool !== 'select' ? finishPaint : undefined}
-    onContextMenu={(event) => { if (tool !== 'marquee') return; event.evt.preventDefault(); event.evt.stopPropagation(); const ids = marqueeIds(); if (ids.length) onMarqueeContextMenu(ids, event.evt); }}
+    onMouseMove={!['select', 'marquee'].includes(tool) ? movePaint : undefined}
+    onMouseUp={!['select', 'marquee'].includes(tool) ? finishPaint : undefined}
+    onContextMenu={(event) => { if (tool === 'marquee') openMarqueeContextMenu(event); }}
   >
     <Layer>
       <Rect name="editor-background" width={template.width} height={template.height} fill="#fff"/>
@@ -2600,12 +2621,12 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
           onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)} onTransformEnd={false}/>;
       })}
       {template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
-      {tool === 'marquee' && marquee && <Rect name="marquee-selection" x={marquee.x} y={marquee.y} width={marquee.width} height={marquee.height} fill="rgba(67,132,255,.12)" stroke="#4384ff" strokeWidth={1 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>}
+      {tool === 'marquee' && template.layers.filter((layer) => selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`marquee-selected-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
       {guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94b37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }
       <Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} enabledAnchors={['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/>
       {selectedPolygon && <Group x={selectedPolygon.x} y={selectedPolygon.y} rotation={selectedPolygon.rotation || 0}>{polygonPointsOf(selectedPolygon).map((point, index) => <KonvaCircle key={`polygon-handle-${selectedPolygon.id}-${index}`} x={point.x * selectedPolygon.width} y={point.y * selectedPolygon.height} radius={6 / zoom} fill="#fff" stroke="#e24b35" strokeWidth={1.5 / zoom} draggable onMouseDown={(event) => { event.cancelBubble = true; }} onDragMove={(event) => { event.cancelBubble = true; event.target.position({ x: clamp(event.target.x(), 0, selectedPolygon.width), y: clamp(event.target.y(), 0, selectedPolygon.height) }); }} onDragEnd={(event) => { event.cancelBubble = true; const next = { x: clamp(event.target.x() / selectedPolygon.width, 0, 1), y: clamp(event.target.y() / selectedPolygon.height, 0, 1) }; updateLayer(selectedPolygon.id, { polygonPoints: polygonPointsOf(selectedPolygon).map((item, itemIndex) => itemIndex === index ? next : item) }); }} />)}</Group>}
     </Layer>
-  </Stage>;
+  </Stage>{tool === 'marquee' && marquee && <div className="marquee-selection-overlay" style={{ left: marquee.x * zoom, top: marquee.y * zoom, width: marquee.width * zoom, height: marquee.height * zoom }} onMouseDown={(event) => beginMarquee({ evt: event.nativeEvent })} onContextMenu={openMarqueeContextMenu}/>}</>;
 }
 
 function useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, mosaicSource, revision) {
