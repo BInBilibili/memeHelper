@@ -1949,7 +1949,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
           <div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>
         </div>
         <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, ctrlKey: event.ctrlKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { if (activeTool === 'select' && event.target === event.currentTarget) { clearSelection(); beginPan(event); } }}>
-          <div className="canvas-tool-dock"><div className="tool-rail-trigger" aria-hidden="true"></div><div className="editor-paint-tools">
+          <div className="canvas-tool-dock"><div className="editor-paint-tools">
             <IconButton label="选择与移动" className={activeTool === 'select' ? 'active' : ''} onClick={() => setActiveTool('select')}><MousePointer2 size={17}/></IconButton>
             <IconButton label="选框工具：拖动后右键复制或剪切图层" className={activeTool === 'marquee' ? 'active' : ''} onClick={() => setActiveTool('marquee')}><BoxSelect size={17}/></IconButton>
             <IconButton label="画笔（按住 Ctrl 临时取色）" className={activeTool === 'brush' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('brush')}><Pencil size={17}/></IconButton>
@@ -1972,7 +1972,11 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
               onDone={() => { setTextEditingId(null); setTextSelection(null); }}
             />}
           </div>
-          {toolPointer && activeTool !== 'select' && !panning && <div className="tool-cursor" style={{ left: toolPointer.x, top: toolPointer.y }}>{activeTool === 'picker' || (activeTool === 'brush' && toolPointer.ctrlKey) ? <Pipette size={19}/> : activeTool === 'fill' ? <PaintBucket size={19}/> : activeTool === 'eraser' ? <Eraser size={19}/> : activeTool === 'mosaic' ? <Grid2X2 size={19}/> : activeTool === 'marquee' ? <BoxSelect size={19}/> : <Pencil size={19}/>}</div>}
+          {toolPointer && !['select', 'marquee'].includes(activeTool) && !panning && (
+            ['brush', 'mosaic', 'eraser'].includes(activeTool) && !(activeTool === 'brush' && toolPointer.ctrlKey)
+              ? <div className="tool-cursor brush-preview" style={{ left: toolPointer.x, top: toolPointer.y, width: Math.max(3, brushSize * zoom), height: Math.max(3, brushSize * zoom) }}/>
+              : <div className="tool-cursor" style={{ left: toolPointer.x, top: toolPointer.y }}>{activeTool === 'picker' || (activeTool === 'brush' && toolPointer.ctrlKey) ? <Pipette size={19}/> : <PaintBucket size={19}/>}</div>
+          )}
         </div>
       </section>
       <aside className="properties-panel"><div className="panel-title"><span>属性</span></div>{selectedGroupId && selectedGroupLayers.length ? <GroupProperties name={selectedGroupName} layers={selectedGroupLayers} onRename={(name) => updateGroupMeta(selectedGroupId, { name })} onToggleLock={() => updateGroupLayers(selectedGroupId, { locked: selectedGroupLayers.some((layer) => !layer.locked) })} onToggleVisibility={() => updateGroupLayers(selectedGroupId, { visible: !selectedGroupLayers.every((layer) => layer.visible) })} onMove={(axis, value) => moveGroupTo(selectedGroupId, axis, value)} onUngroup={ungroupSelected} onRemove={() => removeGroup(selectedGroupId)} onOrder={(direction) => moveLayer(selectedGroupLayers[0].id, direction, true)}/> : selectedLayers.length > 1 ? <MultiSelectionProperties layers={selectedLayers} grouped={Boolean(uniformlySelectedGroupId)} onGroup={groupSelected} onUngroup={ungroupSelected} onToggleLock={toggleSelectedLock} onAlign={alignSelected} onDistribute={distributeSelected}/> : selected ? <Properties layer={selected} textStyle={selected.type === 'text' ? textStyleAt(selected, Math.min(Math.max(0, String(selected.text || '').length - 1), Math.min(activeTextSelection?.start ?? 0, activeTextSelection?.end ?? 0))) : null} textSelection={activeTextSelection} onBeginTextInteraction={beginPropertyTextInteraction} onTextSelectionChange={(selection) => setPropertyTextSelection({ id: selected.id, ...selection })} updateTextStyle={applySelectedTextStyle} updateText={updateSelectedText} update={updateSelectedProperties} toggleLock={() => updateLayer(selected.id, { locked: !selected.locked })} remove={() => removeLayer(selected.id)} move={(direction) => moveLayer(selected.id, direction)}/> : <div className="property-empty"><Pencil size={26}/><p>选择一个图层后，可调整位置、尺寸和旋转。</p></div>}</aside>
@@ -2440,6 +2444,7 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
   };
 
   const beginMarquee = (event) => {
+    if (event.evt.button !== 0) return;
     event.evt.preventDefault();
     const pointer = stageRef.current?.getPointerPosition();
     if (!pointer) return;

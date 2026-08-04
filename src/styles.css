@@ -197,10 +197,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .zoom-control { height: 30px; display: flex; align-items: center; border: 1px solid var(--line); background: #fff; border-radius: 5px; }
 .zoom-control .icon-button { width: 29px; height: 28px; }
 .zoom-control span { width: 48px; text-align: center; font-size: 10px; }
-.canvas-tool-dock { position: absolute; z-index: 20; inset: 0 auto 0 0; width: 24px; }
-.tool-rail-trigger { position: absolute; inset: 0; }
-.editor-paint-tools { position: absolute; left: 24px; top: 50%; width: 40px; min-width: 0; height: auto; max-height: calc(100% - 16px); padding: 5px 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); box-shadow: 0 8px 22px rgba(25,23,20,.16); display: flex; flex-direction: column; align-items: center; gap: 2px; opacity: 0; transform: translate(-10px,-50%); transition: opacity .14s, transform .14s; pointer-events: none; overflow: visible; }
-.canvas-tool-dock:hover .editor-paint-tools, .editor-paint-tools:focus-within { opacity: 1; transform: translate(0,-50%); pointer-events: auto; }
+.canvas-tool-dock { position: absolute; z-index: 20; inset: 0 auto 0 0; width: 40px; }
+.editor-paint-tools { position: absolute; left: 0; top: 50%; width: 40px; min-width: 0; height: auto; max-height: calc(100% - 16px); padding: 5px 4px; border: 1px solid var(--line); border-left: 0; border-radius: 0 5px 5px 0; background: var(--surface); box-shadow: 0 8px 22px rgba(25,23,20,.16); display: flex; flex-direction: column; align-items: center; gap: 2px; transform: translateY(-50%); overflow: visible; }
 .editor-paint-tools .icon-button { width: 30px; height: 28px; border-radius: 3px; }
 .editor-paint-tools .icon-button.active { color: var(--accent); background: #fff1ed; }
 .paint-color { width: 30px; height: 28px; margin: 2px 0 0; padding: 2px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface); cursor: pointer; }
@@ -221,9 +219,11 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .rich-text-overlay:focus .rich-text-selection { color: inherit !important; background: transparent; -webkit-text-stroke-color: inherit; }
 .pan-viewport { cursor: grab; }
 .pan-viewport.panning, .pan-viewport.panning * { cursor: grabbing !important; user-select: none; }
-.pan-viewport.tool-brush, .pan-viewport.tool-fill, .pan-viewport.tool-eraser, .pan-viewport.tool-picker, .pan-viewport.tool-mosaic, .pan-viewport.tool-marquee,
-.pan-viewport.tool-brush canvas, .pan-viewport.tool-fill canvas, .pan-viewport.tool-eraser canvas, .pan-viewport.tool-picker canvas, .pan-viewport.tool-mosaic canvas, .pan-viewport.tool-marquee canvas { cursor: none; }
+.pan-viewport.tool-marquee, .pan-viewport.tool-marquee canvas { cursor: default; }
+.pan-viewport.tool-brush, .pan-viewport.tool-fill, .pan-viewport.tool-eraser, .pan-viewport.tool-picker, .pan-viewport.tool-mosaic,
+.pan-viewport.tool-brush canvas, .pan-viewport.tool-fill canvas, .pan-viewport.tool-eraser canvas, .pan-viewport.tool-picker canvas, .pan-viewport.tool-mosaic canvas { cursor: none; }
 .tool-cursor { position: absolute; z-index: 12; width: 24px; height: 24px; transform: translate(-3px, -21px); display: grid; place-items: center; color: #171716; background: transparent; filter: drop-shadow(0 1px 1px rgba(255,255,255,.9)) drop-shadow(0 1px 2px rgba(0,0,0,.32)); pointer-events: none; }
+.tool-cursor.brush-preview { box-sizing: border-box; border: 1px solid #171716; border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 0 0 0 1px rgba(255,255,255,.9); filter: none; }
 .property-content { padding: 17px; }
 .text-field, .number-field { display: block; }
 .text-field > span, .number-field > span { display: block; margin-bottom: 6px; color: var(--muted); font-size: 9px; font-weight: 600; }
