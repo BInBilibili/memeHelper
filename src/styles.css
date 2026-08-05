@@ -91,7 +91,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .template-card.dragging .drop-hint { opacity: 1; }
 .template-meta { padding: 15px 15px 12px; display: flex; justify-content: space-between; align-items: start; gap: 8px; }
 .template-meta > div:first-child { min-width: 0; }
-.template-meta h3 { font-size: 15px; margin: 0 0 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.template-meta h3 { font-size: 15px; margin: 0 0 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: text; }
 .template-meta span { font-size: 11px; color: var(--muted); }
 .template-card-tools { display: flex; align-items: center; gap: 2px; }
 .template-tags { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 4px; }
@@ -122,7 +122,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .empty-state { padding: 70px 20px; text-align: center; color: var(--muted); }
 .empty-state h3 { color: var(--ink); margin: 14px 0 5px; }
 .empty-state p { margin: 0; font-size: 13px; }
-.app-footer { max-width: 1375px; padding: 18px 0 28px; margin: 0 auto; border-top: 1px solid var(--line); display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
+.app-footer { max-width: 1375px; padding: 18px 0 28px; margin: 0 auto; border-top: 1px solid var(--line); display: flex; justify-content: center; color: var(--muted); font-size: 11px; }
 
 .editor-page, .use-page { height: 100vh; display: flex; flex-direction: column; background: #ecebe6; }
 .editor-topbar { height: 64px; padding: 0 20px; flex: none; }
@@ -260,6 +260,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .number-field em { position: absolute; right: 28px; top: 9px; color: var(--muted); font-size: 10px; font-style: normal; pointer-events: none; }
 .numeric-input { position: relative; min-width: 0; }
 .numeric-input > input { padding-right: 30px; }
+.numeric-input.no-presets > input { padding-right: 8px; }
 .numeric-preset-toggle { position: absolute; z-index: 2; right: 1px; top: 1px; width: 27px; height: calc(100% - 2px); display: grid; place-items: center; padding: 0; border: 0; border-left: 1px solid var(--line); border-radius: 0 3px 3px 0; background: color-mix(in srgb, var(--surface) 92%, var(--line)); color: var(--muted); }
 .numeric-preset-toggle:hover, .numeric-preset-toggle[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent); }
 .numeric-preset-menu { position: absolute; z-index: 120; top: calc(100% + 4px); right: 0; min-width: 76px; max-height: 210px; overflow-y: auto; display: grid; padding: 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); box-shadow: 0 8px 24px rgba(34, 32, 28, .18); }

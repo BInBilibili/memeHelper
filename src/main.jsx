@@ -7,7 +7,7 @@ import {
   AlignHorizontalJustifyStart, AlignLeft, AlignRight, AlignVerticalDistributeCenter,
   AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowLeft, Bold, Check, ChevronDown, ChevronRight, ChevronUp,
   BoxSelect, Circle, Clipboard, Copy, Crop, Download, Eye, EyeOff, FileImage, Grid2X2, GripVertical, ImagePlus,
-  Eraser, Italic, Layers3, LayoutTemplate, Lock, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Pentagon, Pipette, Plus, Redo2, RefreshCw, RotateCcw, Scissors,
+  Eraser, FolderOpen, Italic, Layers3, LayoutTemplate, Lock, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Pentagon, Pipette, Plus, Redo2, RefreshCw, RotateCcw, Scissors,
   Save, Shapes, Sparkles, Square, Star, Strikethrough, Trash2, Type, Underline, Undo2, Unlock, Upload,
   X, ZoomIn, ZoomOut
 } from 'lucide-react';
@@ -48,7 +48,8 @@ const browserDesktop = {
   },
   saveImage: async (dataUrl, name) => {
     const a = document.createElement('a'); a.href = dataUrl; a.download = name; a.click(); return name;
-  }
+  },
+  openTemplateFolder: async () => false
 };
 
 const desktop = window.__TAURI_INTERNALS__ ? {
@@ -62,7 +63,8 @@ const desktop = window.__TAURI_INTERNALS__ ? {
   saveUseSessions: (sessions) => invoke('save_use_sessions', { sessions }),
   copyImage: (dataUrl, clipboardDataUrl) => invoke('copy_image', { dataUrl, clipboardDataUrl }),
   readClipboardImage: () => invoke('read_clipboard_image'),
-  saveImage: (dataUrl, suggestedName) => invoke('save_image', { dataUrl, suggestedName })
+  saveImage: (dataUrl, suggestedName) => invoke('save_image', { dataUrl, suggestedName }),
+  openTemplateFolder: (templateId) => invoke('open_template_folder', { templateId })
 } : (window.memeDesktop || browserDesktop);
 
 function applyTheme(preference = 'system') {
@@ -610,17 +612,18 @@ async function drawEraseMask(ctx, layer) {
 }
 
 function layerEffectInsets(layer) {
-  if (layer.type !== 'text') return { left: 0, top: 0, right: 0, bottom: 0 };
+  const border = borderWidthOf(layer);
+  if (layer.type !== 'text') return { left: border, top: border, right: border, bottom: border };
   const text = String(layer.text || '');
   const stroke = Math.max(...Array.from({ length: text.length || 1 }, (_, index) => textStyleAt(layer, Math.min(index, Math.max(0, text.length - 1))).strokeWidth));
   const blur = layer.shadowEnabled ? Math.max(0, Number(layer.shadowBlur) || 0) : 0;
   const offsetX = layer.shadowEnabled ? Number(layer.shadowOffsetX) || 0 : 0;
   const offsetY = layer.shadowEnabled ? Number(layer.shadowOffsetY) || 0 : 0;
   return {
-    left: Math.ceil(stroke + Math.max(0, blur - offsetX)),
-    top: Math.ceil(stroke + Math.max(0, blur - offsetY)),
-    right: Math.ceil(stroke + Math.max(0, blur + offsetX)),
-    bottom: Math.ceil(stroke + Math.max(0, blur + offsetY))
+    left: Math.ceil(border + stroke + Math.max(0, blur - offsetX)),
+    top: Math.ceil(border + stroke + Math.max(0, blur - offsetY)),
+    right: Math.ceil(border + stroke + Math.max(0, blur + offsetX)),
+    bottom: Math.ceil(border + stroke + Math.max(0, blur + offsetY))
   };
 }
 
@@ -629,22 +632,22 @@ function borderWidthOf(layer) {
 }
 
 function drawLayerBorder(ctx, layer) {
-  const borderWidth = Math.min(borderWidthOf(layer), Math.max(0, Math.min(layer.width, layer.height)));
+  const borderWidth = borderWidthOf(layer);
   if (!borderWidth) return;
-  const inset = borderWidth / 2;
   ctx.save();
   ctx.strokeStyle = layer.borderColor || '#000000';
   ctx.lineWidth = borderWidth;
   ctx.lineJoin = 'round';
   if (layer.type === 'slot') {
-    const scaleX = layer.width > 0 ? Math.max(0, layer.width - borderWidth) / layer.width : 1;
-    const scaleY = layer.height > 0 ? Math.max(0, layer.height - borderWidth) / layer.height : 1;
-    ctx.translate(inset, inset);
+    const scaleX = layer.width > 0 ? (layer.width + borderWidth) / layer.width : 1;
+    const scaleY = layer.height > 0 ? (layer.height + borderWidth) / layer.height : 1;
+    ctx.translate(layer.width / 2, layer.height / 2);
     ctx.scale(scaleX, scaleY);
+    ctx.translate(-layer.width / 2, -layer.height / 2);
     traceLayerShape(ctx, layer);
     ctx.stroke();
   } else {
-    ctx.strokeRect(inset, inset, Math.max(0, layer.width - borderWidth), Math.max(0, layer.height - borderWidth));
+    ctx.strokeRect(-borderWidth / 2, -borderWidth / 2, layer.width + borderWidth, layer.height + borderWidth);
   }
   ctx.restore();
 }
@@ -660,30 +663,29 @@ async function renderIsolatedLayer(layer, source, photoTransform, paintSource, e
   ctx.scale(scale, scale);
   ctx.translate(insets.left, insets.top);
   const drawSource = source ?? layer.src;
+  const shapeClipped = layer.type === 'slot';
+  if (shapeClipped) { ctx.save(); traceLayerShape(ctx, layer); ctx.clip(); }
   if (layer.type === 'text') drawTextLayer(ctx, layer);
-  else {
-    if (layer.type === 'slot') { traceLayerShape(ctx, layer); ctx.clip(); }
-    if (drawSource) {
-      const image = await loadImage(drawSource);
-      if (layer.type === 'slot' && source) {
-        const placement = getPhotoPlacement(image, layer, photoTransform);
-        ctx.drawImage(image, 0, 0, image.width, image.height, placement.x, placement.y, placement.width, placement.height);
-      } else if (layer.fit === 'cover') {
-        const crop = getCoverCrop(image, layer.width, layer.height);
-        ctx.drawImage(image, crop.x, crop.y, crop.width, crop.height, 0, 0, layer.width, layer.height);
-      } else ctx.drawImage(image, 0, 0, layer.width, layer.height);
-    } else if (layer.type === 'slot') {
-      if (layer.slotFill) {
-        ctx.fillStyle = layer.slotFill;
-        traceLayerShape(ctx, layer);
-        ctx.fill();
-      } else if (!layer.replacementDisabled) {
-        ctx.fillStyle = '#e8e6df';
-        traceLayerShape(ctx, layer);
-        ctx.fill();
-        ctx.strokeStyle = '#9d9b94'; ctx.lineWidth = 3; ctx.setLineDash([10, 8]);
-        traceLayerShape(ctx, layer); ctx.stroke(); ctx.setLineDash([]);
-      }
+  else if (drawSource) {
+    const image = await loadImage(drawSource);
+    if (layer.type === 'slot' && source) {
+      const placement = getPhotoPlacement(image, layer, photoTransform);
+      ctx.drawImage(image, 0, 0, image.width, image.height, placement.x, placement.y, placement.width, placement.height);
+    } else if (layer.fit === 'cover') {
+      const crop = getCoverCrop(image, layer.width, layer.height);
+      ctx.drawImage(image, crop.x, crop.y, crop.width, crop.height, 0, 0, layer.width, layer.height);
+    } else ctx.drawImage(image, 0, 0, layer.width, layer.height);
+  } else if (layer.type === 'slot') {
+    if (layer.slotFill) {
+      ctx.fillStyle = layer.slotFill;
+      traceLayerShape(ctx, layer);
+      ctx.fill();
+    } else if (!layer.replacementDisabled) {
+      ctx.fillStyle = '#e8e6df';
+      traceLayerShape(ctx, layer);
+      ctx.fill();
+      ctx.strokeStyle = '#9d9b94'; ctx.lineWidth = 3; ctx.setLineDash([10, 8]);
+      traceLayerShape(ctx, layer); ctx.stroke(); ctx.setLineDash([]);
     }
   }
   if (paintSource) ctx.drawImage(paintSource, 0, 0, layer.width, layer.height);
@@ -696,6 +698,7 @@ async function renderIsolatedLayer(layer, source, photoTransform, paintSource, e
     ctx.drawImage(eraseSource, 0, 0, layer.width, layer.height);
     ctx.restore();
   } else await drawEraseMask(ctx, layer);
+  if (shapeClipped) ctx.restore();
   drawLayerBorder(ctx, layer);
   return { canvas, insets, logicalWidth, logicalHeight };
 }
@@ -735,7 +738,8 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
       ctx.restore();
       continue;
     }
-    if (layer.type === 'slot') { traceLayerShape(ctx, layer); ctx.clip(); }
+    const shapeClipped = layer.type === 'slot';
+    if (shapeClipped) { ctx.save(); traceLayerShape(ctx, layer); ctx.clip(); }
     if (!src) {
       if (layer.slotFill) {
         ctx.fillStyle = layer.slotFill;
@@ -749,11 +753,7 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
       }
       await drawPaintOverlay(ctx, layer);
       await drawMosaicOverlay(ctx, layer);
-      drawLayerBorder(ctx, layer);
-      ctx.restore();
-      continue;
-    }
-    try {
+    } else {
       const image = await loadImage(src);
       if (layer.type === 'slot' && replacement) {
         const placement = getPhotoPlacement(image, layer, photoTransforms[layer.id]);
@@ -766,8 +766,10 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
       }
       await drawPaintOverlay(ctx, layer);
       await drawMosaicOverlay(ctx, layer);
-      drawLayerBorder(ctx, layer);
-    } finally { ctx.restore(); }
+    }
+    if (shapeClipped) ctx.restore();
+    drawLayerBorder(ctx, layer);
+    ctx.restore();
   }
   return canvas.toDataURL(mime, mime === 'image/jpeg' ? .92 : undefined);
 }
@@ -1104,7 +1106,7 @@ function Library({ templates, query, setQuery, onRefresh, onCreate, onEdit, onRe
       {filtered.map((template) => <TemplateCard key={template.id} template={template} onUse={onUse} onEdit={onEdit} onRename={onRename} onDelete={onDelete} onToggleFavorite={onToggleFavorite} notify={notify}/>) }
     </section>
     {!filtered.length && <div className="empty-state"><LayoutTemplate size={34}/><h3>没有找到模板</h3><p>换个关键词，或新建一个模板。</p></div>}
-    <footer className="app-footer"><span>{templates.length} 个模板</span><span>拖入图片即可生成并复制</span></footer>
+    <footer className="app-footer"><span>{templates.length} 个模板</span></footer>
   </main>;
 }
 
@@ -1198,9 +1200,18 @@ function TemplateCard({ template, onUse, onEdit, onRename, onDelete, onToggleFav
     setMenu(false);
     setPasteMenu({ x: Math.min(event.clientX, window.innerWidth - 196), y: Math.min(event.clientY, window.innerHeight - 52) });
   };
+  const openTemplateFolder = async () => {
+    setMenu(false);
+    try {
+      const opened = await desktop.openTemplateFolder(template.id);
+      if (!opened) notify('浏览器模式无法打开模板文件夹', 'error');
+    } catch (error) {
+      notify(`打开模板文件夹失败：${error?.message || error}`, 'error');
+    }
+  };
   return <><article className={`template-card ${dragging ? 'dragging' : ''}`} onContextMenu={openPasteMenu} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={drop}>
     <div className="template-preview" onClick={() => onUse(template)}><span className="slot-count-badge" title={slotCountHint} aria-label={slotCountHint}>{slots.length}</span>{preview && <img src={preview} alt="" draggable={false}/>}<div className="drop-hint"><Upload size={28}/><strong>{canQuickReplace ? '松开并复制作品' : '松开即可生成'}</strong></div></div>
-    <div className="template-meta"><div><h3>{template.name}</h3><span>{template.width} x {template.height} · {slots.length} 个照片位</span>{Boolean(template.tags?.length) && <span className="template-tags">{template.tags.slice(0, 3).map((tag) => <small key={tag}>{tag}</small>)}</span>}</div><div className="template-card-tools"><IconButton label={template.favorite ? '取消收藏' : '收藏模板'} className={template.favorite ? 'favorite-active' : ''} onClick={() => onToggleFavorite(template.id)}><Star size={17} fill={template.favorite ? 'currentColor' : 'none'}/></IconButton><div ref={menuRef} className="card-menu-wrap"><IconButton label="模板操作" onClick={() => setMenu((current) => !current)}><MoreHorizontal size={19}/></IconButton>{menu && <div className="context-menu"><button onClick={() => { setMenu(false); onEdit(template); }}><Pencil size={16}/>编辑模板</button><button onClick={() => { setMenu(false); setRenaming(true); }}><Type size={16}/>编辑名称</button><button className="danger" onClick={() => { setMenu(false); onDelete(template.id); }}><Trash2 size={16}/>删除模板</button></div>}</div></div></div>
+    <div className="template-meta"><div><h3 title="双击编辑名称" onDoubleClick={(event) => { event.stopPropagation(); setRenaming(true); }}>{template.name}</h3><span>{template.width} x {template.height}</span>{Boolean(template.tags?.length) && <span className="template-tags">{template.tags.slice(0, 3).map((tag) => <small key={tag}>{tag}</small>)}</span>}</div><div className="template-card-tools"><IconButton label={template.favorite ? '取消收藏' : '收藏模板'} className={template.favorite ? 'favorite-active' : ''} onClick={() => onToggleFavorite(template.id)}><Star size={17} fill={template.favorite ? 'currentColor' : 'none'}/></IconButton><div ref={menuRef} className="card-menu-wrap"><IconButton label="模板操作" onClick={() => setMenu((current) => !current)}><MoreHorizontal size={19}/></IconButton>{menu && <div className="context-menu"><button onClick={() => { setMenu(false); onEdit(template); }}><Pencil size={16}/>编辑模板</button><button onClick={() => { setMenu(false); setRenaming(true); }}><Type size={16}/>编辑名称</button><button onClick={openTemplateFolder}><FolderOpen size={16}/>打开模板文件夹</button><button className="danger" onClick={() => { setMenu(false); onDelete(template.id); }}><Trash2 size={16}/>删除模板</button></div>}</div></div></div>
     <div className="card-actions"><button className="secondary-button" onClick={() => onEdit(template)}><Pencil size={16}/>编辑</button><button className="primary-button grow" onClick={() => onUse(template)}><Sparkles size={17}/>使用模板</button></div>
   </article>{pasteMenu && <div ref={pasteMenuRef} className="library-paste-menu" style={{ left: pasteMenu.x, top: pasteMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={pasteImage} disabled={quickWorking}><Clipboard size={16}/>粘贴图片并复制作品</button></div>}{renaming && <RenameTemplateDialog template={template} onCancel={() => setRenaming(false)} onSave={onRename}/>}</>;
 }
@@ -1226,6 +1237,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const [eraserMode, setEraserMode] = useState('paint');
   const [eraserMenu, setEraserMenu] = useState(false);
   const [toolPointer, setToolPointer] = useState(null);
+  const [outsideDragPreview, setOutsideDragPreview] = useState(null);
   const [textEditingId, setTextEditingId] = useState(null);
   const [textSelection, setTextSelection] = useState(null);
   const [propertyTextSelection, setPropertyTextSelection] = useState(null);
@@ -1247,6 +1259,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const [tagsText, setTagsText] = useState(() => (initialStateRef.current.draft.tags || []).join(', '));
   const memeInput = useRef();
   const stageHostRef = useRef();
+  const outsideDragRef = useRef(null);
   const clipboardLayersRef = useRef({ layers: [], groupMeta: {} });
   const layerReorderRef = useRef(null);
   const selectionAnchorRef = useRef(selectedIds.at(-1) || null);
@@ -1345,18 +1358,33 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const buildMarqueeFragments = useCallback(async (ids, rect) => {
     const selection = normalizeMarqueeRect(rect);
     const layers = draft.layers.filter((layer) => ids.includes(layer.id));
-    const fragments = await Promise.all(layers.map(async (layer) => {
-      const src = await renderTemplate({
+    const fragments = (await Promise.all(layers.map(async (layer) => {
+      const rendered = await renderTemplate({
         width: selection.width,
         height: selection.height,
         layers: [{ ...structuredClone(layer), x: layer.x - selection.x, y: layer.y - selection.y, visible: true }]
       }, {}, {}, { transparent: true, mime: 'image/png' });
+      const image = await loadImage(rendered);
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, image.width); canvas.height = Math.max(1, image.height);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(image, 0, 0);
+      const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let left = canvas.width; let top = canvas.height; let right = -1; let bottom = -1;
+      for (let y = 0; y < canvas.height; y += 1) for (let x = 0; x < canvas.width; x += 1) {
+        if (pixels[(y * canvas.width + x) * 4 + 3] === 0) continue;
+        left = Math.min(left, x); top = Math.min(top, y); right = Math.max(right, x); bottom = Math.max(bottom, y);
+      }
+      if (right < left || bottom < top) return null;
+      const width = right - left + 1; const height = bottom - top + 1;
+      const trimmed = document.createElement('canvas'); trimmed.width = width; trimmed.height = height;
+      trimmed.getContext('2d').drawImage(canvas, left, top, width, height, 0, 0, width, height);
       return {
-        id: uid(), name: `${layer.name} 选区`, type: 'static', src,
-        x: selection.x, y: selection.y, width: selection.width, height: selection.height,
-        rotation: 0, visible: true, locked: false, fit: 'fill'
+        id: uid(), name: `${layer.name} 选区`, type: 'static', src: trimmed.toDataURL('image/png'),
+        x: selection.x + left, y: selection.y + top, width, height,
+        rotation: 0, visible: true, locked: false, fit: 'fill', aspectRatioLocked: true
       };
-    }));
+    }))).filter(Boolean);
     return { fragments, selection };
   }, [draft.layers, normalizeMarqueeRect]);
   const copyMarqueePixels = useCallback(async (ids, rect) => {
@@ -1367,6 +1395,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       clipboardLayersRef.current = { layers: fragments, groupMeta: {} };
       setHasCopiedLayers(true);
       notify(fragments.length === 1 ? '已复制选框内容' : `已复制 ${fragments.length} 个图层的选框内容`);
+      setActiveTool('select');
     } catch (error) { notify(`复制选框内容失败：${error?.message || error}`, 'error'); }
   }, [buildMarqueeFragments, notify]);
   const cutMarqueePixels = useCallback(async (ids, rect) => {
@@ -1400,6 +1429,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       setHasCopiedLayers(true);
       updateDraft((previous) => ({ ...previous, layers: previous.layers.map((layer) => eraseSources[layer.id] ? { ...layer, eraseSrc: eraseSources[layer.id] } : layer) }));
       notify(layers.length === 1 ? '已剪切选框内容' : `已剪切 ${layers.length} 个图层的选框内容`);
+      setActiveTool('select');
     } catch (error) { notify(`剪切选框内容失败：${error?.message || error}`, 'error'); }
   }, [buildMarqueeFragments, draft.layers, notify, updateDraft]);
   const pasteLayers = useCallback(() => {
@@ -2051,23 +2081,96 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     return bounds.left < 0 || bounds.top < 0 || bounds.right > draft.width || bounds.bottom > draft.height;
   });
 
-  const sizeLayer = sizeMode === 'image' && !selectedGroupId && selectedLayers.length === 1 ? selectedLayers[0] : null;
-  const sizeWidth = sizeLayer ? sizeLayer.width : draft.width;
-  const sizeHeight = sizeLayer ? sizeLayer.height : draft.height;
+  const imageBounds = combinedLayerBounds(draft.layers.filter((layer) => layer.visible !== false));
+  const sizeWidth = sizeMode === 'image' ? (imageBounds?.width || 0) : draft.width;
+  const sizeHeight = sizeMode === 'image' ? (imageBounds?.height || 0) : draft.height;
   const commitToolbarSize = (axis, rawValue) => {
-    const value = Math.max(0, rawValue);
-    if (sizeMode !== 'image' || !sizeLayer) {
+    const value = Math.max(sizeMode === 'image' ? 1 : 0, rawValue);
+    if (sizeMode !== 'image') {
       updateDraft((previous) => ({ ...previous, [axis]: value }));
       return;
     }
-    const patch = { [axis]: value };
-    if (sizeLayer.aspectRatioLocked) {
-      const width = Math.max(0.0001, Number(sizeLayer.width) || 0.0001);
-      const height = Math.max(0.0001, Number(sizeLayer.height) || 0.0001);
-      if (axis === 'width') patch.height = Math.max(0, value * height / width);
-      else patch.width = Math.max(0, value * width / height);
-    }
-    updateSelectedProperties(patch);
+    if (!imageBounds || imageBounds.width <= 0 || imageBounds.height <= 0) return;
+    const sourceSize = axis === 'width' ? imageBounds.width : imageBounds.height;
+    const scale = value / sourceSize;
+    const scaled = (number) => Math.round(number * scale * 1000) / 1000;
+    updateDraft((previous) => ({
+      ...previous,
+      layers: previous.layers.map((layer) => {
+        const next = {
+          ...layer,
+          x: imageBounds.left + scaled(layer.x - imageBounds.left),
+          y: imageBounds.top + scaled(layer.y - imageBounds.top),
+          width: Math.max(0.001, scaled(layer.width)),
+          height: Math.max(0.001, scaled(layer.height)),
+          borderWidth: scaled(Number(layer.borderWidth) || 0)
+        };
+        if (layer.type !== 'text') return next;
+        return {
+          ...next,
+          fontSize: scaled(Number(layer.fontSize) || 0),
+          strokeWidth: scaled(Number(layer.strokeWidth) || 0),
+          backgroundPadding: scaled(Number(layer.backgroundPadding) || 0),
+          shadowBlur: scaled(Number(layer.shadowBlur) || 0),
+          shadowOffsetX: scaled(Number(layer.shadowOffsetX) || 0),
+          shadowOffsetY: scaled(Number(layer.shadowOffsetY) || 0),
+          textRuns: Array.isArray(layer.textRuns) ? layer.textRuns.map((run) => ({
+            ...run,
+            style: {
+              ...run.style,
+              ...('fontSize' in (run.style || {}) ? { fontSize: scaled(Number(run.style.fontSize) || 0) } : {}),
+              ...('strokeWidth' in (run.style || {}) ? { strokeWidth: scaled(Number(run.style.strokeWidth) || 0) } : {})
+            }
+          })) : layer.textRuns
+        };
+      })
+    }));
+  };
+
+  const beginOutsideSelectionDrag = (event) => {
+    if (activeTool !== 'select' || event.button !== 0) return false;
+    const stageBounds = stageHostRef.current?.getBoundingClientRect();
+    if (!stageBounds) return false;
+    const outsideCanvas = event.clientX < stageBounds.left || event.clientX > stageBounds.right || event.clientY < stageBounds.top || event.clientY > stageBounds.bottom;
+    if (!outsideCanvas) return false;
+    const point = { x: (event.clientX - stageBounds.left) / zoom, y: (event.clientY - stageBounds.top) / zoom };
+    const candidates = selectedGroupId ? selectedGroupLayers : selectedLayers;
+    if (!candidates.length || candidates.some((layer) => layer.locked)) return false;
+    const groupBounds = selectedGroupId ? combinedLayerBounds(candidates) : null;
+    const hit = groupBounds
+      ? point.x >= groupBounds.left && point.x <= groupBounds.right && point.y >= groupBounds.top && point.y <= groupBounds.bottom
+      : [...candidates].reverse().some((layer) => layer.visible && pointInLayer(point.x, point.y, layer));
+    if (!hit) return false;
+    event.preventDefault(); event.stopPropagation();
+    const ids = candidates.map((layer) => layer.id);
+    const positions = Object.fromEntries(candidates.map((layer) => [layer.id, { x: layer.x, y: layer.y }]));
+    const start = { x: event.clientX, y: event.clientY };
+    outsideDragRef.current = { ids, positions, start };
+    setOutsideDragPreview({ ids, dx: 0, dy: 0 });
+    const move = (mouseEvent) => {
+      const drag = outsideDragRef.current;
+      if (!drag) return;
+      setOutsideDragPreview({ ids: drag.ids, dx: (mouseEvent.clientX - drag.start.x) / zoom, dy: (mouseEvent.clientY - drag.start.y) / zoom });
+    };
+    const finish = (mouseEvent) => {
+      const drag = outsideDragRef.current;
+      outsideDragRef.current = null;
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', finish);
+      if (!drag) return;
+      const dx = (mouseEvent.clientX - drag.start.x) / zoom;
+      const dy = (mouseEvent.clientY - drag.start.y) / zoom;
+      setOutsideDragPreview(null);
+      updateDraft((previous) => ({
+        ...previous,
+        layers: previous.layers.map((layer) => drag.positions[layer.id]
+          ? { ...layer, x: Math.round((drag.positions[layer.id].x + dx) * 1000) / 1000, y: Math.round((drag.positions[layer.id].y + dy) * 1000) / 1000 }
+          : layer)
+      }));
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', finish);
+    return true;
   };
 
   return <main className="editor-page">
@@ -2079,14 +2182,14 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       </aside>
       <section className="canvas-workspace">
         <div className="canvas-toolbar">
-          <div className="canvas-size"><button type="button" className={`size-mode-button ${sizeMode === 'image' ? 'active' : ''}`} title={sizeMode === 'canvas' ? '点击切换为修改当前图层尺寸' : '点击切换为修改画布尺寸'} onClick={() => setSizeMode((mode) => mode === 'canvas' ? 'image' : 'canvas')}>{sizeMode === 'canvas' ? '画布' : '图像'}</button><NumericInput min={0} max={4000} presets={SIZE_PRESETS} value={sizeWidth} disabled={sizeMode === 'image' && !sizeLayer} onCommit={(width) => commitToolbarSize('width', width)}/><span>×</span><NumericInput min={0} max={4000} presets={SIZE_PRESETS} value={sizeHeight} disabled={sizeMode === 'image' && !sizeLayer} onCommit={(height) => commitToolbarSize('height', height)}/><button className="auto-canvas-button" disabled={sizeMode === 'image'} onClick={autoSizeCanvas}>自动设置</button></div>
+          <div className="canvas-size"><button type="button" className={`size-mode-button ${sizeMode === 'image' ? 'active' : ''}`} title={sizeMode === 'canvas' ? '点击切换为修改当前图层尺寸' : '点击切换为修改画布尺寸'} onClick={() => setSizeMode((mode) => mode === 'canvas' ? 'image' : 'canvas')}>{sizeMode === 'canvas' ? '画布' : '图像'}</button><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeWidth} disabled={sizeMode === 'image' && !imageBounds} onCommit={(width) => commitToolbarSize('width', width)}/><span>×</span><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeHeight} disabled={sizeMode === 'image' && !imageBounds} onCommit={(height) => commitToolbarSize('height', height)}/><button className="auto-canvas-button" disabled={sizeMode === 'image'} onClick={autoSizeCanvas}>自动设置</button></div>
           <div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>
         </div>
-        <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropImageOnEditor} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, ctrlKey: event.ctrlKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { const blank = !event.target.closest('.stage-shadow, .canvas-tool-dock'); if (activeTool === 'select' && blank) { clearSelection(); beginPan(event); } else if (activeTool === 'marquee' && event.button === 0 && blank) { event.preventDefault(); setMarqueeStartRequest({ clientX: event.clientX, clientY: event.clientY, key: event.timeStamp }); } }}>
+        <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropImageOnEditor} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, altKey: event.altKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { if (beginOutsideSelectionDrag(event)) return; const blank = !event.target.closest('.stage-shadow, .canvas-tool-dock'); if (activeTool === 'select' && blank) { clearSelection(); beginPan(event); } else if (activeTool === 'marquee' && event.button === 0 && blank) { event.preventDefault(); setMarqueeStartRequest({ clientX: event.clientX, clientY: event.clientY, key: event.timeStamp }); } }}>
           <div className="canvas-tool-dock"><div className="editor-paint-tools">
             <IconButton label="选择与移动" className={activeTool === 'select' ? 'active' : ''} onClick={() => setActiveTool('select')}><MousePointer2 size={17}/></IconButton>
             <IconButton label="选框工具：拖动后右键复制或剪切图层" className={activeTool === 'marquee' ? 'active' : ''} onClick={() => setActiveTool('marquee')}><BoxSelect size={17}/></IconButton>
-            <IconButton label="画笔（按住 Ctrl 临时取色）" className={activeTool === 'brush' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('brush')}><Pencil size={17}/></IconButton>
+            <IconButton label="画笔（按住 Alt 临时取色）" className={activeTool === 'brush' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('brush')}><Pencil size={17}/></IconButton>
             <IconButton label="马赛克" className={activeTool === 'mosaic' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('mosaic')}><Grid2X2 size={17}/></IconButton>
             <IconButton label="填充当前图层" className={activeTool === 'fill' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('fill')}><PaintBucket size={17}/></IconButton>
             <div className="tool-menu-wrap eraser-tool-wrap"><IconButton label={`橡皮擦：${eraserMode === 'paint' ? '仅擦除画笔' : '擦除图层'}`} className={activeTool === 'eraser' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('eraser')} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setEraserMenu(true); }}><Eraser size={17}/></IconButton>{eraserMenu && <div className="eraser-mode-menu" onPointerDown={(event) => event.stopPropagation()}><button className={eraserMode === 'paint' ? 'active' : ''} onClick={() => { setEraserMode('paint'); setEraserMenu(false); setActiveTool('eraser'); }}>仅擦除画笔</button><button className={eraserMode === 'layer' ? 'active' : ''} onClick={() => { setEraserMode('layer'); setEraserMenu(false); setActiveTool('eraser'); }}>擦除图层</button></div>}</div>
@@ -2096,7 +2199,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
           </div></div>
           <div className="canvas-scroll-surface" style={{ width: `max(100%, ${Math.max(0, draft.width * zoom) + 160}px)`, height: `max(100%, ${Math.max(0, draft.height * zoom) + 160}px)` }}><div ref={stageHostRef} className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}>
             <EditorStage template={draft} selectedIds={selectedIds} selectedGroupId={selectedGroupId} selectLayer={selectLayer} selectGroup={selectGroup} clearSelection={clearSelection} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onGroupContextMenu={openGroupMenu} onMarqueeContextMenu={openMarqueeMenu} marqueeStartRequest={marqueeStartRequest} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} eraserMode={eraserMode} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, patch) => updateLayer(id, patch)} onPickColor={setPaintColor} zoom={zoom}/>
-            {selectedOutsideLayers.map((layer) => <div key={`outside-outline-${layer.id}`} className="outside-layer-outline" style={{ left: layer.x * zoom, top: layer.y * zoom, width: layer.width * zoom, height: layer.height * zoom, transform: `rotate(${layer.rotation || 0}deg)` }}/>) }
+            {selectedOutsideLayers.map((layer) => { const preview = outsideDragPreview?.ids.includes(layer.id) ? outsideDragPreview : null; return <div key={`outside-outline-${layer.id}`} className="outside-layer-outline" style={{ left: (layer.x + (preview?.dx || 0)) * zoom, top: (layer.y + (preview?.dy || 0)) * zoom, width: layer.width * zoom, height: layer.height * zoom, transform: `rotate(${layer.rotation || 0}deg)` }}/>; }) }
             {textEditingId && draft.layers.find((layer) => layer.id === textEditingId && layer.type === 'text') && <RichTextOverlay
               layer={draft.layers.find((layer) => layer.id === textEditingId)}
               zoom={zoom}
@@ -2107,9 +2210,9 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
             />}
           </div></div>
           {toolPointer && !['select', 'marquee'].includes(activeTool) && !panning && (
-            ['brush', 'mosaic', 'eraser'].includes(activeTool) && !(activeTool === 'brush' && toolPointer.ctrlKey)
+            ['brush', 'mosaic', 'eraser'].includes(activeTool) && !(activeTool === 'brush' && toolPointer.altKey)
               ? <div className="tool-cursor brush-preview" style={{ left: toolPointer.x, top: toolPointer.y, width: Math.max(3, brushSize * zoom), height: Math.max(3, brushSize * zoom) }}/>
-              : <div className="tool-cursor" style={{ left: toolPointer.x, top: toolPointer.y }}>{activeTool === 'picker' || (activeTool === 'brush' && toolPointer.ctrlKey) ? <Pipette size={19}/> : <PaintBucket size={19}/>}</div>
+              : <div className="tool-cursor" style={{ left: toolPointer.x, top: toolPointer.y }}>{activeTool === 'picker' || (activeTool === 'brush' && toolPointer.altKey) ? <Pipette size={19}/> : <PaintBucket size={19}/>}</div>
           )}
         </div>
       </section>
@@ -2386,6 +2489,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   const trRef = useRef();
   const nodeRefs = useRef({});
   const dragRef = useRef(null);
+  const selectAfterPanRef = useRef(null);
   const paintSurfacesRef = useRef({});
   const eraseSurfacesRef = useRef({});
   const mosaicSurfacesRef = useRef({});
@@ -2558,11 +2662,11 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     width={group.bounds.width}
     height={group.bounds.height}
     fill="rgba(0,0,0,0.001)"
-    draggable={tool === 'select' && !group.locked}
+    draggable={tool === 'select' && !group.locked && selectedGroupId === group.groupId}
     listening={tool === 'select'}
-    onMouseDown={(event) => startGroupDrag(group, event)}
-    onTouchStart={(event) => startGroupDrag(group, event)}
-    onClick={(event) => { event.cancelBubble = true; selectGroup(group.groupId, event.evt); }}
+    onMouseDown={(event) => { if (selectedGroupId === group.groupId) startGroupDrag(group, event); else { event.cancelBubble = true; if (!selectedIds.length) { selectAfterPanRef.current = { kind: 'group', id: group.groupId, x: event.evt.clientX, y: event.evt.clientY }; onPanStart(event); } } }}
+    onTouchStart={(event) => { if (selectedGroupId === group.groupId) startGroupDrag(group, event); else { event.cancelBubble = true; if (!selectedIds.length) { selectAfterPanRef.current = { kind: 'group', id: group.groupId, x: event.evt.clientX, y: event.evt.clientY }; onPanStart(event); } } }}
+    onClick={(event) => { event.cancelBubble = true; const pending = selectAfterPanRef.current; selectAfterPanRef.current = null; if (pending?.kind === 'group' && pending.id === group.groupId && Math.hypot(event.evt.clientX - pending.x, event.evt.clientY - pending.y) > 4) return; selectGroup(group.groupId, event.evt); }}
     onTap={(event) => { event.cancelBubble = true; selectGroup(group.groupId, event.evt); }}
     onContextMenu={(event) => { event.cancelBubble = true; onGroupContextMenu(group.groupId, event.evt); }}
     onDragMove={(event) => moveGroupDrag(group, event)}
@@ -2722,7 +2826,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     event.evt.preventDefault();
     const stage = stageRef.current;
     const pointer = stage?.getPointerPosition();
-    const effectiveTool = tool === 'brush' && event.evt.ctrlKey ? 'picker' : tool;
+    const effectiveTool = tool === 'brush' && event.evt.altKey ? 'picker' : tool;
     if (!pointer) return true;
     const templatePoint = { x: pointer.x / zoom, y: pointer.y / zoom };
     if (effectiveTool === 'picker') {
@@ -2819,7 +2923,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
       {groupHitAreas.filter((group) => group.groupId !== selectedGroupId).map((group) => renderGroupHitArea(group))}
       {template.layers.map((layer) => {
         if (layer.id === textEditingId) return null;
-        const interactive = tool === 'select' && !layer.locked;
+        const interactive = tool === 'select' && !layer.locked && !selectedGroupId && selectedIds.includes(layer.id);
         const selectable = tool === 'select';
         return <EditorLayer key={layer.id} layer={layer} interactive={interactive} selectable={selectable}
           paintSource={paintPreview?.id === layer.id && paintPreview.kind === 'paint' ? paintPreview.canvas : null}
@@ -2827,8 +2931,8 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
           mosaicSource={paintPreview?.id === layer.id && paintPreview.kind === 'mosaic' ? paintPreview.canvas : null}
           paintRevision={paintPreview?.id === layer.id ? paintPreview.revision : 0}
           setRef={(node) => nodeRefs.current[layer.id] = node}
-          onPointerDown={(event) => { if (!selectedIds.includes(layer.id) && !event.evt.ctrlKey && !event.evt.metaKey && !event.evt.shiftKey) selectLayer(layer.id, event.evt); }}
-          onSelect={(event) => selectLayer(layer.id, event.evt)}
+          onPointerDown={(event) => { if (!selectedIds.length) { selectAfterPanRef.current = { kind: 'layer', id: layer.id, x: event.evt.clientX, y: event.evt.clientY }; onPanStart(event); return; } if (!selectedIds.includes(layer.id) && !event.evt.ctrlKey && !event.evt.metaKey && !event.evt.shiftKey) selectLayer(layer.id, event.evt); }}
+          onSelect={(event) => { const pending = selectAfterPanRef.current; selectAfterPanRef.current = null; if (pending?.kind === 'layer' && pending.id === layer.id && Math.hypot(event.evt.clientX - pending.x, event.evt.clientY - pending.y) > 4) return; selectLayer(layer.id, event.evt); }}
           onEnterCrop={(event) => { if (layer.type === 'text') { event.cancelBubble = true; onEditText(layer.id); } }}
           onContextMenu={(event) => onLayerContextMenu(layer.id, event.evt)}
           onChange={(patch) => updateLayer(layer.id, patch)}
@@ -2898,7 +3002,8 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
     </Group>;
   }
   const clipFunc = (ctx) => traceLayerShape(ctx, layer);
-  const placeholderProps = { fill: layer.slotFill || (highlight ? 'rgba(233,78,55,.14)' : '#eceae4'), stroke: highlight ? '#e94e37' : layer.slotFill ? undefined : '#77746d', strokeWidth: highlight ? 5 : 2, dash: layer.slotFill && !highlight ? undefined : [12, 8] };
+  const disabledReplacement = layer.type === 'slot' && layer.replacementDisabled;
+  const placeholderProps = { fill: layer.slotFill || (disabledReplacement ? 'rgba(0,0,0,0)' : highlight ? 'rgba(233,78,55,.14)' : '#eceae4'), stroke: disabledReplacement ? undefined : highlight ? '#e94e37' : layer.slotFill ? undefined : '#77746d', strokeWidth: disabledReplacement ? 0 : highlight ? 5 : 2, dash: disabledReplacement || (layer.slotFill && !highlight) ? undefined : [12, 8] };
   return <Group {...common} clipFunc={layer.type === 'slot' ? clipFunc : undefined}>
     {image ? <KonvaImage image={image} x={placement?.x || 0} y={placement?.y || 0} width={placement?.width || layer.width} height={placement?.height || layer.height} crop={placement ? undefined : crop} draggable={cropMode} onDragMove={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); onPhotoTransformMove ? onPhotoTransformMove({ event, x, y, placement }) : event.target.position({ x, y }); } : undefined} onDragEnd={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); event.target.position({ x, y }); if (onPhotoTransformEnd) onPhotoTransformEnd({ event, x, y, placement }); else onPhotoTransform?.({ offsetX: x - placement.centeredX, offsetY: y - placement.centeredY }); } : undefined}/> : shapeOf(layer) === 'circle' ? <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={layer.width / 2} radiusY={layer.height / 2} {...placeholderProps}/> : shapeOf(layer) === 'polygon' ? <Line points={polygonPixelPoints(layer)} closed {...placeholderProps}/> : <Rect width={layer.width} height={layer.height} cornerRadius={shapeOf(layer) === 'rounded' ? Math.min(36, layer.width / 4, layer.height / 4) : 0} {...placeholderProps}/>}
     {paintImage && <KonvaImage image={paintImage} width={layer.width} height={layer.height} listening={false}/>}
@@ -2943,15 +3048,16 @@ function NumericInput({ value, onCommit, min, max, step = 1, integer = true, cla
     setDraftValue(String(next));
     if (next !== Number(value)) onCommit(next);
   };
-  const presetValues = [...new Set((presets || DEFAULT_NUMBER_PRESETS).map(Number))].filter((item) => Number.isFinite(item) && (!Number.isFinite(min) || item >= min) && (!Number.isFinite(max) || item <= max));
-  return <div ref={rootRef} className={`numeric-input ${className}`.trim()}>
+  const showPresets = presets !== false;
+  const presetValues = [...new Set((showPresets ? (presets || DEFAULT_NUMBER_PRESETS) : []).map(Number))].filter((item) => Number.isFinite(item) && (!Number.isFinite(min) || item >= min) && (!Number.isFinite(max) || item <= max));
+  return <div ref={rootRef} className={`numeric-input ${showPresets ? '' : 'no-presets'} ${className}`.trim()}>
     <input {...props} type="text" inputMode={integer ? 'numeric' : 'decimal'} value={draftValue} onFocus={() => { focusedRef.current = true; cancelRef.current = false; }} onChange={(event) => setDraftValue(event.target.value)} onBlur={commit} onKeyDown={(event) => {
       if (event.key === 'Enter') event.currentTarget.blur();
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelRef.current = true; setMenuOpen(false); setDraftValue(String(value ?? '')); event.currentTarget.blur(); }
       if (event.key === 'ArrowDown' && event.altKey) { event.preventDefault(); setMenuOpen((open) => !open); }
     }}/>
-    <button type="button" className="numeric-preset-toggle" title="选择预设值" aria-label="选择预设值" aria-expanded={menuOpen} onPointerDown={(event) => event.preventDefault()} onClick={() => setMenuOpen((open) => !open)}><ChevronDown size={14}/></button>
-    {menuOpen && <div className="numeric-preset-menu">{presetValues.map((preset) => <button type="button" key={preset} className={Number(value) === preset ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => { const next = normalize(preset); setMenuOpen(false); setDraftValue(String(next)); if (next !== Number(value)) onCommit(next); }}>{preset}</button>)}</div>}
+    {showPresets && <button type="button" className="numeric-preset-toggle" title="选择预设值" aria-label="选择预设值" aria-expanded={menuOpen} onPointerDown={(event) => event.preventDefault()} onClick={() => setMenuOpen((open) => !open)}><ChevronDown size={14}/></button>}
+    {showPresets && menuOpen && <div className="numeric-preset-menu">{presetValues.map((preset) => <button type="button" key={preset} className={Number(value) === preset ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => { const next = normalize(preset); setMenuOpen(false); setDraftValue(String(next)); if (next !== Number(value)) onCommit(next); }}>{preset}</button>)}</div>}
   </div>;
 }
 
@@ -2969,7 +3075,7 @@ function GroupProperties({ name, layers, onRename, onToggleLock, onToggleVisibil
     <button className={`layer-lock-button ${allLocked ? 'active' : ''}`} onClick={onToggleLock}>{allLocked ? <Lock size={16}/> : <Unlock size={16}/>}<span>{allLocked ? '图层组已锁定' : '锁定图层组'}</span></button>
     <label className="text-field"><span>图层组名称</span><input value={name} onChange={(event) => onRename(event.target.value)}/></label>
     <div className="multi-selection-summary"><Layers3 size={24}/><strong>{layers.length} 个图层</strong><span>{Math.round(right - left)} × {Math.round(bottom - top)} px</span></div>
-    <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={left} onChange={(x) => { if (!hasLocked) onMove('x', x); }}/><NumberField label="Y" value={top} onChange={(y) => { if (!hasLocked) onMove('y', y); }}/></div>{hasLocked && <p className="property-note">组内含锁定图层，解锁后才能修改整组位置。</p>}</div>
+    <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={left} presets={false} onChange={(x) => { if (!hasLocked) onMove('x', x); }}/><NumberField label="Y" value={top} presets={false} onChange={(y) => { if (!hasLocked) onMove('y', y); }}/></div>{hasLocked && <p className="property-note">组内含锁定图层，解锁后才能修改整组位置。</p>}</div>
     <div className="property-section"><h4>可见性</h4><button className="wide-property-button" onClick={onToggleVisibility}>{allVisible ? <EyeOff size={16}/> : <Eye size={16}/>} {allVisible ? '隐藏图层组' : '显示图层组'}</button></div>
     <div className="property-section"><h4>图层组顺序</h4><div className="order-buttons"><button disabled={hasLocked} onClick={() => onOrder(1)}><ChevronUp size={17}/>上移</button><button disabled={hasLocked} onClick={() => onOrder(-1)}><ChevronDown size={17}/>下移</button></div></div>
     <div className="property-section"><h4>组合</h4><button className="wide-property-button" onClick={onUngroup}><Layers3 size={16}/>取消组合</button></div>
@@ -3019,9 +3125,9 @@ function Properties({ layer, textStyle, textSelection, onBeginTextInteraction, o
       <div className="property-section"><h4>字体{textSelection && textSelection.start !== textSelection.end ? ' · 已选 ' + Math.abs(textSelection.end - textSelection.start) + ' 字' : ''}</h4><select className="property-select" value={activeTextStyle.fontFamily} onChange={(event) => updateTextStyle({ fontFamily: event.target.value })}><option value="Microsoft YaHei">微软雅黑</option><option value="SimHei">黑体</option><option value="SimSun">宋体</option><option value="KaiTi">楷体</option><option value="Arial">Arial</option><option value="Segoe UI">Segoe UI</option></select><div className="text-format-row"><div><span>字号</span><NumericInput min={TEXT_SIZE_MIN} max={TEXT_SIZE_MAX} presets={FONT_SIZE_PRESETS} value={activeTextStyle.fontSize} onCommit={(fontSize) => updateTextStyle({ fontSize })}/></div><input className="color-swatch" type="color" title="文字颜色" value={activeTextStyle.fill} onChange={(event) => updateTextStyle({ fill: event.target.value })}/></div><NumberField label="间距" value={activeTextStyle.lineHeight} min={0} max={20} step={0.05} integer={false} presets={LINE_HEIGHT_PRESETS} onChange={(lineHeight) => updateTextStyle({ lineHeight })}/><label className="check-row" title="内容超出文本框时自动缩小字号；关闭后保持设定字号，超出部分可能被裁切。"><input type="checkbox" checked={Boolean(layer.autoFit)} onChange={(event) => update({ autoFit: event.target.checked })}/><span>文字自动适配文本框</span></label><div className="format-buttons"><button title="加粗" className={fontTokens.includes('bold') ? 'active' : ''} onClick={() => toggleFont('bold')}><Bold size={17}/></button><button title="斜体" className={fontTokens.includes('italic') ? 'active' : ''} onClick={() => toggleFont('italic')}><Italic size={17}/></button><button title="下划线" className={decorationTokens.includes('underline') ? 'active' : ''} onClick={() => toggleDecoration('underline')}><Underline size={17}/></button><button title="删除线" className={decorationTokens.includes('line-through') ? 'active' : ''} onClick={() => toggleDecoration('line-through')}><Strikethrough size={17}/></button></div><div className="format-buttons align-buttons"><button title="左对齐" className={layer.align === 'left' ? 'active' : ''} onClick={() => update({ align: 'left' })}><AlignLeft size={17}/></button><button title="居中" className={layer.align === 'center' ? 'active' : ''} onClick={() => update({ align: 'center' })}><AlignCenter size={17}/></button><button title="右对齐" className={layer.align === 'right' ? 'active' : ''} onClick={() => update({ align: 'right' })}><AlignRight size={17}/></button></div></div>
       <div className="property-section"><h4>文字效果</h4><div className="effect-grid"><label><span>外描边</span><input type="color" value={activeTextStyle.stroke} onChange={(event) => updateTextStyle({ stroke: event.target.value })}/></label><NumberField label="外描边宽度" value={activeTextStyle.strokeWidth} min={0} max={30} presets={EFFECT_SIZE_PRESETS} onChange={(strokeWidth) => updateTextStyle({ strokeWidth })}/><label><span>背景</span><input type="color" value={layer.background || '#ffffff'} onChange={(event) => update({ background: event.target.value })}/></label><NumberField label="背景内边距" value={layer.backgroundPadding || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(backgroundPadding) => update({ backgroundPadding })}/></div><button className="wide-property-button subtle" onClick={() => update({ background: layer.background ? '' : '#ffffff' })}>{layer.background ? '移除文字背景' : '启用文字背景'}</button><label className="check-row"><input type="checkbox" checked={Boolean(layer.shadowEnabled)} onChange={(event) => update({ shadowEnabled: event.target.checked })}/><span>启用文字阴影</span></label>{layer.shadowEnabled && <div className="effect-grid"><label><span>阴影颜色</span><input type="color" value={layer.shadowColor || '#000000'} onChange={(event) => update({ shadowColor: event.target.value })}/></label><NumberField label="模糊" value={layer.shadowBlur || 0} min={0} max={50} presets={EFFECT_SIZE_PRESETS} onChange={(shadowBlur) => update({ shadowBlur })}/><NumberField label="水平偏移" value={layer.shadowOffsetX || 0} onChange={(shadowOffsetX) => update({ shadowOffsetX })}/><NumberField label="垂直偏移" value={layer.shadowOffsetY || 0} onChange={(shadowOffsetY) => update({ shadowOffsetY })}/></div>}</div>
     </>}
-    <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} onChange={(y) => update({ y })}/></div></div>
+    <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} presets={false} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} presets={false} onChange={(y) => update({ y })}/></div></div>
     <div className="property-section"><div className="property-heading-row"><h4>尺寸</h4><button type="button" className={`aspect-lock-button ${layer.aspectRatioLocked ? 'active' : ''}`} title={layer.aspectRatioLocked ? '取消锁定宽高比' : '锁定宽高比'} onClick={() => update({ aspectRatioLocked: !layer.aspectRatioLocked })}>{layer.aspectRatioLocked ? <Lock size={13}/> : <Unlock size={13}/>}<span>宽高比</span></button></div><div className="property-grid"><NumberField label="宽" value={layer.width} min={10} presets={SIZE_PRESETS} onChange={(width) => updateDimension('width', width)}/><NumberField label="高" value={layer.height} min={10} presets={SIZE_PRESETS} onChange={(height) => updateDimension('height', height)}/></div></div>
-    <div className="property-section"><h4>旋转</h4><NumberField label="角度" value={layer.rotation} min={-360} max={360} presets={ROTATION_PRESETS} onChange={(rotation) => update({ rotation })} suffix="°"/><input className="range" type="range" min="-180" max="180" value={layer.rotation} onChange={(event) => update({ rotation: Number(event.target.value) })}/></div>
+    <div className="property-section"><h4>旋转</h4><NumberField label="角度" value={layer.rotation} min={-360} max={360} presets={ROTATION_PRESETS} onChange={(rotation) => update({ rotation })}/><input className="range" type="range" min="-180" max="180" value={layer.rotation} onChange={(event) => update({ rotation: Number(event.target.value) })}/></div>
     <div className="property-section"><h4>边框</h4><div className="border-controls"><label><span>颜色</span><input type="color" value={layer.borderColor || '#000000'} onChange={(event) => update({ borderColor: event.target.value })}/></label><NumberField label="大小" value={layer.borderWidth || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(borderWidth) => update({ borderWidth })}/></div></div>
     {layer.type === 'slot' && <>
       <div className="property-section"><h4>槽位形状</h4><div className="shape-segmented four"><button className={shapeOf(layer) === 'rect' ? 'active' : ''} onClick={() => update({ shape: 'rect' })}>矩形</button><button className={shapeOf(layer) === 'circle' ? 'active' : ''} onClick={() => update({ shape: 'circle' })}>圆形</button><button className={shapeOf(layer) === 'rounded' ? 'active' : ''} onClick={() => update({ shape: 'rounded' })}>圆角</button><button className={shapeOf(layer) === 'polygon' ? 'active' : ''} onClick={() => update({ shape: 'polygon', polygonSides: layer.polygonSides || 5, polygonPoints: polygonPointsOf(layer) })}>多边形</button></div>{shapeOf(layer) === 'polygon' && <div className="polygon-controls"><NumberField label="边数" value={layer.polygonSides || 5} min={POLYGON_MIN_SIDES} max={POLYGON_MAX_SIDES} presets={[3, 4, 5, 6, 8, 10, 12, 16]} onChange={(polygonSides) => update({ polygonSides, polygonPoints: regularPolygonPoints(polygonSides) })}/>{polygonPointsOf(layer).map((point, index) => <label key={index} className="polygon-radius"><span>顶点 {index + 1}</span><input type="range" min="10" max="100" value={polygonRadiusPercent(point)} onChange={(event) => update({ polygonPoints: polygonPointsOf(layer).map((item, itemIndex) => itemIndex === index ? polygonPointAtRadius(item, Number(event.target.value)) : item) })}/><output>{polygonRadiusPercent(point)}%</output></label>)}</div>}</div>
@@ -3142,8 +3248,21 @@ function UseStage({ composition, slotSources, slotTransforms, selectedId, setSel
             selectable={(layer.type === 'slot' && !layer.replacementDisabled) || layer.type === 'text'}
             highlight={layer.type === 'slot' && !layer.replacementDisabled && !slotSources[layer.id]}
             setRef={(node) => { if (layer.type === 'slot' && !layer.replacementDisabled) nodeRefs.current[layer.id] = node; }}
-            onSelect={() => { setSelectedId(layer.id); if (!slotSources[layer.id]) onRequestSlot(layer.id); }}
-             onEnterCrop={(event) => { if (!slotSources[layer.id]) return; event.cancelBubble = true; setSelectedId(layer.id); setCropModeId(layer.id); }}
+            onSelect={() => {
+              setSelectedId(layer.id);
+              setCropModeId(null);
+              if (layer.type === 'slot' && !layer.replacementDisabled && !slotSources[layer.id]) onRequestSlot(layer.id);
+            }}
+             onEnterCrop={(event) => {
+               event.cancelBubble = true;
+               if (layer.type === 'text') {
+                 onEditText(layer.id);
+                 return;
+               }
+               if (layer.type !== 'slot' || layer.replacementDisabled || !slotSources[layer.id]) return;
+               setSelectedId(layer.id);
+               setCropModeId(layer.id);
+             }}
              onDragStart={() => startSlotDrag(layer)}
              onDragMove={(event) => moveSlotDrag(layer, event)}
              onDragEnd={(event) => finishSlotDrag(layer, event)}
@@ -3387,7 +3506,10 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
 
   const acceptFile = useCallback(async (file, targetId) => {
     try {
-      const slotId = targetId || selectedId || composition.layers.find((layer) => layer.type === 'slot' && !layer.replacementDisabled)?.id;
+      const requestedLayer = composition.layers.find((layer) => layer.id === (targetId || selectedId));
+      const slotId = requestedLayer?.type === 'slot' && !requestedLayer.replacementDisabled
+        ? requestedLayer.id
+        : composition.layers.find((layer) => layer.type === 'slot' && !layer.replacementDisabled)?.id;
       if (!slotId) return notify('模板中没有可替换照片图层', 'error');
       const dataUrl = await fileToDataUrl(file);
       replaceSlotSource(slotId, dataUrl, file.name);
@@ -3395,9 +3517,11 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
   }, [composition.layers, notify, replaceSlotSource, selectedId]);
 
   const requestSlotImage = useCallback((slotId) => {
+    const layer = composition.layers.find((item) => item.id === slotId);
+    if (!layer || layer.type !== 'slot' || layer.replacementDisabled) return;
     pendingSlot.current = slotId;
     input.current?.click();
-  }, []);
+  }, [composition.layers]);
 
   useEffect(() => {
     if (initialFile && !initialHandled.current) {

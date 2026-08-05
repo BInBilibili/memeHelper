@@ -559,6 +559,28 @@ fn save_templates(templates: Vec<Value>) -> Result<bool, String> {
 }
 
 #[tauri::command]
+fn open_template_folder(template_id: String) -> Result<bool, String> {
+    let directory = template_directories(&templates_directory(), false)
+        .into_iter()
+        .find(|(id, _, _)| id == &template_id)
+        .map(|(_, directory, _)| directory)
+        .ok_or_else(|| "未找到模板文件夹".to_string())?;
+
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("explorer.exe");
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+
+    command
+        .arg(directory)
+        .spawn()
+        .map_err(|error| format!("无法打开模板文件夹：{error}"))?;
+    Ok(true)
+}
+
+#[tauri::command]
 fn load_editor_drafts() -> Value {
     fs::read_to_string(editor_drafts_path())
         .ok()
@@ -994,6 +1016,7 @@ fn main() {
             load_config,
             load_templates,
             save_templates,
+            open_template_folder,
             load_editor_drafts,
             save_editor_drafts,
             load_use_sessions,
