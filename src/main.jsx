@@ -624,6 +624,31 @@ function layerEffectInsets(layer) {
   };
 }
 
+function borderWidthOf(layer) {
+  return Math.max(0, Number(layer.borderWidth) || 0);
+}
+
+function drawLayerBorder(ctx, layer) {
+  const borderWidth = Math.min(borderWidthOf(layer), Math.max(0, Math.min(layer.width, layer.height)));
+  if (!borderWidth) return;
+  const inset = borderWidth / 2;
+  ctx.save();
+  ctx.strokeStyle = layer.borderColor || '#000000';
+  ctx.lineWidth = borderWidth;
+  ctx.lineJoin = 'round';
+  if (layer.type === 'slot') {
+    const scaleX = layer.width > 0 ? Math.max(0, layer.width - borderWidth) / layer.width : 1;
+    const scaleY = layer.height > 0 ? Math.max(0, layer.height - borderWidth) / layer.height : 1;
+    ctx.translate(inset, inset);
+    ctx.scale(scaleX, scaleY);
+    traceLayerShape(ctx, layer);
+    ctx.stroke();
+  } else {
+    ctx.strokeRect(inset, inset, Math.max(0, layer.width - borderWidth), Math.max(0, layer.height - borderWidth));
+  }
+  ctx.restore();
+}
+
 async function renderIsolatedLayer(layer, source, photoTransform, paintSource, eraseSource, scale = 1, mosaicSource = null) {
   const insets = layerEffectInsets(layer);
   const logicalWidth = layer.width + insets.left + insets.right;
@@ -647,11 +672,15 @@ async function renderIsolatedLayer(layer, source, photoTransform, paintSource, e
         const crop = getCoverCrop(image, layer.width, layer.height);
         ctx.drawImage(image, crop.x, crop.y, crop.width, crop.height, 0, 0, layer.width, layer.height);
       } else ctx.drawImage(image, 0, 0, layer.width, layer.height);
-    } else {
-      ctx.fillStyle = layer.slotFill || '#e8e6df';
-      traceLayerShape(ctx, layer);
-      ctx.fill();
-      if (!layer.slotFill) {
+    } else if (layer.type === 'slot') {
+      if (layer.slotFill) {
+        ctx.fillStyle = layer.slotFill;
+        traceLayerShape(ctx, layer);
+        ctx.fill();
+      } else if (!layer.replacementDisabled) {
+        ctx.fillStyle = '#e8e6df';
+        traceLayerShape(ctx, layer);
+        ctx.fill();
         ctx.strokeStyle = '#9d9b94'; ctx.lineWidth = 3; ctx.setLineDash([10, 8]);
         traceLayerShape(ctx, layer); ctx.stroke(); ctx.setLineDash([]);
       }
@@ -667,6 +696,7 @@ async function renderIsolatedLayer(layer, source, photoTransform, paintSource, e
     ctx.drawImage(eraseSource, 0, 0, layer.width, layer.height);
     ctx.restore();
   } else await drawEraseMask(ctx, layer);
+  drawLayerBorder(ctx, layer);
   return { canvas, insets, logicalWidth, logicalHeight };
 }
 
@@ -688,8 +718,9 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
     ctx.save();
     ctx.translate(layer.x, layer.y);
     ctx.rotate((layer.rotation || 0) * Math.PI / 180);
-    const replacement = typeof replacements === 'string' ? replacements : replacements?.[layer.id];
-    const src = layer.type === 'slot' && replacement ? replacement : layer.src;
+    const suppliedReplacement = typeof replacements === 'string' ? replacements : replacements?.[layer.id];
+    const replacement = layer.type === 'slot' && !layer.replacementDisabled ? suppliedReplacement : undefined;
+    const src = layer.type === 'slot' ? (replacement || (layer.replacementDisabled ? '' : layer.src)) : layer.src;
     if (layer.eraseSrc) {
       const isolated = await renderIsolatedLayer(layer, layer.type === 'slot' ? replacement : src, photoTransforms[layer.id], null, null, scale);
       ctx.drawImage(isolated.canvas, -isolated.insets.left, -isolated.insets.top, isolated.logicalWidth, isolated.logicalHeight);
@@ -700,19 +731,25 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
       drawTextLayer(ctx, layer);
       await drawPaintOverlay(ctx, layer);
       await drawMosaicOverlay(ctx, layer);
+      drawLayerBorder(ctx, layer);
       ctx.restore();
       continue;
     }
     if (layer.type === 'slot') { traceLayerShape(ctx, layer); ctx.clip(); }
     if (!src) {
-      ctx.fillStyle = layer.slotFill || '#e8e6df';
-      traceLayerShape(ctx, layer); ctx.fill();
-      if (!layer.slotFill) {
+      if (layer.slotFill) {
+        ctx.fillStyle = layer.slotFill;
+        traceLayerShape(ctx, layer); ctx.fill();
+      } else if (!layer.replacementDisabled) {
+        ctx.fillStyle = '#e8e6df';
+        traceLayerShape(ctx, layer); ctx.fill();
         ctx.strokeStyle = '#9d9b94'; ctx.lineWidth = 3; ctx.setLineDash([10, 8]);
         traceLayerShape(ctx, layer); ctx.stroke();
+        ctx.setLineDash([]);
       }
       await drawPaintOverlay(ctx, layer);
       await drawMosaicOverlay(ctx, layer);
+      drawLayerBorder(ctx, layer);
       ctx.restore();
       continue;
     }
@@ -729,6 +766,7 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
       }
       await drawPaintOverlay(ctx, layer);
       await drawMosaicOverlay(ctx, layer);
+      drawLayerBorder(ctx, layer);
     } finally { ctx.restore(); }
   }
   return canvas.toDataURL(mime, mime === 'image/jpeg' ? .92 : undefined);
@@ -1102,7 +1140,7 @@ function TemplateCard({ template, onUse, onEdit, onRename, onDelete, onToggleFav
   const [quickWorking, setQuickWorking] = useState(false);
   const menuRef = useRef();
   const pasteMenuRef = useRef();
-  const slots = useMemo(() => template.layers.filter((layer) => layer.type === 'slot'), [template.layers]);
+  const slots = useMemo(() => template.layers.filter((layer) => layer.type === 'slot' && !layer.replacementDisabled), [template.layers]);
   const canQuickReplace = slots.length === 1;
   const slotCountHint = slots.length === 0
     ? '此模板没有可替换图层。'
@@ -1182,6 +1220,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const selectedId = selectedIds.at(-1) || null;
   const { zoom, pan, panning, setZoom, zoomAtPointer, beginPan } = useCanvasViewport(.72, .2, 1.3);
   const [activeTool, setActiveTool] = useState('select');
+  const [sizeMode, setSizeMode] = useState('canvas');
   const [paintColor, setPaintColor] = useState('#202124');
   const [brushSize, setBrushSize] = useState(18);
   const [eraserMode, setEraserMode] = useState('paint');
@@ -1194,7 +1233,12 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const [autosaveState, setAutosaveState] = useState(initialStateRef.current.restored ? 'saved' : 'idle');
   const [shapeMenu, setShapeMenu] = useState(false);
   const [layerMenu, setLayerMenu] = useState(null);
-  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
+  const [marqueeStartRequest, setMarqueeStartRequest] = useState(null);
+  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set(
+    Object.entries(draft.groupMeta || {})
+      .filter(([, meta]) => meta?.collapsed)
+      .map(([groupId]) => groupId)
+  ));
   const [selectedGroupId, setSelectedGroupId] = useState(null);
   const [draggedLayerId, setDraggedLayerId] = useState(null);
   const [layerDrop, setLayerDrop] = useState(null);
@@ -1202,6 +1246,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const [hasCopiedLayers, setHasCopiedLayers] = useState(false);
   const [tagsText, setTagsText] = useState(() => (initialStateRef.current.draft.tags || []).join(', '));
   const memeInput = useRef();
+  const stageHostRef = useRef();
   const clipboardLayersRef = useRef({ layers: [], groupMeta: {} });
   const layerReorderRef = useRef(null);
   const selectionAnchorRef = useRef(selectedIds.at(-1) || null);
@@ -1290,18 +1335,73 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     notify(layers.length === 1 ? `已复制图层“${layers[0].name}”` : `已复制 ${layers.length} 个图层`);
   }, [draft.groupMeta, draft.layers, notify]);
   const copySelectedLayers = useCallback(() => copyLayersByIds(selectedIds), [copyLayersByIds, selectedIds]);
-  const cutLayersByIds = useCallback((ids) => {
-    const removableIds = draft.layers.filter((layer) => ids.includes(layer.id) && !layer.locked).map((layer) => layer.id);
-    if (!removableIds.length) return notify('选框内没有可剪切的未锁定图层', 'error');
-    copyLayersByIds(removableIds);
-    updateDraft((previous) => {
-      const layers = previous.layers.filter((layer) => !removableIds.includes(layer.id));
-      const groupIds = new Set(layers.map((layer) => layer.groupId).filter(Boolean));
-      const groupMeta = Object.fromEntries(Object.entries(previous.groupMeta || {}).filter(([groupId]) => groupIds.has(groupId)));
-      return { ...previous, layers, groupMeta };
-    });
-    setSelectedIds((current) => current.filter((id) => !removableIds.includes(id)));
-  }, [copyLayersByIds, draft.layers, notify, updateDraft]);
+  const normalizeMarqueeRect = useCallback((rect) => {
+    const left = Math.floor(rect.x);
+    const top = Math.floor(rect.y);
+    const right = Math.ceil(rect.x + rect.width);
+    const bottom = Math.ceil(rect.y + rect.height);
+    return { x: left, y: top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
+  }, []);
+  const buildMarqueeFragments = useCallback(async (ids, rect) => {
+    const selection = normalizeMarqueeRect(rect);
+    const layers = draft.layers.filter((layer) => ids.includes(layer.id));
+    const fragments = await Promise.all(layers.map(async (layer) => {
+      const src = await renderTemplate({
+        width: selection.width,
+        height: selection.height,
+        layers: [{ ...structuredClone(layer), x: layer.x - selection.x, y: layer.y - selection.y, visible: true }]
+      }, {}, {}, { transparent: true, mime: 'image/png' });
+      return {
+        id: uid(), name: `${layer.name} 选区`, type: 'static', src,
+        x: selection.x, y: selection.y, width: selection.width, height: selection.height,
+        rotation: 0, visible: true, locked: false, fit: 'fill'
+      };
+    }));
+    return { fragments, selection };
+  }, [draft.layers, normalizeMarqueeRect]);
+  const copyMarqueePixels = useCallback(async (ids, rect) => {
+    if (!ids.length || !rect) return;
+    try {
+      const { fragments } = await buildMarqueeFragments(ids, rect);
+      if (!fragments.length) return;
+      clipboardLayersRef.current = { layers: fragments, groupMeta: {} };
+      setHasCopiedLayers(true);
+      notify(fragments.length === 1 ? '已复制选框内容' : `已复制 ${fragments.length} 个图层的选框内容`);
+    } catch (error) { notify(`复制选框内容失败：${error?.message || error}`, 'error'); }
+  }, [buildMarqueeFragments, notify]);
+  const cutMarqueePixels = useCallback(async (ids, rect) => {
+    const layers = draft.layers.filter((layer) => ids.includes(layer.id) && !layer.locked && layer.width > 0 && layer.height > 0);
+    if (!layers.length) return notify('选框内没有可剪切的未锁定图层', 'error');
+    try {
+      const { fragments, selection } = await buildMarqueeFragments(layers.map((layer) => layer.id), rect);
+      const eraseSources = Object.fromEntries(await Promise.all(layers.map(async (layer) => {
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.ceil(layer.width));
+        canvas.height = Math.max(1, Math.ceil(layer.height));
+        const ctx = canvas.getContext('2d');
+        ctx.scale(canvas.width / layer.width, canvas.height / layer.height);
+        if (layer.eraseSrc) {
+          const existingMask = await loadImage(layer.eraseSrc);
+          ctx.drawImage(existingMask, 0, 0, layer.width, layer.height);
+        }
+        const radians = (Number(layer.rotation) || 0) * Math.PI / 180;
+        const cosine = Math.cos(radians); const sine = Math.sin(radians);
+        const toLocal = (x, y) => {
+          const dx = x - layer.x; const dy = y - layer.y;
+          return { x: dx * cosine + dy * sine, y: -dx * sine + dy * cosine };
+        };
+        const corners = [[selection.x, selection.y], [selection.x + selection.width, selection.y], [selection.x + selection.width, selection.y + selection.height], [selection.x, selection.y + selection.height]].map(([x, y]) => toLocal(x, y));
+        ctx.fillStyle = '#000'; ctx.beginPath();
+        corners.forEach((point, index) => index ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y));
+        ctx.closePath(); ctx.fill();
+        return [layer.id, canvas.toDataURL('image/png')];
+      })));
+      clipboardLayersRef.current = { layers: fragments, groupMeta: {} };
+      setHasCopiedLayers(true);
+      updateDraft((previous) => ({ ...previous, layers: previous.layers.map((layer) => eraseSources[layer.id] ? { ...layer, eraseSrc: eraseSources[layer.id] } : layer) }));
+      notify(layers.length === 1 ? '已剪切选框内容' : `已剪切 ${layers.length} 个图层的选框内容`);
+    } catch (error) { notify(`剪切选框内容失败：${error?.message || error}`, 'error'); }
+  }, [buildMarqueeFragments, draft.layers, notify, updateDraft]);
   const pasteLayers = useCallback(() => {
     if (!clipboardLayersRef.current.layers.length) return notify('请先选择并复制图层', 'error');
     const groupMap = new Map();
@@ -1446,40 +1546,52 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     const groups = new Set(draft.layers.map((layer) => layer.groupId).filter(Boolean));
     if (selectedGroupId && !groups.has(selectedGroupId)) setSelectedGroupId(null);
     setCollapsedGroups((current) => {
-      const next = new Set([...current].filter((groupId) => groups.has(groupId)));
-      return next.size === current.size ? current : next;
+      const next = new Set([...groups].filter((groupId) => draft.groupMeta?.[groupId]?.collapsed));
+      return next.size === current.size && [...next].every((groupId) => current.has(groupId)) ? current : next;
     });
   }, [draft.layers, selectedGroupId]);
 
-  const addImage = async (file) => {
+  const addImage = async (file, dropPoint = null) => {
     try {
       const src = await fileToDataUrl(file); const image = await loadImage(src);
       const initializeCanvas = !draft.layers.length && draft.width === 0 && draft.height === 0;
       const initialWidth = Math.min(4000, image.width); const initialHeight = Math.min(4000, image.height);
-      const maxW = initializeCanvas ? initialWidth : draft.width * .9; const maxH = initializeCanvas ? initialHeight : draft.height * .9;
+      const maxW = initializeCanvas ? initialWidth : Math.max(1, draft.width * .9); const maxH = initializeCanvas ? initialHeight : Math.max(1, draft.height * .9);
       const scale = Math.min(maxW / image.width, maxH / image.height, 1);
       const width = Math.round(image.width * scale); const height = Math.round(image.height * scale);
-      const layer = { id: uid(), name: file.name.replace(/\.[^.]+$/, ''), type: 'static', src, x: initializeCanvas ? 0 : Math.round((draft.width - width) / 2), y: initializeCanvas ? 0 : Math.round((draft.height - height) / 2), width, height, rotation: 0, visible: true, fit: 'fill' };
-      updateDraft((prev) => ({ ...prev, width: initializeCanvas ? width : prev.width, height: initializeCanvas ? height : prev.height, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
+      const x = initializeCanvas ? 0 : Math.round((dropPoint?.x ?? draft.width / 2) - width / 2);
+      const y = initializeCanvas ? 0 : Math.round((dropPoint?.y ?? draft.height / 2) - height / 2);
+      const layer = { id: uid(), name: file.name.replace(/\.[^.]+$/, ''), type: 'static', src, x, y, width, height, rotation: 0, visible: true, fit: 'fill' };
+      updateDraft((prev) => ({ ...prev, width: initializeCanvas ? width : prev.width, height: initializeCanvas ? height : prev.height, layers: [...prev.layers, layer] }));
+      setSelectedIds([layer.id]); setSelectedGroupId(null); setActiveTool('select');
     } catch (error) { notify(error.message, 'error'); }
+  };
+
+  const dropImageOnEditor = async (event) => {
+    const file = Array.from(event.dataTransfer?.files || []).find((item) => item.type.startsWith('image/'));
+    if (!file) return;
+    event.preventDefault(); event.stopPropagation();
+    const bounds = stageHostRef.current?.getBoundingClientRect();
+    const dropPoint = bounds ? { x: (event.clientX - bounds.left) / zoom, y: (event.clientY - bounds.top) / zoom } : null;
+    await addImage(file, dropPoint);
   };
 
   const addEmptySlot = (shape) => {
     const initializeCanvas = !draft.layers.length && draft.width === 0 && draft.height === 0;
     const size = initializeCanvas ? 416 : Math.round(Math.min(draft.width, draft.height) * .52);
-    const width = shape === 'circle' ? size : initializeCanvas ? 480 : Math.round(draft.width * .6);
-    const height = shape === 'circle' ? size : initializeCanvas ? 384 : Math.round(draft.height * .48);
+    const width = size;
+    const height = size;
     const shapeName = shape === 'circle' ? '圆形' : shape === 'rounded' ? '圆角矩形' : shape === 'polygon' ? '多边形' : '矩形';
     const layer = { id: uid(), name: `${shapeName}照片 ${draft.layers.filter((x) => x.type === 'slot').length + 1}`, type: 'slot', shape, src: '', x: initializeCanvas ? 0 : Math.round((draft.width - width) / 2), y: initializeCanvas ? 0 : Math.round((draft.height - height) / 2), width, height, rotation: 0, visible: true, fit: 'cover', ...(shape === 'polygon' ? { polygonSides: 5, polygonPoints: regularPolygonPoints(5) } : {}) };
     updateDraft((prev) => ({ ...prev, width: initializeCanvas ? width : prev.width, height: initializeCanvas ? height : prev.height, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
-    setShapeMenu(false);
+    setShapeMenu(false); setActiveTool('select');
   };
 
   const addTextLayer = () => {
     const initializeCanvas = !draft.layers.length && draft.width === 0 && draft.height === 0;
     const seed = { id: uid(), name: `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`, type: 'text', text: '输入文字', x: initializeCanvas ? 0 : Math.round(draft.width * .18), y: initializeCanvas ? 0 : Math.round(draft.height * .18), width: 1, height: 1, rotation: 0, visible: true, fontSize: 48, fontFamily: 'Microsoft YaHei', fontStyle: 'normal', textDecoration: '', align: 'center', fill: '#22211f', lineHeight: 1.25, autoFit: false, stroke: '#ffffff', strokeWidth: 0, shadowEnabled: false, shadowColor: '#000000', shadowBlur: 8, shadowOffsetX: 2, shadowOffsetY: 2, background: '', backgroundPadding: 8 };
     const layer = fitTextLayerToContent(seed);
-    updateDraft((prev) => ({ ...prev, width: initializeCanvas ? layer.width : prev.width, height: initializeCanvas ? layer.height : prev.height, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
+    updateDraft((prev) => ({ ...prev, width: initializeCanvas ? layer.width : prev.width, height: initializeCanvas ? layer.height : prev.height, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null); setActiveTool('select');
   };
 
   const autoSizeCanvas = () => {
@@ -1572,9 +1684,9 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     clearSelection();
     setLayerMenu({ blank: true, x: Math.min(event.clientX, window.innerWidth - 166), y: Math.min(event.clientY, window.innerHeight - 54) });
   };
-  const openMarqueeMenu = (ids, event) => {
+  const openMarqueeMenu = (ids, rect, event) => {
     event.preventDefault(); event.stopPropagation();
-    setLayerMenu({ marqueeIds: ids, x: Math.min(event.clientX, window.innerWidth - 206), y: Math.min(event.clientY, window.innerHeight - 120) });
+    setLayerMenu({ marquee: { ids, rect: { ...rect } }, x: Math.min(event.clientX, window.innerWidth - 206), y: Math.min(event.clientY, window.innerHeight - 120) });
   };
 
   const removeLayer = (id) => {
@@ -1919,7 +2031,12 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       onPointerDown={(event) => { if (!event.target.closest('button, input')) beginLayerReorder(event, members[0].id, layer.groupId); }}
       onClick={(event) => selectGroup(layer.groupId, event)}
       onContextMenu={(event) => openGroupMenu(layer.groupId, event)}
-    ><span className="layer-grip" title="拖动整组排序"><GripVertical size={15}/></span><IconButton label={collapsed ? '展开图层组' : '收起图层组'} className="group-toggle" onClick={(event) => { event.stopPropagation(); setCollapsedGroups((current) => { const next = new Set(current); if (next.has(layer.groupId)) next.delete(layer.groupId); else next.add(layer.groupId); return next; }); }}>{collapsed ? <ChevronRight size={15}/> : <ChevronDown size={15}/>}</IconButton><div className="layer-group-icon"><Layers3 size={17}/></div><div className="layer-copy">{layerNameEditor('group', layer.groupId, groupName)}<span>{members.length} 个图层</span></div></div>);
+    ><span className="layer-grip" title="拖动整组排序"><GripVertical size={15}/></span><IconButton label={collapsed ? '展开图层组' : '收起图层组'} className="group-toggle" onClick={(event) => {
+        event.stopPropagation();
+        const collapsed = !collapsedGroups.has(layer.groupId);
+        setCollapsedGroups((current) => { const next = new Set(current); if (collapsed) next.add(layer.groupId); else next.delete(layer.groupId); return next; });
+        updateGroupMeta(layer.groupId, { collapsed });
+      }}>{collapsed ? <ChevronRight size={15}/> : <ChevronDown size={15}/>}</IconButton><div className="layer-group-icon"><Layers3 size={17}/></div><div className="layer-copy">{layerNameEditor('group', layer.groupId, groupName)}<span>{members.length} 个图层</span></div></div>);
     if (!collapsed) members.forEach((member) => layerListRows.push(renderLayerRow(member, true)));
   });
   const contextLayer = layerMenu ? draft.layers.find((item) => item.id === layerMenu.id) : null;
@@ -1934,19 +2051,38 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     return bounds.left < 0 || bounds.top < 0 || bounds.right > draft.width || bounds.bottom > draft.height;
   });
 
+  const sizeLayer = sizeMode === 'image' && !selectedGroupId && selectedLayers.length === 1 ? selectedLayers[0] : null;
+  const sizeWidth = sizeLayer ? sizeLayer.width : draft.width;
+  const sizeHeight = sizeLayer ? sizeLayer.height : draft.height;
+  const commitToolbarSize = (axis, rawValue) => {
+    const value = Math.max(0, rawValue);
+    if (sizeMode !== 'image' || !sizeLayer) {
+      updateDraft((previous) => ({ ...previous, [axis]: value }));
+      return;
+    }
+    const patch = { [axis]: value };
+    if (sizeLayer.aspectRatioLocked) {
+      const width = Math.max(0.0001, Number(sizeLayer.width) || 0.0001);
+      const height = Math.max(0.0001, Number(sizeLayer.height) || 0.0001);
+      if (axis === 'width') patch.height = Math.max(0, value * height / width);
+      else patch.width = Math.max(0, value * width / height);
+    }
+    updateSelectedProperties(patch);
+  };
+
   return <main className="editor-page">
     <header className="editor-topbar"><div className="editor-left"><IconButton label="返回模板库" onClick={tryBack}><ArrowLeft size={21}/></IconButton><div className="title-field"><input value={draft.name} onChange={(e) => updateDraft({ ...draft, name: e.target.value })}/><span>{draft.width} x {draft.height}px</span></div></div><div className="editor-center"><span className="status-dot"></span>{autosaveState === 'saving' ? '正在自动保存' : autosaveState === 'error' ? '自动保存失败' : initialStateRef.current.restored ? '已恢复草稿' : dirty ? '已自动保存' : '已保存'}</div><div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undoDraft} disabled={!canUndo}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redoDraft} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={tryBack}>取消</button><button className="primary-button" onClick={save}><Save size={17}/>保存模板</button></div></header>
     <div className="editor-body">
-      <aside className="layers-panel" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu}><div className="panel-title"><div><span>图层</span><small>{draft.layers.length}</small></div><IconButton label="添加可替换照片" onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Plus size={18}/></IconButton></div><div className="layer-add-row"><button onClick={() => memeInput.current.click()}><ImagePlus size={18}/><span>添加固定图层</span></button><div className="shape-picker-wrap"><button onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Shapes size={18}/><span>添加可替换照片</span></button>{shapeMenu && <div className="shape-picker" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => addEmptySlot('rect')}><Square size={17}/><span>矩形</span></button><button onClick={() => addEmptySlot('circle')}><Circle size={17}/><span>圆形</span></button><button onClick={() => addEmptySlot('rounded')}><Shapes size={17}/><span>圆角矩形</span></button><button onClick={() => addEmptySlot('polygon')}><Pentagon size={17}/><span>多边形</span></button></div>}</div><button onClick={addTextLayer}><Type size={18}/><span>添加文字</span></button></div><label className="template-tags-field"><span>模板标签</span><input value={tagsText} onChange={(event) => { const value = event.target.value; setTagsText(value); updateDraft({ ...draft, tags: value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 10) }); }} placeholder="反应、工作、猫"/></label><input ref={memeInput} hidden type="file" accept="image/*" onChange={(event) => event.target.files[0] && addImage(event.target.files[0])}/>
+      <aside className="layers-panel" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu}><div className="panel-title"><div><span>图层</span><small>{draft.layers.length}</small></div></div><div className="layer-add-row"><button onClick={() => memeInput.current.click()}><ImagePlus size={18}/><span>添加固定图层</span></button><div className="shape-picker-wrap"><button onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Shapes size={18}/><span>添加可替换照片</span></button>{shapeMenu && <div className="shape-picker" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => addEmptySlot('rect')}><Square size={17}/><span>矩形</span></button><button onClick={() => addEmptySlot('circle')}><Circle size={17}/><span>圆形</span></button><button onClick={() => addEmptySlot('rounded')}><Shapes size={17}/><span>圆角矩形</span></button><button onClick={() => addEmptySlot('polygon')}><Pentagon size={17}/><span>多边形</span></button></div>}</div><button onClick={addTextLayer}><Type size={18}/><span>添加文字</span></button></div><label className="template-tags-field"><span>模板标签</span><input value={tagsText} onChange={(event) => { const value = event.target.value; setTagsText(value); updateDraft({ ...draft, tags: value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 10) }); }} placeholder="反应、工作、猫"/></label><input ref={memeInput} hidden type="file" accept="image/*" onChange={(event) => event.target.files[0] && addImage(event.target.files[0])}/>
         <div className="layers-list" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu}>{layerListRows}</div>
         {!draft.layers.length && <div className="layers-empty" onClick={clearSelection} onContextMenu={openLayersBlankMenu}><Layers3 size={28}/><p>添加第一个图层后，画布会自动匹配图层大小。</p></div>}
       </aside>
       <section className="canvas-workspace">
         <div className="canvas-toolbar">
-          <div className="canvas-size"><label>画布</label><NumericInput min={0} max={4000} value={draft.width} onCommit={(width) => updateDraft({ ...draft, width })}/><span>×</span><NumericInput min={0} max={4000} value={draft.height} onCommit={(height) => updateDraft({ ...draft, height })}/><button className="auto-canvas-button" onClick={autoSizeCanvas}>自动设置</button></div>
+          <div className="canvas-size"><button type="button" className={`size-mode-button ${sizeMode === 'image' ? 'active' : ''}`} title={sizeMode === 'canvas' ? '点击切换为修改当前图层尺寸' : '点击切换为修改画布尺寸'} onClick={() => setSizeMode((mode) => mode === 'canvas' ? 'image' : 'canvas')}>{sizeMode === 'canvas' ? '画布' : '图像'}</button><NumericInput min={0} max={4000} presets={SIZE_PRESETS} value={sizeWidth} disabled={sizeMode === 'image' && !sizeLayer} onCommit={(width) => commitToolbarSize('width', width)}/><span>×</span><NumericInput min={0} max={4000} presets={SIZE_PRESETS} value={sizeHeight} disabled={sizeMode === 'image' && !sizeLayer} onCommit={(height) => commitToolbarSize('height', height)}/><button className="auto-canvas-button" disabled={sizeMode === 'image'} onClick={autoSizeCanvas}>自动设置</button></div>
           <div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>
         </div>
-        <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, ctrlKey: event.ctrlKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { if (activeTool === 'select' && event.target === event.currentTarget) { clearSelection(); beginPan(event); } }}>
+        <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropImageOnEditor} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, ctrlKey: event.ctrlKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { const blank = !event.target.closest('.stage-shadow, .canvas-tool-dock'); if (activeTool === 'select' && blank) { clearSelection(); beginPan(event); } else if (activeTool === 'marquee' && event.button === 0 && blank) { event.preventDefault(); setMarqueeStartRequest({ clientX: event.clientX, clientY: event.clientY, key: event.timeStamp }); } }}>
           <div className="canvas-tool-dock"><div className="editor-paint-tools">
             <IconButton label="选择与移动" className={activeTool === 'select' ? 'active' : ''} onClick={() => setActiveTool('select')}><MousePointer2 size={17}/></IconButton>
             <IconButton label="选框工具：拖动后右键复制或剪切图层" className={activeTool === 'marquee' ? 'active' : ''} onClick={() => setActiveTool('marquee')}><BoxSelect size={17}/></IconButton>
@@ -1956,10 +2092,10 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
             <div className="tool-menu-wrap eraser-tool-wrap"><IconButton label={`橡皮擦：${eraserMode === 'paint' ? '仅擦除画笔' : '擦除图层'}`} className={activeTool === 'eraser' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('eraser')} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setEraserMenu(true); }}><Eraser size={17}/></IconButton>{eraserMenu && <div className="eraser-mode-menu" onPointerDown={(event) => event.stopPropagation()}><button className={eraserMode === 'paint' ? 'active' : ''} onClick={() => { setEraserMode('paint'); setEraserMenu(false); setActiveTool('eraser'); }}>仅擦除画笔</button><button className={eraserMode === 'layer' ? 'active' : ''} onClick={() => { setEraserMode('layer'); setEraserMenu(false); setActiveTool('eraser'); }}>擦除图层</button></div>}</div>
             <IconButton label="颜色选取器（可从所有图层取色）" className={activeTool === 'picker' ? 'active' : ''} onClick={() => setActiveTool('picker')}><Pipette size={17}/></IconButton>
             <input className="paint-color" type="color" aria-label="绘画颜色" title="绘画颜色" value={paintColor} onChange={(event) => setPaintColor(event.target.value)}/>
-            <label className="brush-size" title="画笔和橡皮擦大小"><NumericInput aria-label="画笔大小" min={1} max={160} value={brushSize} onCommit={setBrushSize}/><input type="range" min="1" max="160" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))}/></label>
+            <label className="brush-size" title="画笔和橡皮擦大小"><NumericInput aria-label="画笔大小" min={1} max={160} presets={[1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 160]} value={brushSize} onCommit={setBrushSize}/><input type="range" min="1" max="160" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))}/></label>
           </div></div>
-          <div className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}>
-            <EditorStage template={draft} selectedIds={selectedIds} selectLayer={selectLayer} clearSelection={clearSelection} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onMarqueeContextMenu={openMarqueeMenu} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} eraserMode={eraserMode} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, patch) => updateLayer(id, patch)} onPickColor={setPaintColor} zoom={zoom}/>
+          <div className="canvas-scroll-surface" style={{ width: `max(100%, ${Math.max(0, draft.width * zoom) + 160}px)`, height: `max(100%, ${Math.max(0, draft.height * zoom) + 160}px)` }}><div ref={stageHostRef} className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}>
+            <EditorStage template={draft} selectedIds={selectedIds} selectedGroupId={selectedGroupId} selectLayer={selectLayer} selectGroup={selectGroup} clearSelection={clearSelection} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onGroupContextMenu={openGroupMenu} onMarqueeContextMenu={openMarqueeMenu} marqueeStartRequest={marqueeStartRequest} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} eraserMode={eraserMode} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, patch) => updateLayer(id, patch)} onPickColor={setPaintColor} zoom={zoom}/>
             {selectedOutsideLayers.map((layer) => <div key={`outside-outline-${layer.id}`} className="outside-layer-outline" style={{ left: layer.x * zoom, top: layer.y * zoom, width: layer.width * zoom, height: layer.height * zoom, transform: `rotate(${layer.rotation || 0}deg)` }}/>) }
             {textEditingId && draft.layers.find((layer) => layer.id === textEditingId && layer.type === 'text') && <RichTextOverlay
               layer={draft.layers.find((layer) => layer.id === textEditingId)}
@@ -1969,7 +2105,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
               onSelectionChange={(selection) => setTextSelection({ id: textEditingId, ...selection })}
               onDone={() => { setTextEditingId(null); setTextSelection(null); }}
             />}
-          </div>
+          </div></div>
           {toolPointer && !['select', 'marquee'].includes(activeTool) && !panning && (
             ['brush', 'mosaic', 'eraser'].includes(activeTool) && !(activeTool === 'brush' && toolPointer.ctrlKey)
               ? <div className="tool-cursor brush-preview" style={{ left: toolPointer.x, top: toolPointer.y, width: Math.max(3, brushSize * zoom), height: Math.max(3, brushSize * zoom) }}/>
@@ -1980,7 +2116,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       <aside className="properties-panel"><div className="panel-title"><span>属性</span></div>{selectedGroupId && selectedGroupLayers.length ? <GroupProperties name={selectedGroupName} layers={selectedGroupLayers} onRename={(name) => updateGroupMeta(selectedGroupId, { name })} onToggleLock={() => updateGroupLayers(selectedGroupId, { locked: selectedGroupLayers.some((layer) => !layer.locked) })} onToggleVisibility={() => updateGroupLayers(selectedGroupId, { visible: !selectedGroupLayers.every((layer) => layer.visible) })} onMove={(axis, value) => moveGroupTo(selectedGroupId, axis, value)} onUngroup={ungroupSelected} onRemove={() => removeGroup(selectedGroupId)} onOrder={(direction) => moveLayer(selectedGroupLayers[0].id, direction, true)}/> : selectedLayers.length > 1 ? <MultiSelectionProperties layers={selectedLayers} grouped={Boolean(uniformlySelectedGroupId)} onGroup={groupSelected} onUngroup={ungroupSelected} onToggleLock={toggleSelectedLock} onAlign={alignSelected} onDistribute={distributeSelected}/> : selected ? <Properties layer={selected} textStyle={selected.type === 'text' ? textStyleAt(selected, Math.min(Math.max(0, String(selected.text || '').length - 1), Math.min(activeTextSelection?.start ?? 0, activeTextSelection?.end ?? 0))) : null} textSelection={activeTextSelection} onBeginTextInteraction={beginPropertyTextInteraction} onTextSelectionChange={(selection) => setPropertyTextSelection({ id: selected.id, ...selection })} updateTextStyle={applySelectedTextStyle} updateText={updateSelectedText} update={updateSelectedProperties} toggleLock={() => updateLayer(selected.id, { locked: !selected.locked })} remove={() => removeLayer(selected.id)} move={(direction) => moveLayer(selected.id, direction)}/> : <div className="property-empty"><Pencil size={26}/><p>选择一个图层后，可调整位置、尺寸和旋转。</p></div>}</aside>
     </div>
     {layerMenu && <div className="layer-context-menu" style={{ left: layerMenu.x, top: Math.max(6, layerMenu.y) }} onPointerDown={(event) => event.stopPropagation()}>
-      {layerMenu.marqueeIds ? <><button onClick={() => { copyLayersByIds(layerMenu.marqueeIds); setLayerMenu(null); }}><Copy size={16}/>复制选框内图层</button><button className="danger" onClick={() => { cutLayersByIds(layerMenu.marqueeIds); setLayerMenu(null); }}><Scissors size={16}/>剪切选框内图层</button></> : layerMenu.blank ? <button onClick={() => { pasteLayers(); setLayerMenu(null); }}><Clipboard size={16}/>粘贴图层</button> : <>
+      {layerMenu.marquee ? <><button onClick={() => { copyMarqueePixels(layerMenu.marquee.ids, layerMenu.marquee.rect); setLayerMenu(null); }}><Copy size={16}/>复制选框内容</button><button className="danger" onClick={() => { cutMarqueePixels(layerMenu.marquee.ids, layerMenu.marquee.rect); setLayerMenu(null); }}><Scissors size={16}/>剪切选框内容</button></> : layerMenu.blank ? <button onClick={() => { pasteLayers(); setLayerMenu(null); }}><Clipboard size={16}/>粘贴图层</button> : <>
       <button onClick={() => { copyLayerFromMenu(layerMenu.id, contextGroupId); setLayerMenu(null); }}><Copy size={16}/>复制{contextGroupId ? '图层组' : '图层'}</button>
       {selectedIds.length > 1 && <button disabled={selectedLayers.some((layer) => layer.locked)} onClick={mergeSelectedLayers}><Layers3 size={16}/>合并图层</button>}
       {contextGroupId || contextLayer?.groupId
@@ -2245,7 +2381,7 @@ function floodFillCanvas(canvas, x, y, color) {
   ctx.putImageData(image, 0, 0);
 }
 
-function EditorStage({ template, selectedIds, selectLayer, clearSelection, updateLayer, updateLayers, onLayerContextMenu, onMarqueeContextMenu, onPanStart, onEditText, textEditingId, tool, eraserMode, paintColor, brushSize, onPaintCommit, onPickColor, zoom }) {
+function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, selectGroup, clearSelection, updateLayer, updateLayers, onLayerContextMenu, onGroupContextMenu, onMarqueeContextMenu, marqueeStartRequest, onPanStart, onEditText, textEditingId, tool, eraserMode, paintColor, brushSize, onPaintCommit, onPickColor, zoom }) {
   const stageRef = useRef();
   const trRef = useRef();
   const nodeRefs = useRef({});
@@ -2261,6 +2397,7 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
   const [marquee, setMarquee] = useState(null);
   const marqueeRef = useRef(null);
   const marqueeTrackingRef = useRef(null);
+  const lastMarqueeStartRequestRef = useRef(null);
   const [shiftPressed, setShiftPressed] = useState(false);
 
   useEffect(() => {
@@ -2361,6 +2498,76 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
     setGuides([]);
     updateLayers(patches);
   };
+
+  const groupHitAreas = (() => {
+    const groupIds = [...new Set(template.layers.map((layer) => layer.groupId).filter(Boolean))];
+    return groupIds.map((groupId) => {
+      const members = template.layers.filter((layer) => layer.groupId === groupId && layer.visible);
+      const bounds = combinedLayerBounds(members);
+      return bounds ? { groupId, members, bounds, locked: members.some((layer) => layer.locked) } : null;
+    }).filter(Boolean);
+  })();
+
+  const startGroupDrag = (group, event) => {
+    event.cancelBubble = true;
+    if (selectedGroupId !== group.groupId) selectGroup(group.groupId, event.evt);
+    if (group.locked) return;
+    const ids = group.members.map((layer) => layer.id);
+    const positions = Object.fromEntries(group.members.map((layer) => [layer.id, { x: layer.x, y: layer.y }]));
+    trRef.current?.nodes([]);
+    dragRef.current = { kind: 'group', groupId: group.groupId, ids, positions, lastDx: 0, lastDy: 0, bounds: group.bounds };
+  };
+
+  const moveGroupDrag = (group, event) => {
+    const drag = dragRef.current;
+    if (drag?.kind !== 'group' || drag.groupId !== group.groupId) return;
+    let dx = event.target.x() - drag.bounds.left;
+    let dy = event.target.y() - drag.bounds.top;
+    if (event.evt.shiftKey) {
+      const virtualLayer = { id: '__group__', width: drag.bounds.width, height: drag.bounds.height };
+      const snapped = snapLayerPosition(virtualLayer, { x: drag.bounds.left + dx, y: drag.bounds.top + dy }, template, 8 / zoom, drag.ids);
+      dx = snapped.x - drag.bounds.left;
+      dy = snapped.y - drag.bounds.top;
+      event.target.position({ x: snapped.x, y: snapped.y });
+      setGuides((current) => JSON.stringify(current) === JSON.stringify(snapped.guides) ? current : snapped.guides);
+    } else {
+      setGuides((current) => current.length ? [] : current);
+    }
+    drag.lastDx = dx;
+    drag.lastDy = dy;
+    drag.ids.forEach((id) => nodeRefs.current[id]?.position({ x: drag.positions[id].x + dx, y: drag.positions[id].y + dy }));
+  };
+
+  const finishGroupDrag = (group, event) => {
+    moveGroupDrag(group, event);
+    const drag = dragRef.current;
+    if (drag?.kind !== 'group' || drag.groupId !== group.groupId) return;
+    const patches = Object.fromEntries(drag.ids.map((id) => [id, {
+      x: Math.round(drag.positions[id].x + drag.lastDx),
+      y: Math.round(drag.positions[id].y + drag.lastDy)
+    }]));
+    dragRef.current = null;
+    setGuides([]);
+    updateLayers(patches);
+  };
+
+  const renderGroupHitArea = (group, priority = false) => <Rect
+    key={`group-hit-${priority ? 'priority-' : ''}${group.groupId}`}
+    x={group.bounds.left}
+    y={group.bounds.top}
+    width={group.bounds.width}
+    height={group.bounds.height}
+    fill="rgba(0,0,0,0.001)"
+    draggable={tool === 'select' && !group.locked}
+    listening={tool === 'select'}
+    onMouseDown={(event) => startGroupDrag(group, event)}
+    onTouchStart={(event) => startGroupDrag(group, event)}
+    onClick={(event) => { event.cancelBubble = true; selectGroup(group.groupId, event.evt); }}
+    onTap={(event) => { event.cancelBubble = true; selectGroup(group.groupId, event.evt); }}
+    onContextMenu={(event) => { event.cancelBubble = true; onGroupContextMenu(group.groupId, event.evt); }}
+    onDragMove={(event) => moveGroupDrag(group, event)}
+    onDragEnd={(event) => finishGroupDrag(group, event)}
+  />;
 
   const finishTransform = () => {
     const patches = {};
@@ -2485,6 +2692,12 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
     window.addEventListener('mouseup', finish);
   };
 
+  useEffect(() => {
+    if (tool !== 'marquee' || !marqueeStartRequest || lastMarqueeStartRequestRef.current === marqueeStartRequest) return;
+    lastMarqueeStartRequestRef.current = marqueeStartRequest;
+    beginMarquee({ evt: { button: 0, clientX: marqueeStartRequest.clientX, clientY: marqueeStartRequest.clientY, preventDefault() {} } });
+  }, [marqueeStartRequest, tool]);
+
   const marqueeIds = () => {
     if (!marquee || marquee.width < 2 || marquee.height < 2) return [];
     const right = marquee.x + marquee.width; const bottom = marquee.y + marquee.height;
@@ -2501,7 +2714,7 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
     nativeEvent.preventDefault();
     nativeEvent.stopPropagation();
     const ids = marqueeIds();
-    if (ids.length) onMarqueeContextMenu(ids, nativeEvent);
+    if (ids.length) onMarqueeContextMenu(ids, marquee, nativeEvent);
   };
 
   const beginPaint = async (event) => {
@@ -2603,6 +2816,7 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
   >
     <Layer>
       <Rect name="editor-background" width={template.width} height={template.height} fill="#fff"/>
+      {groupHitAreas.filter((group) => group.groupId !== selectedGroupId).map((group) => renderGroupHitArea(group))}
       {template.layers.map((layer) => {
         if (layer.id === textEditingId) return null;
         const interactive = tool === 'select' && !layer.locked;
@@ -2620,10 +2834,11 @@ function EditorStage({ template, selectedIds, selectLayer, clearSelection, updat
           onChange={(patch) => updateLayer(layer.id, patch)}
           onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)} onTransformEnd={false}/>;
       })}
+      {groupHitAreas.filter((group) => group.groupId === selectedGroupId).map((group) => renderGroupHitArea(group, true))}
       {template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
       {tool === 'marquee' && template.layers.filter((layer) => selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`marquee-selected-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
       {guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94b37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }
-      <Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} enabledAnchors={['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/>
+      <Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} keepRatio={selectedIds.length === 1 && Boolean(template.layers.find((item) => item.id === selectedIds[0])?.aspectRatioLocked)} enabledAnchors={selectedIds.length === 1 && template.layers.find((item) => item.id === selectedIds[0])?.aspectRatioLocked ? ['top-left','top-right','bottom-left','bottom-right'] : ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/>
       {selectedPolygon && <Group x={selectedPolygon.x} y={selectedPolygon.y} rotation={selectedPolygon.rotation || 0}>{polygonPointsOf(selectedPolygon).map((point, index) => <KonvaCircle key={`polygon-handle-${selectedPolygon.id}-${index}`} x={point.x * selectedPolygon.width} y={point.y * selectedPolygon.height} radius={6 / zoom} fill="#fff" stroke="#e24b35" strokeWidth={1.5 / zoom} draggable onMouseDown={(event) => { event.cancelBubble = true; }} onDragMove={(event) => { event.cancelBubble = true; event.target.position({ x: clamp(event.target.x(), 0, selectedPolygon.width), y: clamp(event.target.y(), 0, selectedPolygon.height) }); }} onDragEnd={(event) => { event.cancelBubble = true; const next = { x: clamp(event.target.x() / selectedPolygon.width, 0, 1), y: clamp(event.target.y() / selectedPolygon.height, 0, 1) }; updateLayer(selectedPolygon.id, { polygonPoints: polygonPointsOf(selectedPolygon).map((item, itemIndex) => itemIndex === index ? next : item) }); }} />)}</Group>}
     </Layer>
   </Stage>{tool === 'marquee' && marquee && <div className="marquee-selection-overlay" style={{ left: marquee.x * zoom, top: marquee.y * zoom, width: marquee.width * zoom, height: marquee.height * zoom }} onMouseDown={(event) => beginMarquee({ evt: event.nativeEvent })} onContextMenu={openMarqueeContextMenu}/>}</>;
@@ -2641,6 +2856,20 @@ function useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseS
     return () => { alive = false; };
   }, [layer, source, photoTransform, paintSource, eraseSource, mosaicSource, revision]);
   return result;
+}
+
+function LayerBorderShape({ layer }) {
+  const borderWidth = Math.min(borderWidthOf(layer), Math.max(0, Math.min(layer.width, layer.height)));
+  if (!borderWidth) return null;
+  const inset = borderWidth / 2;
+  const props = { stroke: layer.borderColor || '#000000', strokeWidth: borderWidth, lineJoin: 'round', listening: false };
+  if (layer.type !== 'slot') return <Rect x={inset} y={inset} width={Math.max(0, layer.width - borderWidth)} height={Math.max(0, layer.height - borderWidth)} {...props}/>;
+  if (shapeOf(layer) === 'circle') return <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={Math.max(0, (layer.width - borderWidth) / 2)} radiusY={Math.max(0, (layer.height - borderWidth) / 2)} {...props}/>;
+  if (shapeOf(layer) === 'polygon') {
+    const points = polygonPointsOf(layer).flatMap((point) => [inset + point.x * Math.max(0, layer.width - borderWidth), inset + point.y * Math.max(0, layer.height - borderWidth)]);
+    return <Line points={points} closed {...props}/>;
+  }
+  return <Rect x={inset} y={inset} width={Math.max(0, layer.width - borderWidth)} height={Math.max(0, layer.height - borderWidth)} cornerRadius={shapeOf(layer) === 'rounded' ? Math.min(36, layer.width / 4, layer.height / 4) : 0} {...props}/>;
 }
 
 function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, source, paintSource, eraseSource, mosaicSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
@@ -2678,41 +2907,55 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
   </Group>;
 }
 
-function NumericInput({ value, onCommit, min, max, step = 1, integer = true, className = '', ...props }) {
+const DEFAULT_NUMBER_PRESETS = [-1000, -500, -100, -50, 0, 1, 2, 4, 8, 10, 16, 24, 32, 45, 50, 64, 90, 100, 128, 180, 256, 360, 500, 512, 1000, 1024, 2000, 2048, 4000];
+const SIZE_PRESETS = [0, 16, 32, 64, 128, 256, 512, 800, 1024, 1920, 2048, 3840, 4000];
+const FONT_SIZE_PRESETS = [6, 8, 9, 10, 11, 12, 14, 16, 18, 24, 30, 36, 48, 60, 72];
+const ROTATION_PRESETS = [-180, -135, -90, -45, 0, 45, 90, 135, 180];
+const LINE_HEIGHT_PRESETS = [0.8, 1, 1.2, 1.25, 1.5, 2, 3];
+const EFFECT_SIZE_PRESETS = [0, 1, 2, 4, 8, 12, 16, 24, 30, 50];
+
+function NumericInput({ value, onCommit, min, max, step = 1, integer = true, className = '', presets, ...props }) {
   const [draftValue, setDraftValue] = useState(() => String(value ?? ''));
+  const [menuOpen, setMenuOpen] = useState(false);
+  const rootRef = useRef(null);
   const focusedRef = useRef(false);
   const cancelRef = useRef(false);
   useEffect(() => { if (!focusedRef.current) setDraftValue(String(value ?? '')); }, [value]);
-  const commit = () => {
-    focusedRef.current = false;
-    if (cancelRef.current) { cancelRef.current = false; setDraftValue(String(value ?? '')); return; }
-    const parsed = Number(draftValue);
-    if (!Number.isFinite(parsed)) { setDraftValue(String(value ?? '')); return; }
+  useEffect(() => {
+    if (!menuOpen) return undefined;
+    const close = (event) => { if (!rootRef.current?.contains(event.target)) setMenuOpen(false); };
+    window.addEventListener('pointerdown', close);
+    return () => window.removeEventListener('pointerdown', close);
+  }, [menuOpen]);
+  const normalize = (raw) => {
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) return null;
     let next = integer ? Math.round(parsed) : parsed;
     if (Number.isFinite(min)) next = Math.max(min, next);
     if (Number.isFinite(max)) next = Math.min(max, next);
+    return next;
+  };
+  const commit = () => {
+    focusedRef.current = false;
+    if (cancelRef.current) { cancelRef.current = false; setDraftValue(String(value ?? '')); return; }
+    const next = normalize(draftValue);
+    if (next === null) { setDraftValue(String(value ?? '')); return; }
     setDraftValue(String(next));
     if (next !== Number(value)) onCommit(next);
   };
-  return <input
-    {...props}
-    className={className}
-    type="number"
-    min={min}
-    max={max}
-    step={step}
-    value={draftValue}
-    onFocus={() => { focusedRef.current = true; cancelRef.current = false; }}
-    onChange={(event) => setDraftValue(event.target.value)}
-    onBlur={commit}
-    onKeyDown={(event) => {
+  const presetValues = [...new Set((presets || DEFAULT_NUMBER_PRESETS).map(Number))].filter((item) => Number.isFinite(item) && (!Number.isFinite(min) || item >= min) && (!Number.isFinite(max) || item <= max));
+  return <div ref={rootRef} className={`numeric-input ${className}`.trim()}>
+    <input {...props} type="text" inputMode={integer ? 'numeric' : 'decimal'} value={draftValue} onFocus={() => { focusedRef.current = true; cancelRef.current = false; }} onChange={(event) => setDraftValue(event.target.value)} onBlur={commit} onKeyDown={(event) => {
       if (event.key === 'Enter') event.currentTarget.blur();
-      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelRef.current = true; setDraftValue(String(value ?? '')); event.currentTarget.blur(); }
-    }}
-  />;
+      if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelRef.current = true; setMenuOpen(false); setDraftValue(String(value ?? '')); event.currentTarget.blur(); }
+      if (event.key === 'ArrowDown' && event.altKey) { event.preventDefault(); setMenuOpen((open) => !open); }
+    }}/>
+    <button type="button" className="numeric-preset-toggle" title="选择预设值" aria-label="选择预设值" aria-expanded={menuOpen} onPointerDown={(event) => event.preventDefault()} onClick={() => setMenuOpen((open) => !open)}><ChevronDown size={14}/></button>
+    {menuOpen && <div className="numeric-preset-menu">{presetValues.map((preset) => <button type="button" key={preset} className={Number(value) === preset ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => { const next = normalize(preset); setMenuOpen(false); setDraftValue(String(next)); if (next !== Number(value)) onCommit(next); }}>{preset}</button>)}</div>}
+  </div>;
 }
 
-function NumberField({ label, value, onChange, suffix, min, max, step, integer }) { return <label className="number-field"><span>{label}</span><div><NumericInput value={value} onCommit={onChange} min={min} max={max} step={step} integer={integer}/>{suffix && <em>{suffix}</em>}</div></label>; }
+function NumberField({ label, value, onChange, suffix, min, max, step, integer, presets }) { return <div className="number-field"><span>{label}</span><div className="number-field-control"><NumericInput value={value} onCommit={onChange} min={min} max={max} step={step} integer={integer} presets={presets}/>{suffix && <em>{suffix}</em>}</div></div>; }
 
 function GroupProperties({ name, layers, onRename, onToggleLock, onToggleVisibility, onMove, onUngroup, onRemove, onOrder }) {
   const allLocked = layers.every((layer) => layer.locked);
@@ -2759,21 +3002,30 @@ function Properties({ layer, textStyle, textSelection, onBeginTextInteraction, o
   const decorationTokens = String(activeTextStyle.textDecoration || '').split(' ').filter(Boolean);
   const toggleFont = (token) => updateTextStyle({ fontStyle: fontTokens.includes(token) ? fontTokens.filter((item) => item !== token).join(' ') || 'normal' : [...fontTokens, token].join(' ') });
   const toggleDecoration = (token) => updateTextStyle({ textDecoration: decorationTokens.includes(token) ? decorationTokens.filter((item) => item !== token).join(' ') : [...decorationTokens, token].join(' ') });
+  const updateDimension = (axis, rawValue) => {
+    const value = Math.max(10, rawValue);
+    if (!layer.aspectRatioLocked) { update({ [axis]: value }); return; }
+    const width = Math.max(0.0001, Number(layer.width) || 0.0001);
+    const height = Math.max(0.0001, Number(layer.height) || 0.0001);
+    if (axis === 'width') update({ width: value, height: Math.max(10, Math.round(value * height / width)) });
+    else update({ height: value, width: Math.max(10, Math.round(value * width / height)) });
+  };
 
   return <div className="property-content">
     <button className={`layer-lock-button ${layer.locked ? 'active' : ''}`} onClick={toggleLock}>{layer.locked ? <Lock size={16}/> : <Unlock size={16}/>}<span>{layer.locked ? '图层已锁定' : '锁定图层'}</span></button>
     <label className="text-field"><span>图层名称</span><input value={layer.name} onChange={(event) => update({ name: event.target.value })}/></label>
     {layer.type === 'text' && <>
       <div className="property-section text-content-section"><h4>文字内容</h4><textarea value={layer.text || ''} onPointerDown={onBeginTextInteraction} onFocus={onBeginTextInteraction} onChange={(event) => { onBeginTextInteraction?.(); updateText(event.target.value); onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }); }} onSelect={(event) => onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}/></div>
-      <div className="property-section"><h4>字体{textSelection && textSelection.start !== textSelection.end ? ` · 已选 ${Math.abs(textSelection.end - textSelection.start)} 字` : ''}</h4><select className="property-select" value={activeTextStyle.fontFamily} onChange={(event) => updateTextStyle({ fontFamily: event.target.value })}><option value="Microsoft YaHei">微软雅黑</option><option value="SimHei">黑体</option><option value="SimSun">宋体</option><option value="KaiTi">楷体</option><option value="Arial">Arial</option><option value="Segoe UI">Segoe UI</option></select><div className="text-format-row"><label><span>字号</span><NumericInput min={TEXT_SIZE_MIN} max={TEXT_SIZE_MAX} value={activeTextStyle.fontSize} onCommit={(fontSize) => updateTextStyle({ fontSize })}/></label><input className="color-swatch" type="color" title="文字颜色" value={activeTextStyle.fill} onChange={(event) => updateTextStyle({ fill: event.target.value })}/></div><NumberField label="间距" value={activeTextStyle.lineHeight} min={0} max={20} step={0.05} integer={false} onChange={(lineHeight) => updateTextStyle({ lineHeight })}/><label className="check-row"><input type="checkbox" checked={Boolean(layer.autoFit)} onChange={(event) => update({ autoFit: event.target.checked })}/><span>文字自动适配文本框</span></label><div className="format-buttons"><button title="加粗" className={fontTokens.includes('bold') ? 'active' : ''} onClick={() => toggleFont('bold')}><Bold size={17}/></button><button title="斜体" className={fontTokens.includes('italic') ? 'active' : ''} onClick={() => toggleFont('italic')}><Italic size={17}/></button><button title="下划线" className={decorationTokens.includes('underline') ? 'active' : ''} onClick={() => toggleDecoration('underline')}><Underline size={17}/></button><button title="删除线" className={decorationTokens.includes('line-through') ? 'active' : ''} onClick={() => toggleDecoration('line-through')}><Strikethrough size={17}/></button></div><div className="format-buttons align-buttons"><button title="左对齐" className={layer.align === 'left' ? 'active' : ''} onClick={() => update({ align: 'left' })}><AlignLeft size={17}/></button><button title="居中" className={layer.align === 'center' ? 'active' : ''} onClick={() => update({ align: 'center' })}><AlignCenter size={17}/></button><button title="右对齐" className={layer.align === 'right' ? 'active' : ''} onClick={() => update({ align: 'right' })}><AlignRight size={17}/></button></div></div>
-      <div className="property-section"><h4>文字效果</h4><div className="effect-grid"><label><span>外描边</span><input type="color" value={activeTextStyle.stroke} onChange={(event) => updateTextStyle({ stroke: event.target.value })}/></label><NumberField label="外描边宽度" value={activeTextStyle.strokeWidth} min={0} max={30} onChange={(strokeWidth) => updateTextStyle({ strokeWidth })}/><label><span>背景</span><input type="color" value={layer.background || '#ffffff'} onChange={(event) => update({ background: event.target.value })}/></label><NumberField label="背景内边距" value={layer.backgroundPadding || 0} min={0} max={100} onChange={(backgroundPadding) => update({ backgroundPadding })}/></div><button className="wide-property-button subtle" onClick={() => update({ background: layer.background ? '' : '#ffffff' })}>{layer.background ? '移除文字背景' : '启用文字背景'}</button><label className="check-row"><input type="checkbox" checked={Boolean(layer.shadowEnabled)} onChange={(event) => update({ shadowEnabled: event.target.checked })}/><span>启用文字阴影</span></label>{layer.shadowEnabled && <div className="effect-grid"><label><span>阴影颜色</span><input type="color" value={layer.shadowColor || '#000000'} onChange={(event) => update({ shadowColor: event.target.value })}/></label><NumberField label="模糊" value={layer.shadowBlur || 0} min={0} max={50} onChange={(shadowBlur) => update({ shadowBlur })}/><NumberField label="水平偏移" value={layer.shadowOffsetX || 0} onChange={(shadowOffsetX) => update({ shadowOffsetX })}/><NumberField label="垂直偏移" value={layer.shadowOffsetY || 0} onChange={(shadowOffsetY) => update({ shadowOffsetY })}/></div>}</div>
+      <div className="property-section"><h4>字体{textSelection && textSelection.start !== textSelection.end ? ' · 已选 ' + Math.abs(textSelection.end - textSelection.start) + ' 字' : ''}</h4><select className="property-select" value={activeTextStyle.fontFamily} onChange={(event) => updateTextStyle({ fontFamily: event.target.value })}><option value="Microsoft YaHei">微软雅黑</option><option value="SimHei">黑体</option><option value="SimSun">宋体</option><option value="KaiTi">楷体</option><option value="Arial">Arial</option><option value="Segoe UI">Segoe UI</option></select><div className="text-format-row"><div><span>字号</span><NumericInput min={TEXT_SIZE_MIN} max={TEXT_SIZE_MAX} presets={FONT_SIZE_PRESETS} value={activeTextStyle.fontSize} onCommit={(fontSize) => updateTextStyle({ fontSize })}/></div><input className="color-swatch" type="color" title="文字颜色" value={activeTextStyle.fill} onChange={(event) => updateTextStyle({ fill: event.target.value })}/></div><NumberField label="间距" value={activeTextStyle.lineHeight} min={0} max={20} step={0.05} integer={false} presets={LINE_HEIGHT_PRESETS} onChange={(lineHeight) => updateTextStyle({ lineHeight })}/><label className="check-row" title="内容超出文本框时自动缩小字号；关闭后保持设定字号，超出部分可能被裁切。"><input type="checkbox" checked={Boolean(layer.autoFit)} onChange={(event) => update({ autoFit: event.target.checked })}/><span>文字自动适配文本框</span></label><div className="format-buttons"><button title="加粗" className={fontTokens.includes('bold') ? 'active' : ''} onClick={() => toggleFont('bold')}><Bold size={17}/></button><button title="斜体" className={fontTokens.includes('italic') ? 'active' : ''} onClick={() => toggleFont('italic')}><Italic size={17}/></button><button title="下划线" className={decorationTokens.includes('underline') ? 'active' : ''} onClick={() => toggleDecoration('underline')}><Underline size={17}/></button><button title="删除线" className={decorationTokens.includes('line-through') ? 'active' : ''} onClick={() => toggleDecoration('line-through')}><Strikethrough size={17}/></button></div><div className="format-buttons align-buttons"><button title="左对齐" className={layer.align === 'left' ? 'active' : ''} onClick={() => update({ align: 'left' })}><AlignLeft size={17}/></button><button title="居中" className={layer.align === 'center' ? 'active' : ''} onClick={() => update({ align: 'center' })}><AlignCenter size={17}/></button><button title="右对齐" className={layer.align === 'right' ? 'active' : ''} onClick={() => update({ align: 'right' })}><AlignRight size={17}/></button></div></div>
+      <div className="property-section"><h4>文字效果</h4><div className="effect-grid"><label><span>外描边</span><input type="color" value={activeTextStyle.stroke} onChange={(event) => updateTextStyle({ stroke: event.target.value })}/></label><NumberField label="外描边宽度" value={activeTextStyle.strokeWidth} min={0} max={30} presets={EFFECT_SIZE_PRESETS} onChange={(strokeWidth) => updateTextStyle({ strokeWidth })}/><label><span>背景</span><input type="color" value={layer.background || '#ffffff'} onChange={(event) => update({ background: event.target.value })}/></label><NumberField label="背景内边距" value={layer.backgroundPadding || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(backgroundPadding) => update({ backgroundPadding })}/></div><button className="wide-property-button subtle" onClick={() => update({ background: layer.background ? '' : '#ffffff' })}>{layer.background ? '移除文字背景' : '启用文字背景'}</button><label className="check-row"><input type="checkbox" checked={Boolean(layer.shadowEnabled)} onChange={(event) => update({ shadowEnabled: event.target.checked })}/><span>启用文字阴影</span></label>{layer.shadowEnabled && <div className="effect-grid"><label><span>阴影颜色</span><input type="color" value={layer.shadowColor || '#000000'} onChange={(event) => update({ shadowColor: event.target.value })}/></label><NumberField label="模糊" value={layer.shadowBlur || 0} min={0} max={50} presets={EFFECT_SIZE_PRESETS} onChange={(shadowBlur) => update({ shadowBlur })}/><NumberField label="水平偏移" value={layer.shadowOffsetX || 0} onChange={(shadowOffsetX) => update({ shadowOffsetX })}/><NumberField label="垂直偏移" value={layer.shadowOffsetY || 0} onChange={(shadowOffsetY) => update({ shadowOffsetY })}/></div>}</div>
     </>}
     <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} onChange={(y) => update({ y })}/></div></div>
-    <div className="property-section"><h4>尺寸</h4><div className="property-grid"><NumberField label="宽" value={layer.width} onChange={(width) => update({ width: Math.max(10, width) })}/><NumberField label="高" value={layer.height} onChange={(height) => update({ height: Math.max(10, height) })}/></div></div>
-    <div className="property-section"><h4>旋转</h4><NumberField label="角度" value={layer.rotation} onChange={(rotation) => update({ rotation })} suffix="°"/><input className="range" type="range" min="-180" max="180" value={layer.rotation} onChange={(event) => update({ rotation: Number(event.target.value) })}/></div>
+    <div className="property-section"><div className="property-heading-row"><h4>尺寸</h4><button type="button" className={`aspect-lock-button ${layer.aspectRatioLocked ? 'active' : ''}`} title={layer.aspectRatioLocked ? '取消锁定宽高比' : '锁定宽高比'} onClick={() => update({ aspectRatioLocked: !layer.aspectRatioLocked })}>{layer.aspectRatioLocked ? <Lock size={13}/> : <Unlock size={13}/>}<span>宽高比</span></button></div><div className="property-grid"><NumberField label="宽" value={layer.width} min={10} presets={SIZE_PRESETS} onChange={(width) => updateDimension('width', width)}/><NumberField label="高" value={layer.height} min={10} presets={SIZE_PRESETS} onChange={(height) => updateDimension('height', height)}/></div></div>
+    <div className="property-section"><h4>旋转</h4><NumberField label="角度" value={layer.rotation} min={-360} max={360} presets={ROTATION_PRESETS} onChange={(rotation) => update({ rotation })} suffix="°"/><input className="range" type="range" min="-180" max="180" value={layer.rotation} onChange={(event) => update({ rotation: Number(event.target.value) })}/></div>
+    <div className="property-section"><h4>边框</h4><div className="border-controls"><label><span>颜色</span><input type="color" value={layer.borderColor || '#000000'} onChange={(event) => update({ borderColor: event.target.value })}/></label><NumberField label="大小" value={layer.borderWidth || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(borderWidth) => update({ borderWidth })}/></div></div>
     {layer.type === 'slot' && <>
-      <div className="property-section"><h4>槽位形状</h4><div className="shape-segmented four"><button className={shapeOf(layer) === 'rect' ? 'active' : ''} onClick={() => update({ shape: 'rect' })}>矩形</button><button className={shapeOf(layer) === 'circle' ? 'active' : ''} onClick={() => update({ shape: 'circle' })}>圆形</button><button className={shapeOf(layer) === 'rounded' ? 'active' : ''} onClick={() => update({ shape: 'rounded' })}>圆角</button><button className={shapeOf(layer) === 'polygon' ? 'active' : ''} onClick={() => update({ shape: 'polygon', polygonSides: layer.polygonSides || 5, polygonPoints: polygonPointsOf(layer) })}>多边形</button></div>{shapeOf(layer) === 'polygon' && <div className="polygon-controls"><NumberField label="边数" value={layer.polygonSides || 5} min={POLYGON_MIN_SIDES} max={POLYGON_MAX_SIDES} onChange={(polygonSides) => update({ polygonSides, polygonPoints: regularPolygonPoints(polygonSides) })}/>{polygonPointsOf(layer).map((point, index) => <label key={index} className="polygon-radius"><span>顶点 {index + 1}</span><input type="range" min="10" max="100" value={polygonRadiusPercent(point)} onChange={(event) => update({ polygonPoints: polygonPointsOf(layer).map((item, itemIndex) => itemIndex === index ? polygonPointAtRadius(item, Number(event.target.value)) : item) })}/><output>{polygonRadiusPercent(point)}%</output></label>)}</div>}</div>
-      <div className="property-section"><h4>照片填充</h4><div className="segmented"><button className={layer.fit === 'cover' ? 'active' : ''} onClick={() => update({ fit: 'cover' })}>裁切铺满</button><button className={layer.fit === 'fill' ? 'active' : ''} onClick={() => update({ fit: 'fill' })}>拉伸填满</button></div></div>
+      <div className="property-section"><h4>槽位形状</h4><div className="shape-segmented four"><button className={shapeOf(layer) === 'rect' ? 'active' : ''} onClick={() => update({ shape: 'rect' })}>矩形</button><button className={shapeOf(layer) === 'circle' ? 'active' : ''} onClick={() => update({ shape: 'circle' })}>圆形</button><button className={shapeOf(layer) === 'rounded' ? 'active' : ''} onClick={() => update({ shape: 'rounded' })}>圆角</button><button className={shapeOf(layer) === 'polygon' ? 'active' : ''} onClick={() => update({ shape: 'polygon', polygonSides: layer.polygonSides || 5, polygonPoints: polygonPointsOf(layer) })}>多边形</button></div>{shapeOf(layer) === 'polygon' && <div className="polygon-controls"><NumberField label="边数" value={layer.polygonSides || 5} min={POLYGON_MIN_SIDES} max={POLYGON_MAX_SIDES} presets={[3, 4, 5, 6, 8, 10, 12, 16]} onChange={(polygonSides) => update({ polygonSides, polygonPoints: regularPolygonPoints(polygonSides) })}/>{polygonPointsOf(layer).map((point, index) => <label key={index} className="polygon-radius"><span>顶点 {index + 1}</span><input type="range" min="10" max="100" value={polygonRadiusPercent(point)} onChange={(event) => update({ polygonPoints: polygonPointsOf(layer).map((item, itemIndex) => itemIndex === index ? polygonPointAtRadius(item, Number(event.target.value)) : item) })}/><output>{polygonRadiusPercent(point)}%</output></label>)}</div>}</div>
+      <div className="property-section"><h4>照片填充</h4><div className="segmented"><button className={layer.fit === 'cover' ? 'active' : ''} onClick={() => update({ fit: 'cover' })}>裁切铺满</button><button className={layer.fit === 'fill' ? 'active' : ''} onClick={() => update({ fit: 'fill' })}>拉伸填满</button></div><label className="check-row replacement-disable-row" title="禁用后，使用模板时不再要求添加照片；槽位保持透明，但颜色填充和边框仍会显示。"><input type="checkbox" checked={Boolean(layer.replacementDisabled)} onChange={(event) => update({ replacementDisabled: event.target.checked })}/><span>禁用替换照片</span></label></div>
       <div className="property-section"><h4>颜色填充</h4><div className="slot-color-fill"><input type="color" value={layer.slotFill || '#e24b35'} onChange={(event) => update({ slotFill: event.target.value })}/><button className={`wide-property-button ${layer.slotFill ? 'active' : ''}`} onClick={() => update({ slotFill: layer.slotFill ? '' : '#e24b35' })}>{layer.slotFill ? '取消颜色图层' : '启用颜色图层'}</button></div></div>
     </>}
     <div className="property-section"><h4>图层顺序</h4><div className="order-buttons"><button disabled={layer.locked} onClick={() => move(1)}><ChevronUp size={17}/>上移</button><button disabled={layer.locked} onClick={() => move(-1)}><ChevronDown size={17}/>下移</button></div></div>
@@ -2804,7 +3056,7 @@ function pointInLayer(x, y, layer) {
   return nx * nx + ny * ny <= 1;
 }
 
-function UseStage({ composition, slotSources, slotTransforms, selectedId, setSelectedId, updateLayer, cropModeId, setCropModeId, updatePhotoTransform, onRequestSlot, zoom, pan, panning, onPanStart, transparent, lockAspectRatio }) {
+function UseStage({ composition, slotSources, slotTransforms, selectedId, setSelectedId, updateLayer, cropModeId, setCropModeId, updatePhotoTransform, onRequestSlot, zoom, pan, panning, onPanStart, transparent, lockAspectRatio, textEditingId, textSelection, onEditText, onTextChange, onTextSelectionChange, onTextDone }) {
   const hostRef = useRef();
   const transformerRef = useRef();
   const nodeRefs = useRef({});
@@ -2880,16 +3132,16 @@ function UseStage({ composition, slotSources, slotTransforms, selectedId, setSel
       <Stage width={composition.width * scale} height={composition.height * scale} scaleX={scale} scaleY={scale} onWheel={(event) => event.target.stopDrag?.()} onMouseDown={(event) => { if (event.target === event.target.getStage() || event.target.name() === 'result-background') { setSelectedId(null); setCropModeId(null); onPanStart(event); } }}>
         <Layer>
           <Rect name="result-background" width={composition.width} height={composition.height} fill={transparent ? 'rgba(0,0,0,0)' : '#fff'}/>
-          {composition.layers.map((layer) => <EditorLayer
+          {composition.layers.map((layer) => textEditingId === layer.id ? null : <EditorLayer
             key={layer.id}
             layer={layer}
             source={layer.type === 'slot' ? slotSources[layer.id] : undefined}
             photoTransform={slotTransforms[layer.id]}
             cropMode={cropModeId === layer.id}
-            interactive={layer.type === 'slot' && Boolean(slotSources[layer.id]) && cropModeId !== layer.id}
-            selectable={layer.type === 'slot'}
-            highlight={layer.type === 'slot' && !slotSources[layer.id]}
-            setRef={(node) => { if (layer.type === 'slot') nodeRefs.current[layer.id] = node; }}
+            interactive={layer.type === 'slot' && !layer.replacementDisabled && Boolean(slotSources[layer.id]) && cropModeId !== layer.id}
+            selectable={(layer.type === 'slot' && !layer.replacementDisabled) || layer.type === 'text'}
+            highlight={layer.type === 'slot' && !layer.replacementDisabled && !slotSources[layer.id]}
+            setRef={(node) => { if (layer.type === 'slot' && !layer.replacementDisabled) nodeRefs.current[layer.id] = node; }}
             onSelect={() => { setSelectedId(layer.id); if (!slotSources[layer.id]) onRequestSlot(layer.id); }}
              onEnterCrop={(event) => { if (!slotSources[layer.id]) return; event.cancelBubble = true; setSelectedId(layer.id); setCropModeId(layer.id); }}
              onDragStart={() => startSlotDrag(layer)}
@@ -2918,6 +3170,14 @@ function UseStage({ composition, slotSources, slotTransforms, selectedId, setSel
           />
         </Layer>
       </Stage>
+      {textEditingId && composition.layers.find((layer) => layer.id === textEditingId && layer.type === 'text') && <RichTextOverlay
+        layer={composition.layers.find((layer) => layer.id === textEditingId)}
+        zoom={scale}
+        selectionRange={textSelection?.id === textEditingId ? textSelection : null}
+        onChange={onTextChange}
+        onSelectionChange={(selection) => onTextSelectionChange({ id: textEditingId, ...selection })}
+        onDone={onTextDone}
+      />}
     </div>}
   </div>;
 }
@@ -2946,7 +3206,9 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
   const [result, setResult] = useState('');
   const [copied, setCopied] = useState(false);
   const { zoom, pan, panning, setZoom, zoomAtPointer, beginPan } = useCanvasViewport(1, .5, 3);
-  const [selectedId, setSelectedId] = useState(template.layers.find((layer) => layer.type === 'slot')?.id || null);
+  const [selectedId, setSelectedId] = useState(template.layers.find((layer) => layer.type === 'slot' && !layer.replacementDisabled)?.id || null);
+  const [textEditingId, setTextEditingId] = useState(null);
+  const [textSelection, setTextSelection] = useState(null);
   const [cropModeId, setCropModeId] = useState(null);
   const [slotDropId, setSlotDropId] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
@@ -2961,11 +3223,36 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
   const initialHandled = useRef(false);
   const renderRequest = useRef(0);
   const topMenuRef = useRef();
-  const slots = composition.layers.filter((layer) => layer.type === 'slot');
+  const slots = composition.layers.filter((layer) => layer.type === 'slot' && !layer.replacementDisabled);
   const cropLayer = composition.layers.find((layer) => layer.id === cropModeId && layer.type === 'slot');
   const cropTransform = cropLayer ? (slotTransforms[cropLayer.id] || { zoom: 1, offsetX: 0, offsetY: 0 }) : null;
   const outputMime = exportFormat === 'jpg' ? 'image/jpeg' : `image/${exportFormat}`;
   const exportScaleHint = '控制保存和复制图片的像素尺寸；2x 的宽高均为 1x 的 2 倍。';
+
+  const editTextLayer = useCallback((id) => {
+    const layer = composition.layers.find((item) => item.id === id && item.type === 'text');
+    if (!layer) return;
+    setSelectedId(id);
+    setCropModeId(null);
+    setTextEditingId(id);
+    setTextSelection({ id, start: 0, end: String(layer.text || '').length });
+  }, [composition.layers]);
+  const updateTextLayer = useCallback((text) => {
+    if (!textEditingId) return;
+    commitSession((previous) => ({
+      ...previous,
+      composition: {
+        ...previous.composition,
+        layers: previous.composition.layers.map((layer) => layer.id === textEditingId
+          ? fitTextLayerToContent({ ...layer, ...updateTextContent(layer, text) })
+          : layer)
+      }
+    }));
+  }, [commitSession, textEditingId]);
+  const finishTextEditing = useCallback(() => {
+    setTextEditingId(null);
+    setTextSelection(null);
+  }, []);
 
   const updateLayer = useCallback((id, patch) => {
     commitSession((previous) => ({
@@ -3029,7 +3316,7 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
   }, [commitSession]);
 
   const pasteClipboardImage = useCallback(async (targetId) => {
-    const slotId = targetId || selectedId || composition.layers.find((layer) => layer.type === 'slot')?.id;
+    const slotId = targetId || selectedId || composition.layers.find((layer) => layer.type === 'slot' && !layer.replacementDisabled)?.id;
     if (!slotId) return notify('模板中没有可替换照片图层', 'error');
     try {
       const dataUrl = await desktop.readClipboardImage();
@@ -3086,7 +3373,6 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
   }, [cropModeId, slotSources]);
 
   useEffect(() => {
-    if (!Object.keys(slotSources).length) { setResult(''); setCopied(false); return; }
     const request = ++renderRequest.current;
     let cancelled = false;
     setCopied(false);
@@ -3101,7 +3387,7 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
 
   const acceptFile = useCallback(async (file, targetId) => {
     try {
-      const slotId = targetId || selectedId || composition.layers.find((layer) => layer.type === 'slot')?.id;
+      const slotId = targetId || selectedId || composition.layers.find((layer) => layer.type === 'slot' && !layer.replacementDisabled)?.id;
       if (!slotId) return notify('模板中没有可替换照片图层', 'error');
       const dataUrl = await fileToDataUrl(file);
       replaceSlotSource(slotId, dataUrl, file.name);
@@ -3116,12 +3402,11 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
   useEffect(() => {
     if (initialFile && !initialHandled.current) {
       initialHandled.current = true;
-      acceptFile(initialFile, composition.layers.find((layer) => layer.type === 'slot')?.id);
+      acceptFile(initialFile, composition.layers.find((layer) => layer.type === 'slot' && !layer.replacementDisabled)?.id);
     }
   }, [acceptFile, composition.layers, initialFile]);
 
   const currentResult = useCallback(async () => {
-    if (!Object.keys(slotSources).length) return '';
     const dataUrl = await renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: outputMime });
     setResult(dataUrl);
     return dataUrl;
@@ -3216,7 +3501,7 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
     const rect = frame.getBoundingClientRect();
     const x = (event.clientX - rect.left) * composition.width / rect.width;
     const y = (event.clientY - rect.top) * composition.height / rect.height;
-    const target = [...composition.layers].reverse().find((layer) => layer.type === 'slot' && layer.visible && pointInLayer(x, y, layer));
+    const target = [...composition.layers].reverse().find((layer) => layer.type === 'slot' && !layer.replacementDisabled && layer.visible && pointInLayer(x, y, layer));
     if (!target) return notify('请把图片拖到高亮的可替换区域', 'error');
     acceptFile(file, target.id);
   };
@@ -3304,7 +3589,7 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
       <section className="result-area">
         <div className="result-heading"><div><p className="eyebrow">第 2 步</p><h2>生成结果</h2></div><div className="result-heading-actions"><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>{result && <div className="result-actions"><button className="secondary-button" onClick={save}><Download size={17}/>保存 {exportFormat.toUpperCase()}</button><button className="primary-button" onClick={copyAgain}>{copied ? <Check size={17}/> : <Copy size={17}/>}复制图片</button></div>}</div></div>
         <div className="result-stage has-result" onWheel={handleResultWheel} onContextMenu={openContextMenu} onDragStart={(event) => event.preventDefault()} onDragOver={(event) => { if (Array.from(event.dataTransfer.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropOnSlot}>
-          <UseStage composition={composition} slotSources={slotSources} slotTransforms={slotTransforms} selectedId={selectedId} setSelectedId={setSelectedId} updateLayer={updateLayer} cropModeId={cropModeId} setCropModeId={setCropModeId} updatePhotoTransform={updatePhotoTransform} onRequestSlot={requestSlotImage} zoom={zoom} pan={pan} panning={panning} onPanStart={beginPan} transparent={transparent} lockAspectRatio={lockAspectRatio}/>
+          <UseStage composition={composition} slotSources={slotSources} slotTransforms={slotTransforms} selectedId={selectedId} setSelectedId={setSelectedId} updateLayer={updateLayer} cropModeId={cropModeId} setCropModeId={setCropModeId} updatePhotoTransform={updatePhotoTransform} onRequestSlot={requestSlotImage} zoom={zoom} pan={pan} panning={panning} onPanStart={beginPan} transparent={transparent} lockAspectRatio={lockAspectRatio} textEditingId={textEditingId} textSelection={textSelection} onEditText={editTextLayer} onTextChange={updateTextLayer} onTextSelectionChange={setTextSelection} onTextDone={finishTextEditing}/>
         </div>
       </section>
     </div>
