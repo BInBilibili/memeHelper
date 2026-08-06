@@ -7,8 +7,8 @@ import {
   AlignHorizontalJustifyStart, AlignLeft, AlignRight, AlignVerticalDistributeCenter,
   AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowLeft, Bold, Check, ChevronDown, ChevronRight, ChevronUp,
   BoxSelect, Circle, Clipboard, Copy, Crop, Download, Eye, EyeOff, FileImage, Grid2X2, GripVertical, ImagePlus,
-  Eraser, FolderOpen, Italic, Layers3, LayoutTemplate, Lock, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Pentagon, Pipette, Plus, Redo2, RefreshCw, RotateCcw, Scissors,
-  Save, Shapes, Sparkles, Square, Star, Strikethrough, Trash2, Type, Underline, Undo2, Unlock, Upload,
+  Eraser, FolderOpen, Italic, Layers3, LayoutTemplate, Lock, Monitor, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Pentagon, Pipette, Plus, Redo2, RefreshCw, RotateCcw, Scissors,
+  Save, Settings, Shapes, Sparkles, Square, Star, Strikethrough, Sun, Trash2, Type, Underline, Undo2, Unlock, Upload,
   X, ZoomIn, ZoomOut
 } from 'lucide-react';
 import bundledTemplates from './bundled-templates.json';
@@ -17,6 +17,7 @@ import './styles.css';
 const browserDesktop = {
   isDesktop: false,
   loadConfig: async () => ({ theme: 'system', autoCopy: true }),
+  saveConfig: async (value) => localStorage.setItem('meme-helper-config', JSON.stringify(value)),
   loadTemplates: async () => JSON.parse(localStorage.getItem('meme-helper-templates') || '[]'),
   saveTemplates: async (value) => localStorage.setItem('meme-helper-templates', JSON.stringify(value)),
   loadEditorDrafts: async () => JSON.parse(localStorage.getItem('meme-helper-editor-drafts') || '{}'),
@@ -55,12 +56,14 @@ const browserDesktop = {
 const desktop = window.__TAURI_INTERNALS__ ? {
   isDesktop: true,
   loadConfig: () => invoke('load_config'),
+  saveConfig: (config) => invoke('save_config', { config }),
   loadTemplates: () => invoke('load_templates'),
   saveTemplates: (templates) => invoke('save_templates', { templates }),
   loadEditorDrafts: () => invoke('load_editor_drafts'),
   saveEditorDrafts: (drafts) => invoke('save_editor_drafts', { drafts }),
   loadUseSessions: () => invoke('load_use_sessions'),
   saveUseSessions: (sessions) => invoke('save_use_sessions', { sessions }),
+  copyImages: (dataUrls) => invoke('copy_images', { dataUrls }),
   copyImage: (dataUrl, clipboardDataUrl) => invoke('copy_image', { dataUrl, clipboardDataUrl }),
   readClipboardImage: () => invoke('read_clipboard_image'),
   saveImage: (dataUrl, suggestedName) => invoke('save_image', { dataUrl, suggestedName }),
@@ -920,6 +923,7 @@ function App() {
   const [page, setPage] = useState({ name: 'library' });
   const [toast, setToast] = useState(null);
   const [query, setQuery] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const toastTimer = useRef();
   const editorDraftsRef = useRef({});
   const draftSaveQueue = useRef(Promise.resolve());
@@ -934,10 +938,14 @@ function App() {
     return () => window.removeEventListener('contextmenu', suppressBlankContextMenu);
   }, []);
 
+  useEffect(() => { const suppressAltMenu = (event) => { if (event.key === 'Alt') event.preventDefault(); }; window.addEventListener('keydown', suppressAltMenu, true); window.addEventListener('keyup', suppressAltMenu, true); return () => { window.removeEventListener('keydown', suppressAltMenu, true); window.removeEventListener('keyup', suppressAltMenu, true); }; }, []);
+
   const notify = useCallback((message, kind = '') => {
     clearTimeout(toastTimer.current); setToast({ message, kind });
     toastTimer.current = setTimeout(() => setToast(null), 2600);
   }, []);
+
+  const updateConfig = useCallback(async (patch) => { const next = { ...config, ...patch }; setConfig(next); applyTheme(next.theme); try { await desktop.saveConfig(next); } catch (error) { notify(`设置保存失败：${error?.message || error}`, 'error'); } }, [config, notify]);
 
   useEffect(() => {
     Promise.all([desktop.loadTemplates(), desktop.loadConfig(), desktop.loadEditorDrafts(), desktop.loadUseSessions()]).then(([saved, loadedConfig, savedDrafts, savedUseSessions]) => {
@@ -1071,9 +1079,10 @@ function App() {
   if (!ready) return <div className="loading-screen"><Sparkles size={26}/><span>正在准备模板库...</span></div>;
 
   return <div className="app-shell">
-    {page.name === 'library' && <Library templates={templates} query={query} setQuery={setQuery} onRefresh={refreshTemplates} onCreate={() => setPage({ name: 'editor' })} onEdit={(template) => setPage({ name: 'editor', template })} onRename={renameTemplate} onUse={useTemplate} onDelete={deleteTemplate} onToggleFavorite={toggleFavorite} notify={notify}/>}
+    {page.name === 'library' && <Library templates={templates} query={query} setQuery={setQuery} onRefresh={refreshTemplates} onCreate={() => setPage({ name: 'editor' })} onOpenSettings={() => setSettingsOpen(true)} onEdit={(template) => setPage({ name: 'editor', template })} onRename={renameTemplate} onUse={useTemplate} onDelete={deleteTemplate} onToggleFavorite={toggleFavorite} notify={notify}/>}
     {page.name === 'editor' && <Editor initial={page.template} autosave={editorDrafts[page.template?.id || 'new']} onSaveDraft={saveEditorDraft} onClearDraft={clearEditorDraft} onBack={() => setPage({ name: 'library' })} onSave={saveTemplate} notify={notify}/>}
     {page.name === 'use' && <UseTemplate template={page.template} initialFile={page.file} cachedSession={useSessions[page.template.id]} onSaveSession={saveUseSession} onBack={() => setPage({ name: 'library' })} onEdit={() => setPage({ name: 'editor', template: page.template })} notify={notify}/>}
+    {settingsOpen && <SettingsDialog config={config} onChange={updateConfig} onClose={() => setSettingsOpen(false)}/>}
     <Toast toast={toast}/>
   </div>;
 }
@@ -1082,7 +1091,9 @@ function Brand() {
   return <div className="brand"><div className="brand-mark"><Sparkles size={20}/></div><span>MemeHelper</span></div>;
 }
 
-function Library({ templates, query, setQuery, onRefresh, onCreate, onEdit, onRename, onUse, onDelete, onToggleFavorite, notify }) {
+function SettingsDialog({ config, onChange, onClose }) { const options = [{ value: 'light', label: '浅色', description: '使用明亮的浅色界面。', icon: Sun }, { value: 'dark', label: '深色', description: '使用深色界面，适合夜间使用。', icon: Monitor }, { value: 'system', label: '跟随 Windows 系统', description: '跟随系统的浅色或深色设置。', icon: Settings }]; return <div className="settings-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="settings-dialog" role="dialog" aria-modal="true"><div className="settings-dialog-heading"><div><p className="eyebrow">全局设置</p><h2>界面主题</h2></div><IconButton label="关闭" onClick={onClose}><X size={18}/></IconButton></div><div className="settings-options">{options.map(({ value, label, description, icon: Icon }) => <button type="button" key={value} className={`settings-option ${config.theme === value ? 'active' : ''}`} onClick={() => onChange({ theme: value })}><span className="settings-option-icon"><Icon size={18}/></span><span><strong>{label}</strong><small>{description}</small></span><span className="settings-option-check">{config.theme === value ? '✓' : ''}</span></button>)}</div><p className="settings-note">选择后立即生效，并保存到程序目录的 config.json。</p></div></div>; }
+
+function Library({ templates, query, setQuery, onRefresh, onCreate, onOpenSettings, onEdit, onRename, onUse, onDelete, onToggleFavorite, notify }) {
   const [sort, setSort] = useState('recent');
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -1099,7 +1110,7 @@ function Library({ templates, query, setQuery, onRefresh, onCreate, onEdit, onRe
     .filter((item) => !normalizedQuery || item.name.toLowerCase().includes(normalizedQuery) || (item.tags || []).some((tag) => tag.toLowerCase().includes(normalizedQuery)))
     .sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name, 'zh-CN') : sort === 'created' ? (b.createdAt || 0) - (a.createdAt || 0) : (b.lastUsedAt || b.updatedAt || 0) - (a.lastUsedAt || a.updatedAt || 0));
   return <main className="library-page">
-    <header className="topbar"><Brand/><div className="topbar-actions"><span className="storage-note">{desktop.isDesktop ? '模板保存在程序目录的 meme 文件夹' : '模板保存在浏览器'}</span><button className="secondary-button" onClick={refresh} disabled={refreshing}><RefreshCw className={refreshing ? 'refresh-icon spinning' : 'refresh-icon'} size={17}/>{refreshing ? '刷新中' : '刷新'}</button><button className="primary-button" onClick={onCreate}><Plus size={18}/>新建模板</button></div></header>
+    <header className="topbar"><Brand/><div className="topbar-actions"><button className="secondary-button" onClick={onOpenSettings}><Settings size={17}/>设置</button><span className="storage-note">{desktop.isDesktop ? '模板保存在程序目录的 meme 文件夹' : '模板保存在浏览器'}</span><button className="secondary-button" onClick={refresh} disabled={refreshing}><RefreshCw className={refreshing ? 'refresh-icon spinning' : 'refresh-icon'} size={17}/>{refreshing ? '刷新中' : '刷新'}</button><button className="primary-button" onClick={onCreate}><Plus size={18}/>新建模板</button></div></header>
     <section className="library-heading"><div><p className="eyebrow">模板工作台</p><h1>选择一个模板，马上开始</h1><p>点击使用，或把图片直接拖到模板上。</p></div><div className="library-controls"><div className="search-box"><LayoutTemplate size={18}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索名称或标签"/></div><button className={`favorite-filter ${favoritesOnly ? 'active' : ''}`} onClick={() => setFavoritesOnly((current) => !current)}><Star size={16} fill={favoritesOnly ? 'currentColor' : 'none'}/>收藏</button><select value={sort} onChange={(event) => setSort(event.target.value)} aria-label="模板排序"><option value="recent">最近使用</option><option value="created">最近创建</option><option value="name">按名称</option></select></div></section>
     <section className="template-grid">
       <button className="new-template-card" onClick={onCreate}><span className="new-icon"><Plus size={26}/></span><strong>创建新模板</strong><small>设置底图与照片位置</small></button>
@@ -1395,7 +1406,6 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       clipboardLayersRef.current = { layers: fragments, groupMeta: {} };
       setHasCopiedLayers(true);
       notify(fragments.length === 1 ? '已复制选框内容' : `已复制 ${fragments.length} 个图层的选框内容`);
-      setActiveTool('select');
     } catch (error) { notify(`复制选框内容失败：${error?.message || error}`, 'error'); }
   }, [buildMarqueeFragments, notify]);
   const cutMarqueePixels = useCallback(async (ids, rect) => {
@@ -1429,7 +1439,6 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       setHasCopiedLayers(true);
       updateDraft((previous) => ({ ...previous, layers: previous.layers.map((layer) => eraseSources[layer.id] ? { ...layer, eraseSrc: eraseSources[layer.id] } : layer) }));
       notify(layers.length === 1 ? '已剪切选框内容' : `已剪切 ${layers.length} 个图层的选框内容`);
-      setActiveTool('select');
     } catch (error) { notify(`剪切选框内容失败：${error?.message || error}`, 'error'); }
   }, [buildMarqueeFragments, draft.layers, notify, updateDraft]);
   const pasteLayers = useCallback(() => {
@@ -1461,6 +1470,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     setHasCopiedLayers(true);
     setSelectedIds(layers.map((layer) => layer.id));
     setSelectedGroupId(groupMap.size === 1 ? [...groupMap.values()][0] : null);
+    setActiveTool('select');
   }, [notify, selectedIds, updateDraft]);
   const removeSelectedLayers = useCallback(() => {
     const removableIds = draft.layers.filter((layer) => selectedIds.includes(layer.id) && !layer.locked).map((layer) => layer.id);
@@ -1765,7 +1775,16 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       const sourceIds = wholeGroup && source.groupId
         ? previous.layers.filter((item) => item.groupId === source.groupId).map((item) => item.id)
         : [sourceId];
-      if (!wholeGroup && source.groupId && target.groupId !== source.groupId) return previous;
+      if (!wholeGroup && source.groupId && target.groupId !== source.groupId && placement !== 'inside') return previous;
+      if (placement === 'inside' && target.groupId) {
+        if (sourceIds.some((id) => previous.layers.find((item) => item.id === id)?.locked) || sourceIds.includes(targetId)) return previous;
+        const groupMembers = previous.layers.filter((item) => item.groupId === target.groupId);
+        const moving = previous.layers.filter((item) => sourceIds.includes(item.id)).map((item) => ({ ...item, groupId: target.groupId }));
+        const without = previous.layers.filter((item) => !sourceIds.includes(item.id));
+        const insertAt = without.findIndex((item) => item.id === groupMembers.at(-1)?.id);
+        without.splice(insertAt < 0 ? without.length : insertAt + 1, 0, ...moving);
+        return { ...previous, layers: without };
+      }
       const targetIds = !wholeGroup && source.groupId
         ? [targetId]
         : target.groupId
@@ -1795,6 +1814,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       if (!targetId || targetId === sourceId) return null;
       const target = draft.layers.find((item) => item.id === targetId);
       if (sourceGroupId && target?.groupId === sourceGroupId) return null;
+      if (row?.dataset.groupId && row.dataset.groupId !== sourceGroupId) return { id: targetId, placement: 'inside' };
       let rect = row.getBoundingClientRect();
       if (sourceGroupId && target?.groupId) {
         targetId = draft.layers.filter((item) => item.groupId === target.groupId).at(-1)?.id || targetId;
@@ -2096,11 +2116,13 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     const scaled = (number) => Math.round(number * scale * 1000) / 1000;
     updateDraft((previous) => ({
       ...previous,
+      width: Math.max(0, Math.round(previous.width * scale * 1000) / 1000),
+      height: Math.max(0, Math.round(previous.height * scale * 1000) / 1000),
       layers: previous.layers.map((layer) => {
         const next = {
           ...layer,
-          x: imageBounds.left + scaled(layer.x - imageBounds.left),
-          y: imageBounds.top + scaled(layer.y - imageBounds.top),
+          x: scaled(layer.x),
+          y: scaled(layer.y),
           width: Math.max(0.001, scaled(layer.width)),
           height: Math.max(0.001, scaled(layer.height)),
           borderWidth: scaled(Number(layer.borderWidth) || 0)
@@ -2558,7 +2580,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     });
     const positions = Object.fromEntries(ids.map((id) => {
       const item = template.layers.find((candidate) => candidate.id === id);
-      return [id, { x: item.x, y: item.y }];
+      return [id, { x: item.x, y: item.y, cx: item.x + item.width / 2, cy: item.y + item.height / 2 }];
     }));
     const items = template.layers.filter((item) => ids.includes(item.id));
     const minX = Math.min(...items.map((item) => item.x));
@@ -2572,8 +2594,8 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   const moveDrag = (layer, event) => {
     const drag = dragRef.current;
     if (!drag?.anchor || !drag.ids.includes(layer.id)) return;
-    let dx = event.target.x() - drag.anchor.x;
-    let dy = event.target.y() - drag.anchor.y;
+    let dx = event.target.x() - drag.anchor.cx;
+    let dy = event.target.y() - drag.anchor.cy;
     if (event.evt.shiftKey) {
       const virtualLayer = { id: '__selection__', width: drag.bounds.width, height: drag.bounds.height };
       const snapped = snapLayerPosition(virtualLayer, { x: drag.bounds.x + dx, y: drag.bounds.y + dy }, template, 8 / zoom, drag.ids);
@@ -2589,7 +2611,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
       const node = nodeRefs.current[id];
       if (!node) return;
       if (id === layer.id && !event.evt.shiftKey) return;
-      node.position({ x: drag.positions[id].x + dx, y: drag.positions[id].y + dy });
+      node.position({ x: drag.positions[id].cx + dx, y: drag.positions[id].cy + dy });
     });
   };
 
@@ -2680,7 +2702,8 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
       const node = nodeRefs.current[id];
       if (!node || layer?.locked) return;
       const sx = node.scaleX(); const sy = node.scaleY();
-      patches[id] = { x: Math.round(node.x()), y: Math.round(node.y()), width: Math.max(10, Math.round(node.width() * sx)), height: Math.max(10, Math.round(node.height() * sy)), rotation: Math.round(node.rotation()) };
+      const width = Math.max(10, Math.round(node.width() * sx)); const height = Math.max(10, Math.round(node.height() * sy));
+      patches[id] = { x: Math.round(node.x() - width / 2), y: Math.round(node.y() - height / 2), width, height, rotation: Math.round(node.rotation()) };
       node.scaleX(1); node.scaleY(1);
     });
     if (Object.keys(patches).length) updateLayers(patches);
@@ -2986,19 +3009,20 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
   const crop = image && layer.fit === 'cover' ? getCoverCrop(image, layer.width, layer.height) : undefined;
   const placement = image && layer.type === 'slot' && source ? getPhotoPlacement(image, layer, photoTransform) : null;
   if (!layer.visible) return null;
-  const common = { ref: setRef, x: layer.x, y: layer.y, width: layer.width, height: layer.height, rotation: layer.rotation || 0, draggable: interactive, listening: selectable };
+  const common = { ref: setRef, x: layer.x + layer.width / 2, y: layer.y + layer.height / 2, offsetX: layer.width / 2, offsetY: layer.height / 2, width: layer.width, height: layer.height, rotation: layer.rotation || 0, draggable: interactive, listening: selectable };
   if (selectable) Object.assign(common, { onMouseDown: onPointerDown, onTouchStart: onPointerDown, onClick: onSelect, onTap: onSelect, onDblClick: onEnterCrop, onDblTap: onEnterCrop, onContextMenu });
   if (interactive) {
-    Object.assign(common, { onDragStart, onDragMove, onDragEnd: onDragEnd || ((event) => onChange({ x: Math.round(event.target.x()), y: Math.round(event.target.y()) })) });
-    if (onTransformEnd !== false) common.onTransformEnd = onTransformEnd || ((event) => { const node = event.target; const sx = node.scaleX(), sy = node.scaleY(); node.scaleX(1); node.scaleY(1); onChange({ x: Math.round(node.x()), y: Math.round(node.y()), width: Math.max(10, Math.round(node.width() * sx)), height: Math.max(10, Math.round(node.height() * sy)), rotation: Math.round(node.rotation()) }); });
+    Object.assign(common, { onDragStart, onDragMove, onDragEnd: onDragEnd || ((event) => onChange({ x: Math.round(event.target.x() - layer.width / 2), y: Math.round(event.target.y() - layer.height / 2) })) });
+    if (onTransformEnd !== false) common.onTransformEnd = onTransformEnd || ((event) => { const node = event.target; const sx = node.scaleX(), sy = node.scaleY(); const width = Math.max(10, Math.round(node.width() * sx)); const height = Math.max(10, Math.round(node.height() * sy)); node.scaleX(1); node.scaleY(1); onChange({ x: Math.round(node.x() - width / 2), y: Math.round(node.y() - height / 2), width, height, rotation: Math.round(node.rotation()) }); });
   }
-  if (maskedResult && !cropMode) return <Group {...common}><KonvaImage image={maskedResult.canvas} x={-maskedResult.insets.left} y={-maskedResult.insets.top} width={maskedResult.logicalWidth} height={maskedResult.logicalHeight}/></Group>;
+  if (maskedResult && !cropMode) return <Group {...common}><KonvaImage image={maskedResult.canvas} x={-maskedResult.insets.left} y={-maskedResult.insets.top} width={maskedResult.logicalWidth} height={maskedResult.logicalHeight}/><LayerBorderShape layer={layer}/></Group>;
   if (layer.type === 'text') {
     return <Group {...common}>
       <Rect width={layer.width} height={layer.height} fill={layer.background || 'rgba(0,0,0,.001)'}/>
       {layoutStyledText(layer).map((run, index) => <KonvaText key={`${run.x}-${run.y}-${index}`} x={run.x} y={run.y} text={run.text} fontSize={run.style.fontSize} fontFamily={run.style.fontFamily} fontStyle={run.style.fontStyle} textDecoration={run.style.textDecoration} fill={run.style.fill} stroke={run.style.strokeWidth > 0 ? run.style.stroke : undefined} strokeWidth={run.style.strokeWidth * 2} fillAfterStrokeEnabled lineJoin="round" shadowEnabled={Boolean(layer.shadowEnabled)} shadowColor={layer.shadowColor || '#000000'} shadowBlur={Number(layer.shadowBlur) || 0} shadowOffsetX={Number(layer.shadowOffsetX) || 0} shadowOffsetY={Number(layer.shadowOffsetY) || 0}/>) }
       {paintImage && <KonvaImage image={paintImage} width={layer.width} height={layer.height} listening={false}/>}
       {mosaicImage && <KonvaImage image={mosaicImage} width={layer.width} height={layer.height} listening={false}/>}
+       <LayerBorderShape layer={layer}/>
     </Group>;
   }
   const clipFunc = (ctx) => traceLayerShape(ctx, layer);
@@ -3009,6 +3033,7 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
     {paintImage && <KonvaImage image={paintImage} width={layer.width} height={layer.height} listening={false}/>}
     {mosaicImage && <KonvaImage image={mosaicImage} width={layer.width} height={layer.height} listening={false}/>}
     {cropMode && <Rect x={1} y={1} width={Math.max(0, layer.width - 2)} height={Math.max(0, layer.height - 2)} stroke="#e94e37" strokeWidth={3} dash={[10, 7]} listening={false}/>}
+    <LayerBorderShape layer={layer}/>
   </Group>;
 }
 
@@ -3131,7 +3156,7 @@ function Properties({ layer, textStyle, textSelection, onBeginTextInteraction, o
     <div className="property-section"><h4>边框</h4><div className="border-controls"><label><span>颜色</span><input type="color" value={layer.borderColor || '#000000'} onChange={(event) => update({ borderColor: event.target.value })}/></label><NumberField label="大小" value={layer.borderWidth || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(borderWidth) => update({ borderWidth })}/></div></div>
     {layer.type === 'slot' && <>
       <div className="property-section"><h4>槽位形状</h4><div className="shape-segmented four"><button className={shapeOf(layer) === 'rect' ? 'active' : ''} onClick={() => update({ shape: 'rect' })}>矩形</button><button className={shapeOf(layer) === 'circle' ? 'active' : ''} onClick={() => update({ shape: 'circle' })}>圆形</button><button className={shapeOf(layer) === 'rounded' ? 'active' : ''} onClick={() => update({ shape: 'rounded' })}>圆角</button><button className={shapeOf(layer) === 'polygon' ? 'active' : ''} onClick={() => update({ shape: 'polygon', polygonSides: layer.polygonSides || 5, polygonPoints: polygonPointsOf(layer) })}>多边形</button></div>{shapeOf(layer) === 'polygon' && <div className="polygon-controls"><NumberField label="边数" value={layer.polygonSides || 5} min={POLYGON_MIN_SIDES} max={POLYGON_MAX_SIDES} presets={[3, 4, 5, 6, 8, 10, 12, 16]} onChange={(polygonSides) => update({ polygonSides, polygonPoints: regularPolygonPoints(polygonSides) })}/>{polygonPointsOf(layer).map((point, index) => <label key={index} className="polygon-radius"><span>顶点 {index + 1}</span><input type="range" min="10" max="100" value={polygonRadiusPercent(point)} onChange={(event) => update({ polygonPoints: polygonPointsOf(layer).map((item, itemIndex) => itemIndex === index ? polygonPointAtRadius(item, Number(event.target.value)) : item) })}/><output>{polygonRadiusPercent(point)}%</output></label>)}</div>}</div>
-      <div className="property-section"><h4>照片填充</h4><div className="segmented"><button className={layer.fit === 'cover' ? 'active' : ''} onClick={() => update({ fit: 'cover' })}>裁切铺满</button><button className={layer.fit === 'fill' ? 'active' : ''} onClick={() => update({ fit: 'fill' })}>拉伸填满</button></div><label className="check-row replacement-disable-row" title="禁用后，使用模板时不再要求添加照片；槽位保持透明，但颜色填充和边框仍会显示。"><input type="checkbox" checked={Boolean(layer.replacementDisabled)} onChange={(event) => update({ replacementDisabled: event.target.checked })}/><span>禁用替换照片</span></label></div>
+      <div className="property-section"><h4>照片填充</h4><div className="segmented"><button disabled={disabledReplacement} className={layer.fit === 'cover' ? 'active' : ''} onClick={() => update({ fit: 'cover' })}>裁切铺满</button><button disabled={disabledReplacement} className={layer.fit === 'fill' ? 'active' : ''} onClick={() => update({ fit: 'fill' })}>拉伸填满</button></div><label className="check-row replacement-disable-row" title="禁用后，使用模板时不再要求添加照片；槽位保持透明，但颜色填充和边框仍会显示。"><input type="checkbox" checked={Boolean(layer.replacementDisabled)} onChange={(event) => update({ replacementDisabled: event.target.checked })}/><span>禁用替换照片</span></label></div>
       <div className="property-section"><h4>颜色填充</h4><div className="slot-color-fill"><input type="color" value={layer.slotFill || '#e24b35'} onChange={(event) => update({ slotFill: event.target.value })}/><button className={`wide-property-button ${layer.slotFill ? 'active' : ''}`} onClick={() => update({ slotFill: layer.slotFill ? '' : '#e24b35' })}>{layer.slotFill ? '取消颜色图层' : '启用颜色图层'}</button></div></div>
     </>}
     <div className="property-section"><h4>图层顺序</h4><div className="order-buttons"><button disabled={layer.locked} onClick={() => move(1)}><ChevronUp size={17}/>上移</button><button disabled={layer.locked} onClick={() => move(-1)}><ChevronDown size={17}/>下移</button></div></div>
@@ -3235,7 +3260,7 @@ function UseStage({ composition, slotSources, slotTransforms, selectedId, setSel
 
   return <div className={`result-canvas-host pan-viewport ${panning ? 'panning' : ''}`} ref={hostRef} onMouseDown={(event) => { if (event.target === event.currentTarget) onPanStart(event); }}>
     {hostSize.width > 0 && <div className={`result-canvas-frame ${transparent ? 'transparent' : ''}`} style={{ width: composition.width * scale, height: composition.height * scale, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}>
-      <Stage width={composition.width * scale} height={composition.height * scale} scaleX={scale} scaleY={scale} onWheel={(event) => event.target.stopDrag?.()} onMouseDown={(event) => { if (event.target === event.target.getStage() || event.target.name() === 'result-background') { setSelectedId(null); setCropModeId(null); onPanStart(event); } }}>
+      <Stage width={composition.width * scale} height={composition.height * scale} scaleX={scale} scaleY={scale} onWheel={(event) => event.target.stopDrag?.()} onMouseDown={(event) => { if (event.target === event.target.getStage() || event.target.name() === 'result-background') { if (textEditingId) onTextDone(); setSelectedId(null); setCropModeId(null); onPanStart(event); } }}>
         <Layer>
           <Rect name="result-background" width={composition.width} height={composition.height} fill={transparent ? 'rgba(0,0,0,0)' : '#fff'}/>
           {composition.layers.map((layer) => textEditingId === layer.id ? null : <EditorLayer
@@ -3516,6 +3541,18 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
     } catch (error) { notify(error.message, 'error'); }
   }, [composition.layers, notify, replaceSlotSource, selectedId]);
 
+  const generateBatch = useCallback(async (files, targetId) => {
+    const requestedLayer = composition.layers.find((layer) => layer.id === targetId);
+    const slotId = requestedLayer?.type === 'slot' && !requestedLayer.replacementDisabled ? requestedLayer.id : slots.length === 1 ? slots[0].id : null;
+    if (!slotId) return notify('多图拖入仅支持模板只有一个可替换照片图层的情况', 'error');
+    try {
+      const sources = await Promise.all(files.map((file) => fileToDataUrl(file)));
+      const outputs = await Promise.all(sources.map((source) => renderTemplate(composition, { ...slotSources, [slotId]: source }, { ...slotTransforms, [slotId]: { zoom: 1, offsetX: 0, offsetY: 0 } }, { scale: exportScale, transparent, mime: 'image/png' })));
+      if (outputs.length === 1) await desktop.copyImage(outputs[0]); else await desktop.copyImages(outputs);
+      replaceSlotSource(slotId, sources.at(-1), files.at(-1)?.name || ''); setResult(outputs.at(-1)); setCopied(true); notify(`已生成并复制 ${outputs.length} 张作品`);
+    } catch (error) { notify(`批量生成失败：${error?.message || error}`, 'error'); }
+  }, [composition, exportScale, notify, replaceSlotSource, slotSources, slotTransforms, slots, transparent]);
+
   const requestSlotImage = useCallback((slotId) => {
     const layer = composition.layers.find((item) => item.id === slotId);
     if (!layer || layer.type !== 'slot' || layer.replacementDisabled) return;
@@ -3617,7 +3654,8 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
   };
 
   const dropOnSlot = (event) => {
-    const file = Array.from(event.dataTransfer.files || []).find((item) => item.type.startsWith('image/'));
+    const files = Array.from(event.dataTransfer.files || []).filter((item) => item.type.startsWith('image/'));
+    const file = files[0];
     if (!file) return;
     event.preventDefault();
     const frame = event.currentTarget.querySelector('.result-canvas-frame');
@@ -3627,16 +3665,14 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
     const y = (event.clientY - rect.top) * composition.height / rect.height;
     const target = [...composition.layers].reverse().find((layer) => layer.type === 'slot' && !layer.replacementDisabled && layer.visible && pointInLayer(x, y, layer));
     if (!target) return notify('请把图片拖到高亮的可替换区域', 'error');
-    acceptFile(file, target.id);
+    if (files.length > 1 && slots.length === 1) generateBatch(files, target.id); else acceptFile(file, target.id);
   };
 
   const dropOnSlotList = (event, slotId) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setSlotDropId(null);
-    const file = Array.from(event.dataTransfer.files || []).find((item) => item.type.startsWith('image/'));
+    event.preventDefault(); event.stopPropagation(); setSlotDropId(null);
+    const files = Array.from(event.dataTransfer.files || []).filter((item) => item.type.startsWith('image/')); const file = files[0];
     if (!file) return notify('请拖入图片文件', 'error');
-    acceptFile(file, slotId);
+    if (files.length > 1 && slots.length === 1) generateBatch(files, slotId); else acceptFile(file, slotId);
   };
 
   const handleResultWheel = (event) => {

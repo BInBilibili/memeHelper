@@ -529,6 +529,18 @@ fn load_config() -> Value {
     read_config()
 }
 
+#[tauri::command]
+fn save_config(config: Value) -> Result<bool, String> {
+    if !config.is_object() {
+        return Err("配置数据格式无效".to_string());
+    }
+    let mut merged = read_config();
+    merge_object(&mut merged, &config);
+    let json = serde_json::to_string_pretty(&merged).map_err(|error| error.to_string())?;
+    fs::write(app_directory().join("config.json"), json).map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
 fn load_templates_from(root: &Path, legacy_paths: &[PathBuf]) -> Result<Vec<Value>, String> {
     repair_template_directory_ids(root)?;
     let marker = root.join(MIGRATION_MARKER_NAME);
@@ -654,6 +666,25 @@ fn copy_image(data_url: String, clipboard_data_url: Option<String>) -> Result<bo
         .set()
         .file_list(&[&clipboard_file])
         .map_err(|error| error.to_string())?;
+    Ok(true)
+}
+
+#[tauri::command]
+fn copy_images(data_urls: Vec<String>) -> Result<bool, String> {
+    if data_urls.is_empty() { return Ok(false); }
+    let directory = env::temp_dir().join("MemeHelper");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let mut paths = Vec::with_capacity(data_urls.len());
+    for (index, data_url) in data_urls.iter().enumerate() {
+        let (mime, bytes) = decode_image_data_url(data_url)?;
+        let extension = match mime { "image/jpeg" => "jpg", "image/webp" => "webp", _ => "png" };
+        let path = directory.join(format!("MemeHelper-batch-{index}.{extension}"));
+        fs::write(&path, bytes).map_err(|error| error.to_string())?;
+        paths.push(path);
+    }
+    let refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+    let mut clipboard = Clipboard::new().map_err(|error| error.to_string())?;
+    clipboard.set().file_list(&refs).map_err(|error| error.to_string())?;
     Ok(true)
 }
 
@@ -1014,6 +1045,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             load_config,
+            save_config,
             load_templates,
             save_templates,
             open_template_folder,
@@ -1022,6 +1054,7 @@ fn main() {
             load_use_sessions,
             save_use_sessions,
             copy_image,
+            copy_images,
             read_clipboard_image,
             save_image
         ])
