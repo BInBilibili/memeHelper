@@ -84,6 +84,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .template-card { position: relative; padding-bottom: 14px; transition: box-shadow .18s, transform .18s, border-color .18s; }
 .template-card:hover { transform: translateY(-2px); box-shadow: 0 8px 26px rgba(40, 38, 31, .08); }
 .template-card.dragging { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(233,78,55,.15); }
+.template-card.menu-open, .template-card:has(.context-menu) { z-index: 30; }
 .template-preview { position: relative; height: 220px; background: #e8e6df; overflow: hidden; border-radius: 6px 6px 0 0; cursor: pointer; display: grid; place-items: center; }
 .template-preview img { width: 100%; height: 100%; object-fit: contain; }
 .slot-count-badge { position: absolute; left: 10px; top: 10px; z-index: 2; width: 30px; height: 30px; border: 1px solid rgba(255,255,255,.8); border-radius: 4px; background: rgba(25,24,22,.82); color: #fff; display: grid; place-items: center; font-size: 12px; font-weight: 750; box-shadow: 0 2px 8px rgba(0,0,0,.18); }
@@ -139,8 +140,11 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 
 .editor-page, .use-page { height: 100vh; display: flex; flex-direction: column; background: #ecebe6; }
 .editor-topbar { height: 64px; padding: 0 20px; flex: none; }
-.title-field { display: flex; flex-direction: column; gap: 3px; }
-.title-field input { width: 220px; padding: 0; border: 0; outline: 0; background: transparent; font-weight: 650; font-size: 14px; }
+.title-field { position: relative; display: flex; flex-direction: column; gap: 3px; }
+.editable-template-name { display: flex; align-items: center; gap: 6px; }
+.editable-template-name input { width: 220px; min-width: 0; padding: 0 0 2px; border: 0; border-bottom: 1px solid var(--line); outline: 0; background: transparent; font-weight: 650; font-size: 14px; transition: border-color .15s; }
+.editable-template-name input:hover, .editable-template-name input:focus { border-bottom-color: var(--accent); }
+.editable-template-name svg { flex: none; color: var(--muted); }
 .title-field strong { font-size: 14px; }
 .title-field span { font-size: 10px; color: var(--muted); }
 .editor-center { color: var(--muted); font-size: 11px; display: flex; align-items: center; gap: 7px; }
@@ -162,6 +166,12 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .shape-picker { position: absolute; top: 69px; left: 0; z-index: 15; width: 158px; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: #fff; box-shadow: 0 10px 28px rgba(25,24,21,.16); display: grid; gap: 3px; }
 .shape-picker button { width: 100%; height: 36px; padding: 0 9px; border: 0; border-radius: 4px; background: transparent; display: flex; flex-direction: row; align-items: center; justify-content: flex-start; gap: 9px; font-size: 11px; cursor: pointer; }
 .shape-picker button:hover { background: #f3f2ed; color: var(--accent); }
+.text-add-wrap { position: relative; min-width: 0; }
+.text-add-wrap > button { width: 100%; min-width: 0; height: 63px; padding: 0 3px; border: 1px solid var(--line); border-radius: 5px; background: #faf9f6; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 9px; line-height: 1.25; cursor: pointer; }
+.text-add-wrap > button:hover, .text-add-wrap > button.active { color: var(--accent); border-color: #e6a092; background: #fff9f7; }
+.text-orientation-menu { position: absolute; top: 69px; right: 0; z-index: 16; width: 138px; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); box-shadow: 0 10px 28px rgba(25,24,21,.16); display: grid; gap: 3px; }
+.text-orientation-menu button { width: 100%; height: 34px; padding: 0 10px; border: 0; border-radius: 4px; background: transparent; color: var(--ink); text-align: left; font-size: 11px; cursor: pointer; }
+.text-orientation-menu button:hover, .text-orientation-menu button.active { background: var(--surface-hover); color: var(--accent); }
 .layers-list { padding: 8px; display: flex; flex-direction: column; gap: 3px; }
 .layer-row { position: relative; height: 55px; padding: 6px 5px; border: 1px solid transparent; border-radius: 5px; display: flex; align-items: center; gap: 7px; cursor: pointer; user-select: none; }
 .layer-row.layer-child { margin-left: 22px; padding-left: 3px; border-left-color: #e6e2d9; border-radius: 0 5px 5px 0; }
@@ -206,6 +216,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .canvas-size label { margin-right: 4px; font-weight: 600; }
 .size-mode-button { height: 28px; min-width: 45px; padding: 0 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--muted); font-size: 10px; font-weight: 700; cursor: pointer; }
 .size-mode-button:hover, .size-mode-button.active { color: var(--accent); border-color: var(--accent); background: #fff7f4; }
+.size-lock-button { width: 28px; height: 28px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--muted); }
+.size-lock-button:hover, .size-lock-button.active { border-color: var(--accent); background: #fff7f4; color: var(--accent); }
 .canvas-size input { width: 60px; height: 28px; border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; font-size: 10px; }
 .canvas-size { min-width: 0; }
 .auto-canvas-button { height: 28px; padding: 0 9px; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); font-size: 10px; font-weight: 600; white-space: nowrap; cursor: pointer; }
@@ -393,10 +405,12 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 :root[data-theme="dark"] .context-menu,
 :root[data-theme="dark"] .library-paste-menu,
 :root[data-theme="dark"] .shape-picker,
+:root[data-theme="dark"] .text-orientation-menu,
 :root[data-theme="dark"] .layer-context-menu,
 :root[data-theme="dark"] .result-context-menu,
 :root[data-theme="dark"] .canvas-toolbar,
 :root[data-theme="dark"] .auto-canvas-button,
+:root[data-theme="dark"] .size-lock-button,
 :root[data-theme="dark"] .toolbar-button,
 :root[data-theme="dark"] .wide-property-button,
 :root[data-theme="dark"] .layer-lock-button,
@@ -446,6 +460,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 :root[data-theme="dark"] .context-menu button:hover,
 :root[data-theme="dark"] .library-paste-menu button:hover,
 :root[data-theme="dark"] .shape-picker button:hover,
+:root[data-theme="dark"] .text-orientation-menu button:hover,
+:root[data-theme="dark"] .text-orientation-menu button.active,
 :root[data-theme="dark"] .result-context-menu button:hover,
 :root[data-theme="dark"] .layer-row:hover,
 :root[data-theme="dark"] .toolbar-button:hover,
@@ -458,12 +474,15 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 
 :root[data-theme="dark"] .new-template-card:hover,
 :root[data-theme="dark"] .layer-add-row > button:hover,
-:root[data-theme="dark"] .shape-picker-wrap > button:hover {
+:root[data-theme="dark"] .shape-picker-wrap > button:hover,
+:root[data-theme="dark"] .text-add-wrap > button:hover,
+:root[data-theme="dark"] .text-add-wrap > button.active {
   background: #352825;
 }
 
 :root[data-theme="dark"] .layer-add-row > button,
-:root[data-theme="dark"] .shape-picker-wrap > button {
+:root[data-theme="dark"] .shape-picker-wrap > button,
+:root[data-theme="dark"] .text-add-wrap > button {
   background: var(--surface-soft);
 }
 

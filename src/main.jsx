@@ -8,7 +8,7 @@ import {
   AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowLeft, Bold, Check, ChevronDown, ChevronRight, ChevronUp,
   BoxSelect, Circle, Clipboard, Copy, Crop, Download, Eye, EyeOff, FileImage, Grid2X2, GripVertical, ImagePlus,
   Eraser, FolderOpen, Italic, Layers3, LayoutTemplate, Lock, Monitor, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Pentagon, Pipette, Plus, Redo2, RefreshCw, RotateCcw, Scissors,
-  Save, Settings, Shapes, Sparkles, Square, Star, Strikethrough, Sun, Trash2, Type, Underline, Undo2, Unlock, Upload,
+  Save, Settings, Shapes, Sparkles, Square, Star, Strikethrough, Sun, Trash2, Type, Underline, Undo2, Unlock, Upload, Link2,
   X, ZoomIn, ZoomOut
 } from 'lucide-react';
 import bundledTemplates from './bundled-templates.json';
@@ -244,29 +244,28 @@ function measureTextLayer(layer) {
   }
   let width = 0;
   let height = 0;
-  lines.forEach((glyphs) => {
-    let lineWidth = 0;
-    let lineHeight = 0;
-    if (!glyphs.length) {
-      const style = baseTextStyle(layer);
-      lineHeight = style.fontSize * style.lineHeight;
-    }
-    glyphs.forEach(({ character, style }) => {
-      ctx.font = textFontString(style);
-      lineWidth += ctx.measureText(character).width;
-      lineHeight = Math.max(lineHeight, style.fontSize * style.lineHeight);
+  if (layer.textOrientation === 'vertical') {
+    lines.forEach((glyphs) => {
+      let columnWidth = 0;
+      let columnHeight = 0;
+      if (!glyphs.length) { const style = baseTextStyle(layer); columnWidth = style.fontSize * style.lineHeight; columnHeight = style.fontSize * style.lineHeight; }
+      glyphs.forEach(({ style }) => { const step = style.fontSize * style.lineHeight; columnWidth = Math.max(columnWidth, step); columnHeight += step; });
+      width += columnWidth;
+      height = Math.max(height, columnHeight);
     });
-    width = Math.max(width, lineWidth);
-    height += lineHeight;
-  });
+  } else {
+    lines.forEach((glyphs) => {
+      let lineWidth = 0; let lineHeight = 0;
+      if (!glyphs.length) { const style = baseTextStyle(layer); lineHeight = style.fontSize * style.lineHeight; }
+      glyphs.forEach(({ character, style }) => { ctx.font = textFontString(style); lineWidth += ctx.measureText(character).width; lineHeight = Math.max(lineHeight, style.fontSize * style.lineHeight); });
+      width = Math.max(width, lineWidth); height += lineHeight;
+    });
+  }
   const maxStroke = Math.max(...Array.from({ length: text.length || 1 }, (_, index) => textStyleAt(layer, Math.min(index, Math.max(0, text.length - 1))).strokeWidth * 2));
   const shadowBlur = layer.shadowEnabled ? Math.max(0, Number(layer.shadowBlur) || 0) : 0;
   const shadowWidth = shadowBlur + (layer.shadowEnabled ? Math.abs(Number(layer.shadowOffsetX) || 0) : 0);
   const shadowHeight = shadowBlur + (layer.shadowEnabled ? Math.abs(Number(layer.shadowOffsetY) || 0) : 0);
-  return {
-    width: Math.max(1, Math.ceil(width + padding * 2 + 2 + maxStroke + shadowWidth)),
-    height: Math.max(1, Math.ceil(height + padding * 2 + 2 + maxStroke + shadowHeight))
-  };
+  return { width: Math.max(1, Math.ceil(width + padding * 2 + 2 + maxStroke + shadowWidth)), height: Math.max(1, Math.ceil(height + padding * 2 + 2 + maxStroke + shadowHeight)) };
 }
 
 function fitTextLayerToContent(layer) {
@@ -281,6 +280,14 @@ function layoutStyledText(layer) {
   const requestedSize = clamp(layer.fontSize ?? 48, TEXT_SIZE_MIN, TEXT_SIZE_MAX);
   const fontScale = requestedSize > 0 ? resolveTextFontSize(layer) / requestedSize : 1;
   const effectiveBaseSize = requestedSize * fontScale;
+  if (layer.textOrientation === 'vertical') {
+    const columns = [[]]; let offset = 0;
+    for (const character of text) { if (character === '\n') columns.push([]); else { const style = { ...textStyleAt(layer, offset) }; style.fontSize = clamp(style.fontSize * fontScale, TEXT_SIZE_MIN, TEXT_SIZE_MAX); columns.at(-1).push({ character, style }); } offset += character.length; }
+    const metrics = columns.map((glyphs) => ({ glyphs, width: Math.max(effectiveBaseSize, ...glyphs.map(({ style }) => style.fontSize * style.lineHeight)), height: glyphs.reduce((sum, { style }) => sum + style.fontSize * style.lineHeight, 0) }));
+    const runs = []; let x = layer.width - padding;
+    metrics.forEach((column) => { x -= column.width; let y = padding + (layer.align === 'center' ? Math.max(0, (availableHeight - column.height) / 2) : layer.align === 'right' ? Math.max(0, availableHeight - column.height) : 0); column.glyphs.forEach(({ character, style }) => { runs.push({ text: character, x, y, width: column.width, style, key: JSON.stringify(style), lineY: y }); y += style.fontSize * style.lineHeight; }); });
+    return runs;
+  }
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   const lines = [];
@@ -1220,9 +1227,9 @@ function TemplateCard({ template, onUse, onEdit, onRename, onDelete, onToggleFav
       notify(`打开模板文件夹失败：${error?.message || error}`, 'error');
     }
   };
-  return <><article className={`template-card ${dragging ? 'dragging' : ''}`} onContextMenu={openPasteMenu} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={drop}>
+  return <><article className={`template-card ${dragging ? 'dragging' : ''} ${menu ? 'menu-open' : ''}`} onContextMenu={openPasteMenu} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={drop}>
     <div className="template-preview" onClick={() => onUse(template)}><span className="slot-count-badge" title={slotCountHint} aria-label={slotCountHint}>{slots.length}</span>{preview && <img src={preview} alt="" draggable={false}/>}<div className="drop-hint"><Upload size={28}/><strong>{canQuickReplace ? '松开并复制作品' : '松开即可生成'}</strong></div></div>
-    <div className="template-meta"><div><h3 title="双击编辑名称" onDoubleClick={(event) => { event.stopPropagation(); setRenaming(true); }}>{template.name}</h3><span>{template.width} x {template.height}</span>{Boolean(template.tags?.length) && <span className="template-tags">{template.tags.slice(0, 3).map((tag) => <small key={tag}>{tag}</small>)}</span>}</div><div className="template-card-tools"><IconButton label={template.favorite ? '取消收藏' : '收藏模板'} className={template.favorite ? 'favorite-active' : ''} onClick={() => onToggleFavorite(template.id)}><Star size={17} fill={template.favorite ? 'currentColor' : 'none'}/></IconButton><div ref={menuRef} className="card-menu-wrap"><IconButton label="模板操作" onClick={() => setMenu((current) => !current)}><MoreHorizontal size={19}/></IconButton>{menu && <div className="context-menu"><button onClick={() => { setMenu(false); onEdit(template); }}><Pencil size={16}/>编辑模板</button><button onClick={() => { setMenu(false); setRenaming(true); }}><Type size={16}/>编辑名称</button><button onClick={openTemplateFolder}><FolderOpen size={16}/>打开模板文件夹</button><button className="danger" onClick={() => { setMenu(false); onDelete(template.id); }}><Trash2 size={16}/>删除模板</button></div>}</div></div></div>
+    <div className="template-meta"><div><h3 title="双击编辑名称" onDoubleClick={(event) => { event.stopPropagation(); setRenaming(true); }}>{template.name}</h3><span>{template.width} x {template.height}</span>{Boolean(template.tags?.length) && <span className="template-tags">{template.tags.slice(0, 3).map((tag) => <small key={tag}>{tag}</small>)}</span>}</div><div className="template-card-tools"><IconButton label={template.favorite ? '取消收藏' : '收藏模板'} className={template.favorite ? 'favorite-active' : ''} onClick={() => onToggleFavorite(template.id)}><Star size={17} fill={template.favorite ? 'currentColor' : 'none'}/></IconButton><div ref={menuRef} className="card-menu-wrap"><IconButton label="模板操作" onClick={() => setMenu((current) => !current)}><MoreHorizontal size={19}/></IconButton>{menu && <div className="context-menu"><button onClick={() => { setMenu(false); setRenaming(true); }}><Type size={16}/>编辑名称</button><button onClick={openTemplateFolder}><FolderOpen size={16}/>打开模板文件夹</button><button className="danger" onClick={() => { setMenu(false); onDelete(template.id); }}><Trash2 size={16}/>删除模板</button></div>}</div></div></div>
     <div className="card-actions"><button className="secondary-button" onClick={() => onEdit(template)}><Pencil size={16}/>编辑</button><button className="primary-button grow" onClick={() => onUse(template)}><Sparkles size={17}/>使用模板</button></div>
   </article>{pasteMenu && <div ref={pasteMenuRef} className="library-paste-menu" style={{ left: pasteMenu.x, top: pasteMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={pasteImage} disabled={quickWorking}><Clipboard size={16}/>粘贴图片并复制作品</button></div>}{renaming && <RenameTemplateDialog template={template} onCancel={() => setRenaming(false)} onSave={onRename}/>}</>;
 }
@@ -1240,9 +1247,12 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const [draft, commitDraft, undo, canUndo, redo, canRedo] = useUndoState(() => initialStateRef.current.draft);
   const [selectedIds, setSelectedIds] = useState(() => draft.layers.at(-1)?.id ? [draft.layers.at(-1).id] : []);
   const selectedId = selectedIds.at(-1) || null;
-  const { zoom, pan, panning, setZoom, zoomAtPointer, beginPan } = useCanvasViewport(.72, .2, 1.3);
+  const { zoom, pan, panning, setZoom, zoomAtPointer, beginPan } = useCanvasViewport(.72, .2, 10);
   const [activeTool, setActiveTool] = useState('select');
   const [sizeMode, setSizeMode] = useState('canvas');
+  const [imageSizeLocked, setImageSizeLocked] = useState(true);
+  const [textOrientation, setTextOrientation] = useState('horizontal');
+  const [textMenu, setTextMenu] = useState(false);
   const [paintColor, setPaintColor] = useState('#202124');
   const [brushSize, setBrushSize] = useState(18);
   const [eraserMode, setEraserMode] = useState('paint');
@@ -1564,14 +1574,21 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
         } else tryBack();
       }
     };
-    const closeMenus = () => { setShapeMenu(false); setLayerMenu(null); setEraserMenu(false); };
+    const closeMenus = () => { setShapeMenu(false); setLayerMenu(null); setEraserMenu(false); setTextMenu(false); };
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('pointerdown', closeMenus);
     return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('pointerdown', closeMenus); };
   }, [copySelectedLayers, nudgeSelectedLayers, pasteLayers, redoDraft, removeSelectedLayers, selectedIds.length, textEditingId, tryBack, undoDraft]);
 
   useEffect(() => {
-    if (!['select', 'picker', 'marquee'].includes(activeTool) && (selectedLayers.length !== 1 || selected?.locked)) setActiveTool('select');
+    if (activeTool !== 'text') return undefined;
+    const exitTextTool = (event) => { if (!event.target.closest?.('.canvas-scroll, .text-add-wrap')) { setActiveTool('select'); setTextMenu(false); } };
+    window.addEventListener('pointerdown', exitTextTool);
+    return () => window.removeEventListener('pointerdown', exitTextTool);
+  }, [activeTool]);
+
+  useEffect(() => {
+    if (!['select', 'picker', 'marquee', 'text'].includes(activeTool) && (selectedLayers.length !== 1 || selected?.locked)) setActiveTool('select');
   }, [activeTool, selected, selectedLayers.length]);
 
   useEffect(() => {
@@ -1627,11 +1644,13 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     setShapeMenu(false); setActiveTool('select');
   };
 
-  const addTextLayer = () => {
+  const addTextLayer = (point = null, orientation = textOrientation) => {
     const initializeCanvas = !draft.layers.length && draft.width === 0 && draft.height === 0;
-    const seed = { id: uid(), name: `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`, type: 'text', text: '输入文字', x: initializeCanvas ? 0 : Math.round(draft.width * .18), y: initializeCanvas ? 0 : Math.round(draft.height * .18), width: 1, height: 1, rotation: 0, visible: true, fontSize: 48, fontFamily: 'Microsoft YaHei', fontStyle: 'normal', textDecoration: '', align: 'center', fill: '#22211f', lineHeight: 1.25, autoFit: false, stroke: '#ffffff', strokeWidth: 0, shadowEnabled: false, shadowColor: '#000000', shadowBlur: 8, shadowOffsetX: 2, shadowOffsetY: 2, background: '', backgroundPadding: 8 };
+    const seed = { id: uid(), name: `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`, type: 'text', text: '输入文字', textOrientation: orientation, x: initializeCanvas ? 0 : Math.round(point?.x ?? draft.width * .18), y: initializeCanvas ? 0 : Math.round(point?.y ?? draft.height * .18), width: 1, height: 1, rotation: 0, visible: true, fontSize: 48, fontFamily: 'Microsoft YaHei', fontStyle: 'normal', textDecoration: '', align: 'center', fill: '#22211f', lineHeight: 1.25, autoFit: false, stroke: '#ffffff', strokeWidth: 0, shadowEnabled: false, shadowColor: '#000000', shadowBlur: 8, shadowOffsetX: 2, shadowOffsetY: 2, background: '', backgroundPadding: 8 };
+    seed.name = `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`;
     const layer = fitTextLayerToContent(seed);
-    updateDraft((prev) => ({ ...prev, width: initializeCanvas ? layer.width : prev.width, height: initializeCanvas ? layer.height : prev.height, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null); setActiveTool('select');
+    updateDraft((prev) => ({ ...prev, width: initializeCanvas ? layer.width : prev.width, height: initializeCanvas ? layer.height : prev.height, layers: [...prev.layers, layer] }));
+    setSelectedIds([layer.id]); setSelectedGroupId(null); setTextEditingId(layer.id); setTextSelection({ id: layer.id, start: 0, end: String(layer.text).length }); setPropertyTextSelection(null); setTextMenu(false); setActiveTool('select');
   };
 
   const autoSizeCanvas = () => {
@@ -2106,45 +2125,22 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const sizeHeight = sizeMode === 'image' ? (imageBounds?.height || 0) : draft.height;
   const commitToolbarSize = (axis, rawValue) => {
     const value = Math.max(sizeMode === 'image' ? 1 : 0, rawValue);
-    if (sizeMode !== 'image') {
-      updateDraft((previous) => ({ ...previous, [axis]: value }));
-      return;
-    }
+    if (sizeMode !== 'image') { updateDraft((previous) => ({ ...previous, [axis]: value })); return; }
     if (!imageBounds || imageBounds.width <= 0 || imageBounds.height <= 0) return;
-    const sourceSize = axis === 'width' ? imageBounds.width : imageBounds.height;
-    const scale = value / sourceSize;
-    const scaled = (number) => Math.round(number * scale * 1000) / 1000;
+    const requestedScale = value / (axis === 'width' ? imageBounds.width : imageBounds.height);
+    const scaleX = imageSizeLocked || axis === 'width' ? requestedScale : 1;
+    const scaleY = imageSizeLocked || axis === 'height' ? requestedScale : 1;
+    const visualScale = imageSizeLocked ? requestedScale : Math.sqrt(scaleX * scaleY);
+    const scaledX = (number) => Math.round(number * scaleX * 1000) / 1000;
+    const scaledY = (number) => Math.round(number * scaleY * 1000) / 1000;
+    const scaledVisual = (number) => Math.round(number * visualScale * 1000) / 1000;
     updateDraft((previous) => ({
       ...previous,
-      width: Math.max(0, Math.round(previous.width * scale * 1000) / 1000),
-      height: Math.max(0, Math.round(previous.height * scale * 1000) / 1000),
+      width: Math.max(0, scaledX(previous.width)), height: Math.max(0, scaledY(previous.height)),
       layers: previous.layers.map((layer) => {
-        const next = {
-          ...layer,
-          x: scaled(layer.x),
-          y: scaled(layer.y),
-          width: Math.max(0.001, scaled(layer.width)),
-          height: Math.max(0.001, scaled(layer.height)),
-          borderWidth: scaled(Number(layer.borderWidth) || 0)
-        };
+        const next = { ...layer, x: scaledX(layer.x), y: scaledY(layer.y), width: Math.max(.001, scaledX(layer.width)), height: Math.max(.001, scaledY(layer.height)), borderWidth: scaledVisual(Number(layer.borderWidth) || 0) };
         if (layer.type !== 'text') return next;
-        return {
-          ...next,
-          fontSize: scaled(Number(layer.fontSize) || 0),
-          strokeWidth: scaled(Number(layer.strokeWidth) || 0),
-          backgroundPadding: scaled(Number(layer.backgroundPadding) || 0),
-          shadowBlur: scaled(Number(layer.shadowBlur) || 0),
-          shadowOffsetX: scaled(Number(layer.shadowOffsetX) || 0),
-          shadowOffsetY: scaled(Number(layer.shadowOffsetY) || 0),
-          textRuns: Array.isArray(layer.textRuns) ? layer.textRuns.map((run) => ({
-            ...run,
-            style: {
-              ...run.style,
-              ...('fontSize' in (run.style || {}) ? { fontSize: scaled(Number(run.style.fontSize) || 0) } : {}),
-              ...('strokeWidth' in (run.style || {}) ? { strokeWidth: scaled(Number(run.style.strokeWidth) || 0) } : {})
-            }
-          })) : layer.textRuns
-        };
+        return { ...next, fontSize: scaledVisual(Number(layer.fontSize) || 0), strokeWidth: scaledVisual(Number(layer.strokeWidth) || 0), backgroundPadding: scaledVisual(Number(layer.backgroundPadding) || 0), shadowBlur: scaledVisual(Number(layer.shadowBlur) || 0), shadowOffsetX: scaledX(Number(layer.shadowOffsetX) || 0), shadowOffsetY: scaledY(Number(layer.shadowOffsetY) || 0), textRuns: Array.isArray(layer.textRuns) ? layer.textRuns.map((run) => ({ ...run, style: { ...run.style, ...('fontSize' in (run.style || {}) ? { fontSize: scaledVisual(Number(run.style.fontSize) || 0) } : {}), ...('strokeWidth' in (run.style || {}) ? { strokeWidth: scaledVisual(Number(run.style.strokeWidth) || 0) } : {}) } })) : layer.textRuns };
       })
     }));
   };
@@ -2196,18 +2192,18 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   };
 
   return <main className="editor-page">
-    <header className="editor-topbar"><div className="editor-left"><IconButton label="返回模板库" onClick={tryBack}><ArrowLeft size={21}/></IconButton><div className="title-field"><input value={draft.name} onChange={(e) => updateDraft({ ...draft, name: e.target.value })}/><span>{draft.width} x {draft.height}px</span></div></div><div className="editor-center"><span className="status-dot"></span>{autosaveState === 'saving' ? '正在自动保存' : autosaveState === 'error' ? '自动保存失败' : initialStateRef.current.restored ? '已恢复草稿' : dirty ? '已自动保存' : '已保存'}</div><div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undoDraft} disabled={!canUndo}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redoDraft} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={tryBack}>取消</button><button className="primary-button" onClick={save}><Save size={17}/>保存模板</button></div></header>
+    <header className="editor-topbar"><div className="editor-left"><IconButton label="返回模板库" onClick={tryBack}><ArrowLeft size={21}/></IconButton><div className="title-field"><div className="editable-template-name" title="点击编辑模板名称"><input aria-label="模板名称" value={draft.name} onChange={(e) => updateDraft({ ...draft, name: e.target.value })}/><Pencil size={13} aria-hidden="true"/></div><span>{draft.width} x {draft.height}px</span></div></div><div className="editor-center"><span className="status-dot"></span>{autosaveState === 'saving' ? '正在自动保存' : autosaveState === 'error' ? '自动保存失败' : initialStateRef.current.restored ? '已恢复草稿' : dirty ? '已自动保存' : '已保存'}</div><div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undoDraft} disabled={!canUndo}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redoDraft} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={tryBack}>取消</button><button className="primary-button" onClick={save}><Save size={17}/>保存模板</button></div></header>
     <div className="editor-body">
-      <aside className="layers-panel" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu}><div className="panel-title"><div><span>图层</span><small>{draft.layers.length}</small></div></div><div className="layer-add-row"><button onClick={() => memeInput.current.click()}><ImagePlus size={18}/><span>添加固定图层</span></button><div className="shape-picker-wrap"><button onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Shapes size={18}/><span>添加可替换照片</span></button>{shapeMenu && <div className="shape-picker" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => addEmptySlot('rect')}><Square size={17}/><span>矩形</span></button><button onClick={() => addEmptySlot('circle')}><Circle size={17}/><span>圆形</span></button><button onClick={() => addEmptySlot('rounded')}><Shapes size={17}/><span>圆角矩形</span></button><button onClick={() => addEmptySlot('polygon')}><Pentagon size={17}/><span>多边形</span></button></div>}</div><button onClick={addTextLayer}><Type size={18}/><span>添加文字</span></button></div><label className="template-tags-field"><span>模板标签</span><input value={tagsText} onChange={(event) => { const value = event.target.value; setTagsText(value); updateDraft({ ...draft, tags: value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 10) }); }} placeholder="反应、工作、猫"/></label><input ref={memeInput} hidden type="file" accept="image/*" onChange={(event) => event.target.files[0] && addImage(event.target.files[0])}/>
+      <aside className="layers-panel" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu}><div className="panel-title"><div><span>图层</span><small>{draft.layers.length}</small></div></div><div className="layer-add-row"><button onClick={() => memeInput.current.click()}><ImagePlus size={18}/><span>添加固定图层</span></button><div className="shape-picker-wrap"><button onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Shapes size={18}/><span>添加可替换照片</span></button>{shapeMenu && <div className="shape-picker" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => addEmptySlot('rect')}><Square size={17}/><span>矩形</span></button><button onClick={() => addEmptySlot('circle')}><Circle size={17}/><span>圆形</span></button><button onClick={() => addEmptySlot('rounded')}><Shapes size={17}/><span>圆角矩形</span></button><button onClick={() => addEmptySlot('polygon')}><Pentagon size={17}/><span>多边形</span></button></div>}</div><div className="text-add-wrap"><button className={activeTool === 'text' ? 'active' : ''} onClick={() => { setTextOrientation('horizontal'); setTextMenu(false); setActiveTool('text'); }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setTextMenu(true); }}><Type size={18}/><span>添加文字</span></button>{textMenu && <div className="text-orientation-menu" onPointerDown={(event) => event.stopPropagation()}><button className={textOrientation === 'horizontal' ? 'active' : ''} onClick={() => { setTextOrientation('horizontal'); setTextMenu(false); setActiveTool('text'); }}>横排文本</button><button className={textOrientation === 'vertical' ? 'active' : ''} onClick={() => { setTextOrientation('vertical'); setTextMenu(false); setActiveTool('text'); }}>竖排文本</button></div>}</div></div><label className="template-tags-field"><span>模板标签</span><input value={tagsText} onChange={(event) => { const value = event.target.value; setTagsText(value); updateDraft({ ...draft, tags: value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 10) }); }} placeholder="反应、工作、猫"/></label><input ref={memeInput} hidden type="file" accept="image/*" onChange={(event) => event.target.files[0] && addImage(event.target.files[0])}/>
         <div className="layers-list" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu}>{layerListRows}</div>
         {!draft.layers.length && <div className="layers-empty" onClick={clearSelection} onContextMenu={openLayersBlankMenu}><Layers3 size={28}/><p>添加第一个图层后，画布会自动匹配图层大小。</p></div>}
       </aside>
       <section className="canvas-workspace">
         <div className="canvas-toolbar">
-          <div className="canvas-size"><button type="button" className={`size-mode-button ${sizeMode === 'image' ? 'active' : ''}`} title={sizeMode === 'canvas' ? '点击切换为修改当前图层尺寸' : '点击切换为修改画布尺寸'} onClick={() => setSizeMode((mode) => mode === 'canvas' ? 'image' : 'canvas')}>{sizeMode === 'canvas' ? '画布' : '图像'}</button><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeWidth} disabled={sizeMode === 'image' && !imageBounds} onCommit={(width) => commitToolbarSize('width', width)}/><span>×</span><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeHeight} disabled={sizeMode === 'image' && !imageBounds} onCommit={(height) => commitToolbarSize('height', height)}/><button className="auto-canvas-button" disabled={sizeMode === 'image'} onClick={autoSizeCanvas}>自动设置</button></div>
+          <div className="canvas-size"><button type="button" className={`size-mode-button ${sizeMode === 'image' ? 'active' : ''}`} title={sizeMode === 'canvas' ? '点击切换为修改图像尺寸' : '点击切换为修改画布尺寸'} onClick={() => setSizeMode((mode) => mode === 'canvas' ? 'image' : 'canvas')}>{sizeMode === 'canvas' ? '画布' : '图像'}</button><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeWidth} disabled={sizeMode === 'image' && !imageBounds} onCommit={(width) => commitToolbarSize('width', width)}/><span>×</span><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeHeight} disabled={sizeMode === 'image' && !imageBounds} onCommit={(height) => commitToolbarSize('height', height)}/>{sizeMode === 'image' && <IconButton className={`size-lock-button ${imageSizeLocked ? 'active' : ''}`} label={imageSizeLocked ? '已锁定宽高比' : '锁定宽高比'} onClick={() => setImageSizeLocked((locked) => !locked)}><Link2 size={15}/></IconButton>}{sizeMode === 'canvas' && <button className="auto-canvas-button" onClick={autoSizeCanvas}>自动设置</button>}</div>
           <div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>
         </div>
-        <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropImageOnEditor} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, altKey: event.altKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { if (beginOutsideSelectionDrag(event)) return; const blank = !event.target.closest('.stage-shadow, .canvas-tool-dock'); if (activeTool === 'select' && blank) { clearSelection(); beginPan(event); } else if (activeTool === 'marquee' && event.button === 0 && blank) { event.preventDefault(); setMarqueeStartRequest({ clientX: event.clientX, clientY: event.clientY, key: event.timeStamp }); } }}>
+        <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropImageOnEditor} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, altKey: event.altKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { if (activeTool === 'text' && event.button === 0) { event.preventDefault(); event.stopPropagation(); const bounds = stageHostRef.current?.getBoundingClientRect(); const point = bounds ? { x: clamp((event.clientX - bounds.left) / zoom, 0, Math.max(0, draft.width)), y: clamp((event.clientY - bounds.top) / zoom, 0, Math.max(0, draft.height)) } : { x: 0, y: 0 }; addTextLayer(point, textOrientation); return; } if (beginOutsideSelectionDrag(event)) return; const blank = !event.target.closest('.stage-shadow, .canvas-tool-dock'); if (activeTool === 'select' && blank) { clearSelection(); beginPan(event); } else if (activeTool === 'marquee' && event.button === 0 && blank) { event.preventDefault(); setMarqueeStartRequest({ clientX: event.clientX, clientY: event.clientY, key: event.timeStamp }); } }}>
           <div className="canvas-tool-dock"><div className="editor-paint-tools">
             <IconButton label="选择与移动" className={activeTool === 'select' ? 'active' : ''} onClick={() => setActiveTool('select')}><MousePointer2 size={17}/></IconButton>
             <IconButton label="选框工具：拖动后右键复制或剪切图层" className={activeTool === 'marquee' ? 'active' : ''} onClick={() => setActiveTool('marquee')}><BoxSelect size={17}/></IconButton>
@@ -2333,7 +2329,7 @@ function RichTextOverlay({ layer, zoom, selectionRange, onChange, onSelectionCha
   const selectionRef = useRef({ start: 0, end: String(layer.text || '').length });
   const overlayBaseSize = baseTextStyle(layer).fontSize;
   const overlayFontScale = overlayBaseSize > 0 ? resolveTextFontSize(layer) / overlayBaseSize : 1;
-  const renderSignature = JSON.stringify({ text: layer.text || '', runs: layer.textRuns || [], base: baseTextStyle(layer), selectionRange, zoom, layout: { width: layer.width, height: layer.height, autoFit: layer.autoFit, backgroundPadding: layer.backgroundPadding, shadowEnabled: layer.shadowEnabled, shadowColor: layer.shadowColor, shadowBlur: layer.shadowBlur, shadowOffsetX: layer.shadowOffsetX, shadowOffsetY: layer.shadowOffsetY } });
+  const renderSignature = JSON.stringify({ text: layer.text || '', runs: layer.textRuns || [], base: baseTextStyle(layer), selectionRange, zoom, layout: { width: layer.width, height: layer.height, textOrientation: layer.textOrientation, autoFit: layer.autoFit, backgroundPadding: layer.backgroundPadding, shadowEnabled: layer.shadowEnabled, shadowColor: layer.shadowColor, shadowBlur: layer.shadowBlur, shadowOffsetX: layer.shadowOffsetX, shadowOffsetY: layer.shadowOffsetY } });
   useLayoutEffect(() => {
     const editor = editorRef.current;
     if (!editor || composingRef.current) return;
@@ -2396,6 +2392,8 @@ function RichTextOverlay({ layer, zoom, selectionRange, onChange, onSelectionCha
       padding: `${Math.max(0, Number(layer.backgroundPadding) || 0) * zoom}px`,
       transform: `rotate(${layer.rotation || 0}deg)`,
       textAlign: layer.align || 'left',
+      writingMode: layer.textOrientation === 'vertical' ? 'vertical-rl' : 'horizontal-tb',
+      textOrientation: layer.textOrientation === 'vertical' ? 'upright' : 'mixed',
       lineHeight: 'normal',
       background: layer.background || 'transparent'
     }}
@@ -3128,6 +3126,7 @@ function MultiSelectionProperties({ layers, grouped, onGroup, onUngroup, onToggl
 }
 
 function Properties({ layer, textStyle, textSelection, onBeginTextInteraction, onTextSelectionChange, updateTextStyle, updateText, update, toggleLock, remove, move }) {
+  const disabledReplacement = layer.type === 'slot' && layer.replacementDisabled;
   const activeTextStyle = textStyle || baseTextStyle(layer);
   const fontTokens = String(activeTextStyle.fontStyle || '').split(' ').filter((token) => token && token !== 'normal');
   const decorationTokens = String(activeTextStyle.textDecoration || '').split(' ').filter(Boolean);
@@ -3349,7 +3348,7 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
   const { composition, slotSources, slotNames, slotTransforms } = session;
   const [result, setResult] = useState('');
   const [copied, setCopied] = useState(false);
-  const { zoom, pan, panning, setZoom, zoomAtPointer, beginPan } = useCanvasViewport(1, .5, 3);
+  const { zoom, pan, panning, setZoom, zoomAtPointer, beginPan } = useCanvasViewport(1, .5, 10);
   const [selectedId, setSelectedId] = useState(template.layers.find((layer) => layer.type === 'slot' && !layer.replacementDisabled)?.id || null);
   const [textEditingId, setTextEditingId] = useState(null);
   const [textSelection, setTextSelection] = useState(null);
