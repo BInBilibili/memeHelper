@@ -24,6 +24,13 @@ const browserDesktop = {
   saveEditorDrafts: async (value) => localStorage.setItem('meme-helper-editor-drafts', JSON.stringify(value)),
   loadUseSessions: async () => JSON.parse(localStorage.getItem('meme-helper-use-sessions') || '{}'),
   saveUseSessions: async (value) => localStorage.setItem('meme-helper-use-sessions', JSON.stringify(value)),
+  decodeGifFrames: async (dataUrl) => {
+    const image = await loadImage(dataUrl);
+    const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
+    canvas.getContext('2d').drawImage(image, 0, 0);
+    return { width: image.width, height: image.height, frames: [{ dataUrl: canvas.toDataURL('image/png'), delayMs: 100, width: image.width, height: image.height }] };
+  },
+  encodeGifFrames: async (frames) => frames[0]?.dataUrl || '',
   copyImage: async (dataUrl, clipboardDataUrl) => {
     const blob = await (await fetch(clipboardDataUrl || dataUrl)).blob();
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
@@ -64,6 +71,8 @@ const desktop = window.__TAURI_INTERNALS__ ? {
   loadUseSessions: () => invoke('load_use_sessions'),
   saveUseSessions: (sessions) => invoke('save_use_sessions', { sessions }),
   copyImages: (dataUrls) => invoke('copy_images', { dataUrls }),
+  decodeGifFrames: (dataUrl) => invoke('decode_gif_frames', { dataUrl }),
+  encodeGifFrames: (frames, loopCount = null) => invoke('encode_gif_frames', { frames, loopCount }),
   copyImage: (dataUrl, clipboardDataUrl) => invoke('copy_image', { dataUrl, clipboardDataUrl }),
   readClipboardImage: () => invoke('read_clipboard_image'),
   saveImage: (dataUrl, suggestedName) => invoke('save_image', { dataUrl, suggestedName }),
@@ -784,6 +793,82 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
   return canvas.toDataURL(mime, mime === 'image/jpeg' ? .92 : undefined);
 }
 
+
+const isGifSource = (source) => typeof source === 'string' && (/^data:image\/gif(?:;|,)/i.test(source) || /\.gif(?:[?#]|$)/i.test(source));
+
+function sourceForLayer(template, layer, replacements = {}) {
+  if (layer.type === 'slot') return replacements?.[layer.id] || (layer.replacementDisabled ? '' : layer.src) || '';
+  return layer.src || '';
+}
+
+function animationFrameAtTime(animation, time) {
+  const total = animation.frames.reduce((sum, frame) => sum + Math.max(20, Number(frame.delayMs) || 100), 0) || 100;
+  let cursor = ((time % total) + total) % total;
+  for (const frame of animation.frames) {
+    const delay = Math.max(20, Number(frame.delayMs) || 100);
+    if (cursor < delay) return frame;
+    cursor -= delay;
+  }
+  return animation.frames.at(-1);
+}
+
+async function renderAnimatedTemplate(template, replacements = {}, photoTransforms = {}, options = {}) {
+  const scale = typeof options === 'number' ? options : clamp(options.scale || 1, 1, 10);
+  const transparent = typeof options === 'object' && Boolean(options.transparent);
+  const animations = [];
+  for (const layer of template.layers || []) {
+    const source = sourceForLayer(template, layer, replacements);
+    if (!isGifSource(source)) continue;
+    const decoded = await desktop.decodeGifFrames(source);
+    if (!decoded?.frames?.length) continue;
+    animations.push({ layer, source, ...decoded });
+  }
+  if (!animations.length) {
+    const png = await renderTemplate(template, replacements, photoTransforms, { scale, transparent, mime: 'image/png' });
+    return desktop.encodeGifFrames([{ dataUrl: png, delayMs: 100 }], null);
+  }
+  const durationOf = (animation) => animation.frames.reduce((sum, frame) => sum + Math.max(20, Number(frame.delayMs) || 100), 0);
+  const totalDuration = Math.max(...animations.map(durationOf), 100);
+  const timePoints = new Set([0, totalDuration]);
+  animations.forEach((animation) => {
+    const duration = durationOf(animation);
+    let elapsed = 0;
+    while (elapsed < totalDuration && timePoints.size < 240) {
+      timePoints.add(elapsed);
+      const current = animationFrameAtTime(animation, elapsed % duration);
+      elapsed += Math.max(20, Number(current?.delayMs) || 100);
+    }
+  });
+  let points = [...timePoints].sort((a, b) => a - b);
+  if (points.length > 121) {
+    const stride = Math.ceil((points.length - 1) / 120);
+    points = points.filter((_, index) => index === 0 || index === points.length - 1 || index % stride === 0);
+    if (points.at(-1) !== totalDuration) points.push(totalDuration);
+  }
+  const outputFrames = [];
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const start = points[index];
+    const end = points[index + 1];
+    const frameReplacements = { ...replacements };
+    const animatedSources = new Map();
+    animations.forEach((animation) => {
+      const frame = animationFrameAtTime(animation, start);
+      animatedSources.set(animation.layer.id, frame?.dataUrl);
+      if (animation.layer.type === 'slot') frameReplacements[animation.layer.id] = frame?.dataUrl || '';
+    });
+    const frameTemplate = {
+      ...template,
+      layers: (template.layers || []).map((layer) => {
+        const frameSource = animatedSources.get(layer.id);
+        return frameSource && layer.type !== 'slot' ? { ...layer, src: frameSource } : layer;
+      })
+    };
+    const dataUrl = await renderTemplate(frameTemplate, frameReplacements, photoTransforms, { scale, transparent, mime: 'image/png' });
+    outputFrames.push({ dataUrl, delayMs: Math.max(20, Math.round(end - start)) });
+  }
+  return desktop.encodeGifFrames(outputFrames, null);
+}
+
 function useHtmlImage(src) {
   const [image, setImage] = useState(null);
   useEffect(() => {
@@ -1307,6 +1392,11 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       .map(([groupId]) => groupId)
   ));
   const [selectedGroupId, setSelectedGroupId] = useState(null);
+  // Keep the group selection separate from the active group used by the
+  // properties panel/canvas.  A group is represented by all of its member
+  // layer ids in selectedIds, while selectedGroupIds lets the layer list
+  // preserve Ctrl/Shift multi-selection of group headers.
+  const [selectedGroupIds, setSelectedGroupIds] = useState([]);
   const [draggedLayerId, setDraggedLayerId] = useState(null);
   const [layerDrop, setLayerDrop] = useState(null);
   const [editingLayerName, setEditingLayerName] = useState(null);
@@ -1318,6 +1408,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const clipboardLayersRef = useRef({ layers: [], groupMeta: {} });
   const layerReorderRef = useRef(null);
   const selectionAnchorRef = useRef(selectedIds.at(-1) || null);
+  const groupSelectionAnchorRef = useRef(null);
   const selected = draft.layers.find((item) => item.id === selectedId);
   const activeTextSelection = selected?.type === 'text'
     ? textEditingId === selected.id && textSelection?.id === selected.id
@@ -1338,6 +1429,8 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const clearSelection = useCallback(() => {
     setSelectedIds([]);
     setSelectedGroupId(null);
+    setSelectedGroupIds([]);
+    groupSelectionAnchorRef.current = null;
     setTextEditingId(null);
     setTextSelection(null);
     setPropertyTextSelection(null);
@@ -1352,6 +1445,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     const rangeSelect = event.shiftKey && !event.ctrlKey && !event.metaKey;
     const additive = event.ctrlKey || event.metaKey;
     setSelectedGroupId(null);
+    setSelectedGroupIds([]);
     if (!rangeSelect) selectionAnchorRef.current = id;
     setSelectedIds((current) => {
       if (rangeSelect) {
@@ -1381,14 +1475,34 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     const memberIds = draft.layers.filter((item) => item.groupId === groupId).map((item) => item.id);
     if (!memberIds.length) return;
     if (event.shiftKey) event.preventDefault?.();
-    const additive = event.ctrlKey || event.metaKey;
-    selectionAnchorRef.current = memberIds.at(-1);
-    setSelectedIds((current) => {
-      if (!additive) return memberIds;
-      const allSelected = memberIds.every((id) => current.includes(id));
-      return allSelected ? current.filter((id) => !memberIds.includes(id)) : [...new Set([...current, ...memberIds])];
+    const groupOrder = [];
+    const seen = new Set();
+    [...draft.layers].reverse().forEach((layer) => {
+      if (!layer.groupId || seen.has(layer.groupId)) return;
+      seen.add(layer.groupId);
+      groupOrder.push(layer.groupId);
     });
-    setSelectedGroupId(additive ? null : groupId);
+    const additive = event.ctrlKey || event.metaKey;
+    const rangeSelect = event.shiftKey && !additive;
+    if (!rangeSelect) groupSelectionAnchorRef.current = groupId;
+    setSelectedGroupIds((current) => {
+      let next;
+      if (rangeSelect) {
+        const anchor = groupSelectionAnchorRef.current || current.at(-1) || groupId;
+        const anchorIndex = groupOrder.indexOf(anchor);
+        const targetIndex = groupOrder.indexOf(groupId);
+        if (anchorIndex < 0 || targetIndex < 0) next = [groupId];
+        else next = groupOrder.slice(Math.min(anchorIndex, targetIndex), Math.max(anchorIndex, targetIndex) + 1);
+      } else if (additive) {
+        next = current.includes(groupId) ? current.filter((id) => id !== groupId) : [...current, groupId];
+      } else {
+        next = [groupId];
+      }
+      const nextMemberIds = draft.layers.filter((layer) => layer.groupId && next.includes(layer.groupId)).map((layer) => layer.id);
+      setSelectedIds(nextMemberIds);
+      setSelectedGroupId(next.length === 1 ? next[0] : null);
+      return next;
+    });
   }, [draft.layers]);
   const copyLayersByIds = useCallback((ids) => {
     const layers = draft.layers.filter((item) => ids.includes(item.id));
@@ -1499,10 +1613,21 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
         y: copiedLayer.y + 20
       };
     });
-    const copiedGroupMeta = Object.fromEntries([...groupMap].map(([oldId, newId]) => [newId, {
-      ...structuredClone(clipboardLayersRef.current.groupMeta[oldId] || {}),
-      name: `${clipboardLayersRef.current.groupMeta[oldId]?.name || '图层组'} 副本`
-    }]));
+    const usedGroupNames = new Set(Object.values(draft.groupMeta || {}).map((meta) => String(meta?.name || '').trim()).filter(Boolean));
+    const copiedGroupMeta = Object.fromEntries([...groupMap].map(([oldId, newId]) => {
+      const sourceMeta = clipboardLayersRef.current.groupMeta[oldId] || {};
+      const sourceName = String(sourceMeta.name || '图层组 1').trim();
+      const defaultName = /^图层组\s+\d+$/.test(sourceName);
+      let name = sourceName;
+      if (defaultName) {
+        let number = Number(sourceName.match(/(\d+)$/)?.[1] || 1) + 1;
+        do { name = `图层组 ${number++}`; } while (usedGroupNames.has(name));
+      } else {
+        name = `${sourceName} 副本`;
+      }
+      usedGroupNames.add(name);
+      return [newId, { ...structuredClone(sourceMeta), name }];
+    }));
     updateDraft((previous) => {
       const selectedIndexes = previous.layers.map((layer, index) => selectedIds.includes(layer.id) ? index : -1).filter((index) => index >= 0);
       const insertAt = selectedIndexes.length ? Math.max(...selectedIndexes) + 1 : previous.layers.length;
@@ -1515,7 +1640,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     setSelectedIds(layers.map((layer) => layer.id));
     setSelectedGroupId(groupMap.size === 1 ? [...groupMap.values()][0] : null);
     setActiveTool('select');
-  }, [notify, selectedIds, updateDraft]);
+  }, [draft.groupMeta, notify, selectedIds, updateDraft]);
   const removeSelectedLayers = useCallback(() => {
     const removableIds = draft.layers.filter((layer) => selectedIds.includes(layer.id) && !layer.locked).map((layer) => layer.id);
     if (!removableIds.length) return notify('所选图层已锁定', 'error');
@@ -1639,6 +1764,14 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     setSelectedIds((current) => current.filter((id) => available.has(id)));
     const groups = new Set(draft.layers.map((layer) => layer.groupId).filter(Boolean));
     if (selectedGroupId && !groups.has(selectedGroupId)) setSelectedGroupId(null);
+    setSelectedGroupIds((current) => {
+      const next = current.filter((groupId) => groups.has(groupId));
+      if (next.length !== current.length) {
+        setSelectedGroupId(next.length === 1 ? next[0] : null);
+        setSelectedIds(draft.layers.filter((layer) => layer.groupId && next.includes(layer.groupId)).map((layer) => layer.id));
+      }
+      return next.length === current.length ? current : next;
+    });
     setCollapsedGroups((current) => {
       const next = new Set([...groups].filter((groupId) => draft.groupMeta?.[groupId]?.collapsed));
       return next.size === current.size && [...next].every((groupId) => current.has(groupId)) ? current : next;
@@ -1822,19 +1955,26 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     layers.splice(direction > 0 ? targetEnd + 1 : targetStart, 0, ...moving);
     return { ...prev, layers };
   });
-  const reorderLayer = (sourceId, targetId, placement, wholeGroup = false, selectedIdsOverride = null) => {
+  const reorderLayer = (sourceId, targetId, placement, wholeGroup = false, selectedIdsOverride = null, targetGroupIdOverride = null, selectedGroupIdsOverride = null) => {
     if (!sourceId || (sourceId === targetId && !(placement === 'inside' && selectedIdsOverride?.some((id) => id !== sourceId)))) return;
-    const movedSelectionIds = wholeGroup
-      ? draft.layers.filter((item) => item.groupId && item.groupId === draft.layers.find((layer) => layer.id === sourceId)?.groupId).map((item) => item.id)
+    const movedSelectionIds = selectedGroupIdsOverride?.length
+      ? draft.layers.filter((item) => item.groupId && selectedGroupIdsOverride.includes(item.groupId)).map((item) => item.id)
+      : wholeGroup
+        ? draft.layers.filter((item) => item.groupId && item.groupId === draft.layers.find((layer) => layer.id === sourceId)?.groupId).map((item) => item.id)
       : selectedIdsOverride?.length ? [...selectedIdsOverride] : [sourceId];
     updateDraft((previous) => {
       const source = previous.layers.find((item) => item.id === sourceId);
       const target = previous.layers.find((item) => item.id === targetId);
       if (!source || !target) return previous;
-      const sourceIds = wholeGroup && source.groupId
-        ? previous.layers.filter((item) => item.groupId === source.groupId).map((item) => item.id)
+      const sourceGroupIds = selectedGroupIdsOverride?.length
+        ? selectedGroupIdsOverride
+        : wholeGroup && source.groupId ? [source.groupId] : [];
+      const sourceIds = sourceGroupIds.length
+        ? previous.layers.filter((item) => item.groupId && sourceGroupIds.includes(item.groupId)).map((item) => item.id)
         : selectedIdsOverride?.length ? previous.layers.filter((item) => selectedIdsOverride.includes(item.id)).map((item) => item.id) : [sourceId];
-      if (!wholeGroup && source.groupId && target.groupId && target.groupId !== source.groupId && placement !== 'inside') return previous;
+      const targetGroupId = targetGroupIdOverride || target.groupId || null;
+      const movingIntoTargetGroup = Boolean(targetGroupIdOverride && targetGroupIdOverride !== source.groupId);
+      if (!wholeGroup && !selectedGroupIdsOverride?.length && source.groupId && target.groupId && target.groupId !== source.groupId && placement !== 'inside' && !movingIntoTargetGroup) return previous;
       if (placement === 'inside' && target.groupId) {
         if (sourceIds.some((id) => previous.layers.find((item) => item.id === id)?.locked)) return previous;
         const groupMembers = previous.layers.filter((item) => item.groupId === target.groupId);
@@ -1844,10 +1984,19 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
         without.splice(insertAt < 0 ? without.length : insertAt + 1, 0, ...moving);
         return { ...previous, layers: without };
       }
-      const targetIds = !wholeGroup && source.groupId
+      if (movingIntoTargetGroup) {
+        if (sourceIds.some((id) => previous.layers.find((item) => item.id === id)?.locked)) return previous;
+        const moving = previous.layers.filter((item) => sourceIds.includes(item.id)).map((item) => ({ ...item, groupId: targetGroupId }));
+        const layers = previous.layers.filter((item) => !sourceIds.includes(item.id));
+        const targetIndex = layers.findIndex((item) => item.id === targetId);
+        if (targetIndex < 0) return previous;
+        layers.splice(placement === 'before' ? targetIndex + 1 : targetIndex, 0, ...moving);
+        return { ...previous, layers };
+      }
+      const targetIds = !wholeGroup && !selectedGroupIdsOverride?.length && source.groupId
         ? [targetId]
-        : target.groupId
-        ? previous.layers.filter((item) => item.groupId === target.groupId).map((item) => item.id)
+        : targetGroupId
+        ? previous.layers.filter((item) => item.groupId === targetGroupId).map((item) => item.id)
         : [targetId];
       if (sourceIds.some((id) => targetIds.includes(id)) || sourceIds.some((id) => previous.layers.find((item) => item.id === id)?.locked)) return previous;
       const detachFromGroup = !wholeGroup && source.groupId && !target.groupId;
@@ -1861,13 +2010,26 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     });
     const sourceLayer = draft.layers.find((item) => item.id === sourceId);
     setSelectedIds(movedSelectionIds);
-    setSelectedGroupId(wholeGroup ? sourceLayer?.groupId || null : null);
+    const movedGroupIds = selectedGroupIdsOverride?.length
+      ? [...selectedGroupIdsOverride]
+      : wholeGroup ? (sourceLayer?.groupId ? [sourceLayer.groupId] : []) : [];
+    setSelectedGroupIds(movedGroupIds);
+    setSelectedGroupId(movedGroupIds.length === 1 ? movedGroupIds[0] : null);
   };
   const beginLayerReorder = (event, sourceId, sourceGroupId = null) => {
     if (event.button !== 0) return;
     event.stopPropagation();
-    const dragSelectedIds = !sourceGroupId && selectedIds.includes(sourceId) && selectedIds.length > 1 ? [...selectedIds] : null;
-    if (sourceGroupId) selectGroup(sourceGroupId, event); else selectLayer(sourceId, event);
+    const dragSelectedGroupIds = sourceGroupId && selectedGroupIds.includes(sourceGroupId)
+      ? [...selectedGroupIds]
+      : sourceGroupId ? [sourceGroupId] : null;
+    const dragSelectedIds = sourceGroupId
+      ? draft.layers.filter((item) => item.groupId && dragSelectedGroupIds.includes(item.groupId)).map((item) => item.id)
+      : selectedIds.includes(sourceId) && selectedIds.length > 1 ? [...selectedIds] : null;
+    if (sourceGroupId) {
+      if (!selectedGroupIds.includes(sourceGroupId)) selectGroup(sourceGroupId, event);
+    } else if (!selectedIds.includes(sourceId)) {
+      selectLayer(sourceId, event);
+    }
     const start = { x: event.clientX, y: event.clientY };
     const resolveTarget = (pointerEvent) => {
       let row = document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)?.closest('[data-layer-id]');
@@ -1889,11 +2051,25 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       if (!targetId || (targetId === sourceId && !dragSelectedIds?.some((id) => id !== sourceId))) return null;
       const target = draft.layers.find((item) => item.id === targetId);
       if (sourceGroupId && target?.groupId === sourceGroupId) return null;
-      const targetGroupId = row?.dataset.groupId || row?.dataset.parentGroupId;
+      // A child row carries data-parent-group-id; a group header carries
+      // data-group-id. Keep the actual child row as the target so the same
+      // before/after indicator used for normal sorting is shown inside a
+      // group instead of always falling back to the group's first member.
+      const childTargetGroupId = row?.dataset.parentGroupId || null;
+      const headerTargetGroupId = row?.dataset.groupId || null;
+      const targetGroupId = childTargetGroupId || headerTargetGroupId;
       const draggedLayersOutsideTargetGroup = (dragSelectedIds || [sourceId]).some((id) => draft.layers.find((item) => item.id === id)?.groupId !== targetGroupId);
-      if (!sourceGroupId && targetGroupId && draggedLayersOutsideTargetGroup) {
+      if (!sourceGroupId && childTargetGroupId && draggedLayersOutsideTargetGroup) {
+        const rect = row.getBoundingClientRect();
+        return {
+          id: targetId,
+          placement: edgePlacement || (pointerEvent.clientY < rect.top + rect.height / 2 ? 'before' : 'after'),
+          targetGroupId: childTargetGroupId
+        };
+      }
+      if (!sourceGroupId && headerTargetGroupId && draggedLayersOutsideTargetGroup) {
         const groupMembers = draft.layers.filter((item) => item.groupId === targetGroupId);
-        return { id: groupMembers.at(-1)?.id || targetId, placement: 'inside' };
+        return { id: groupMembers.at(-1)?.id || targetId, placement: 'inside', targetGroupId: headerTargetGroupId };
       }
       let rect = row.getBoundingClientRect();
       if (sourceGroupId && target?.groupId) {
@@ -1906,7 +2082,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
           rect = { top, height: bottom - top };
         }
       }
-      return { id: targetId, placement: edgePlacement || (pointerEvent.clientY < rect.top + rect.height / 2 ? 'before' : 'after') };
+      return { id: targetId, placement: edgePlacement || (pointerEvent.clientY < rect.top + rect.height / 2 ? 'before' : 'after'), targetGroupId: sourceGroupId ? null : childTargetGroupId };
     };
     const cleanup = () => {
       window.removeEventListener('pointermove', move);
@@ -1926,7 +2102,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       const target = resolveTarget(pointerEvent);
       cleanup();
       if (active && target) {
-        reorderLayer(sourceId, target.id, target.placement, Boolean(sourceGroupId), dragSelectedIds);
+        reorderLayer(sourceId, target.id, target.placement, Boolean(sourceGroupId), dragSelectedIds, target.targetGroupId || null, dragSelectedGroupIds);
       }
       setDraggedLayerId(null);
       setLayerDrop(null);
@@ -2152,8 +2328,8 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     groupNumber += 1;
     const members = draft.layers.filter((item) => item.groupId === layer.groupId).reverse();
     const collapsed = collapsedGroups.has(layer.groupId);
-    const groupSelected = selectedGroupId === layer.groupId;
-    const dropClass = layerDrop?.id === members[0].id ? `drop-${layerDrop.placement}` : '';
+     const groupSelected = selectedGroupIds.includes(layer.groupId) || selectedGroupId === layer.groupId;
+     const dropClass = layerDrop?.id === members[0].id ? `drop-${layerDrop.placement}` : '';
     const groupName = draft.groupMeta?.[layer.groupId]?.name || `图层组 ${groupNumber}`;
     layerListRows.push(<div
       key={`group-${layer.groupId}`}
@@ -3436,6 +3612,11 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
   const cropLayer = composition.layers.find((layer) => layer.id === cropModeId && layer.type === 'slot');
   const cropTransform = cropLayer ? (slotTransforms[cropLayer.id] || { zoom: 1, offsetX: 0, offsetY: 0 }) : null;
   const outputMime = exportFormat === 'jpg' ? 'image/jpeg' : `image/${exportFormat}`;
+  const renderOutput = useCallback((targetTemplate, replacements = {}, transforms = {}, options = {}) => {
+    const mime = options.mime || 'image/png';
+    if (mime === 'image/gif') return renderAnimatedTemplate(targetTemplate, replacements, transforms, options);
+    return renderTemplate(targetTemplate, replacements, transforms, options);
+  }, []);
   const exportScaleHint = '控制保存和复制图片的像素尺寸；2x 的宽高均为 1x 的 2 倍。';
 
   const editTextLayer = useCallback((id) => {
@@ -3585,14 +3766,14 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
     const request = ++renderRequest.current;
     let cancelled = false;
     setCopied(false);
-    renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: outputMime }).then((dataUrl) => {
+    renderOutput(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: outputMime }).then((dataUrl) => {
       if (cancelled || request !== renderRequest.current) return;
       setResult(dataUrl);
     }).catch((error) => {
       if (!cancelled) notify(`生成失败：${error.message}`, 'error');
     });
     return () => { cancelled = true; };
-  }, [composition, exportScale, outputMime, slotSources, slotTransforms, transparent, notify]);
+  }, [composition, exportScale, outputMime, renderOutput, slotSources, slotTransforms, transparent, notify]);
 
   const acceptFile = useCallback(async (file, targetId) => {
     try {
@@ -3612,11 +3793,11 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
     if (!slotId) return notify('多图拖入仅支持模板只有一个可替换照片图层的情况', 'error');
     try {
       const sources = await Promise.all(files.map((file) => fileToDataUrl(file)));
-      const outputs = await Promise.all(sources.map((source) => renderTemplate(composition, { ...slotSources, [slotId]: source }, { ...slotTransforms, [slotId]: { zoom: 1, offsetX: 0, offsetY: 0 } }, { scale: exportScale, transparent, mime: 'image/png' })));
+      const outputs = await Promise.all(sources.map((source) => renderOutput(composition, { ...slotSources, [slotId]: source }, { ...slotTransforms, [slotId]: { zoom: 1, offsetX: 0, offsetY: 0 } }, { scale: exportScale, transparent, mime: outputMime })));
       if (outputs.length === 1) await desktop.copyImage(outputs[0]); else await desktop.copyImages(outputs);
       replaceSlotSource(slotId, sources.at(-1), files.at(-1)?.name || ''); setResult(outputs.at(-1)); setCopied(true); notify(`已生成并复制 ${outputs.length} 张作品`);
     } catch (error) { notify(`批量生成失败：${error?.message || error}`, 'error'); }
-  }, [composition, exportScale, notify, replaceSlotSource, slotSources, slotTransforms, slots, transparent]);
+  }, [composition, exportScale, notify, outputMime, renderOutput, replaceSlotSource, slotSources, slotTransforms, slots, transparent]);
 
   const requestSlotImage = useCallback((slotId) => {
     const layer = composition.layers.find((item) => item.id === slotId);
@@ -3633,10 +3814,10 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
   }, [acceptFile, composition.layers, initialFile]);
 
   const currentResult = useCallback(async () => {
-    const dataUrl = await renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: outputMime });
+    const dataUrl = await renderOutput(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: outputMime });
     setResult(dataUrl);
     return dataUrl;
-  }, [composition, exportScale, outputMime, slotSources, slotTransforms, transparent]);
+  }, [composition, exportScale, outputMime, renderOutput, slotSources, slotTransforms, transparent]);
 
   const copyAgain = useCallback(async () => {
     const dataUrl = await currentResult();
@@ -3712,7 +3893,7 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
   const save = async () => {
     if (!Object.keys(slotSources).length) return;
     try {
-      const dataUrl = await renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, mime: outputMime, transparent });
+      const dataUrl = await renderOutput(composition, slotSources, slotTransforms, { scale: exportScale, mime: outputMime, transparent });
       const path = await desktop.saveImage(dataUrl, `${template.name}-${Date.now()}.${exportFormat}`);
       if (path) notify(`图片已保存为 ${exportFormat.toUpperCase()}`);
     } catch (error) { notify(`保存失败：${error.message}`, 'error'); }
@@ -3809,7 +3990,7 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
         <label className="check-row"><input type="checkbox" checked={lockAspectRatio} onChange={(event) => setLockAspectRatio(event.target.checked)}/><span>锁定照片宽高比</span></label>
         {cropLayer && slotSources[cropLayer.id] && <div className="crop-controls"><div className="crop-controls-heading"><strong><Crop size={16}/>裁切照片</strong><IconButton label="完成裁切" onClick={() => setCropModeId(null)}><Check size={16}/></IconButton></div><label className="crop-zoom-field"><span>缩放</span><input type="range" min="1" max="5" step="0.05" value={cropTransform.zoom} onChange={(event) => updatePhotoTransform(cropLayer.id, { zoom: Number(event.target.value) })}/><output>{Math.round(cropTransform.zoom * 100)}%</output></label><button className="wide-property-button" onClick={resetCrop}><RotateCcw size={16}/>重置裁切</button></div>}
         <input ref={input} hidden type="file" accept="image/*" onChange={(event) => { if (event.target.files[0]) acceptFile(event.target.files[0], pendingSlot.current); event.target.value = ''; pendingSlot.current = null; }}/>
-        <div className="export-settings"><div className="slot-list-heading"><strong>导出设置</strong></div><div className="export-setting-row"><label><span>格式</span><select value={exportFormat} onChange={(event) => { const value = event.target.value; setExportFormat(value); if (value === 'jpg') setTransparent(false); }}><option value="png">PNG</option><option value="jpg">JPEG</option><option value="webp">WebP</option></select></label><label title={exportScaleHint}><span title={exportScaleHint}>倍率</span><select title={exportScaleHint} value={exportScale} onChange={(event) => setExportScale(Number(event.target.value))}><option value="1" title={exportScaleHint}>1x</option><option value="2" title={exportScaleHint}>2x</option><option value="3" title={exportScaleHint}>3x</option></select></label></div><label className="check-row"><input type="checkbox" disabled={exportFormat === 'jpg'} checked={transparent} onChange={(event) => setTransparent(event.target.checked)}/><span>透明画布背景</span></label></div>
+        <div className="export-settings"><div className="slot-list-heading"><strong>导出设置</strong></div><div className="export-setting-row"><label><span>格式</span><select value={exportFormat} onChange={(event) => { const value = event.target.value; setExportFormat(value); if (value === 'jpg') setTransparent(false); }}><option value="png">PNG</option><option value="jpg">JPEG</option><option value="webp">WebP</option><option value="gif">GIF 动图</option></select></label><label title={exportScaleHint}><span title={exportScaleHint}>倍率</span><select title={exportScaleHint} value={exportScale} onChange={(event) => setExportScale(Number(event.target.value))}><option value="1" title={exportScaleHint}>1x</option><option value="2" title={exportScaleHint}>2x</option><option value="3" title={exportScaleHint}>3x</option></select></label></div><label className="check-row"><input type="checkbox" disabled={exportFormat === 'jpg'} checked={transparent} onChange={(event) => setTransparent(event.target.checked)}/><span>透明画布背景</span></label></div>
       </section>
       <section className="result-area">
         <div className="result-heading"><div><p className="eyebrow">第 2 步</p><h2>生成结果</h2></div><div className="result-heading-actions"><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>{result && <div className="result-actions"><button className="secondary-button" onClick={save}><Download size={17}/>保存 {exportFormat.toUpperCase()}</button><button className="primary-button" onClick={copyAgain}>{copied ? <Check size={17}/> : <Copy size={17}/>}复制图片</button></div>}</div></div>

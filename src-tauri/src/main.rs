@@ -2,12 +2,14 @@
 
 use arboard::{Clipboard, Error as ClipboardError, ImageData};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use image::ImageEncoder;
+use image::{AnimationDecoder, ImageEncoder};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
     env, fs,
+    io::Cursor,
     path::{Component, Path, PathBuf},
 };
 use tauri::{LogicalSize, Manager, Size};
@@ -518,8 +520,8 @@ fn decode_image_data_url(data_url: &str) -> Result<(&str, Vec<u8>), String> {
     let mime = header
         .strip_prefix("data:")
         .and_then(|value| value.strip_suffix(";base64"))
-        .filter(|value| matches!(*value, "image/png" | "image/jpeg" | "image/webp"))
-        .ok_or_else(|| "只支持 PNG、JPEG 或 WebP 图片数据".to_string())?;
+        .filter(|value| matches!(*value, "image/png" | "image/jpeg" | "image/webp" | "image/gif"))
+        .ok_or_else(|| "只支持 PNG、JPEG、GIF 或 WebP 图片数据".to_string())?;
     let bytes = STANDARD.decode(encoded).map_err(|error| error.to_string())?;
     Ok((mime, bytes))
 }
@@ -637,14 +639,19 @@ fn copy_image(data_url: String, clipboard_data_url: Option<String>) -> Result<bo
         "image/jpeg" => "jpg",
         "image/webp" => "webp",
         "image/png" => "png",
-        _ => return Err("仅支持 PNG、JPEG 和 WebP 图片".to_string()),
+        "image/gif" => "gif",
+        _ => return Err("仅支持 PNG、JPEG、GIF 和 WebP 图片".to_string()),
     };
     let clipboard_source = clipboard_data_url.as_deref().unwrap_or(&data_url);
     let (clipboard_mime, clipboard_bytes) = decode_image_data_url(clipboard_source)?;
-    if clipboard_mime != "image/png" {
-        return Err("剪贴板预览必须为 PNG 格式".to_string());
-    }
-    let image = image::load_from_memory_with_format(&clipboard_bytes, image::ImageFormat::Png)
+    let clipboard_format = match clipboard_mime {
+        "image/png" => image::ImageFormat::Png,
+        "image/jpeg" => image::ImageFormat::Jpeg,
+        "image/webp" => image::ImageFormat::WebP,
+        "image/gif" => image::ImageFormat::Gif,
+        _ => return Err("clipboard preview format is unsupported".to_string()),
+    };
+    let image = image::load_from_memory_with_format(&clipboard_bytes, clipboard_format)
         .map_err(|error| error.to_string())?
         .to_rgba8();
     let (width, height) = image.dimensions();
@@ -677,7 +684,12 @@ fn copy_images(data_urls: Vec<String>) -> Result<bool, String> {
     let mut paths = Vec::with_capacity(data_urls.len());
     for (index, data_url) in data_urls.iter().enumerate() {
         let (mime, bytes) = decode_image_data_url(data_url)?;
-        let extension = match mime { "image/jpeg" => "jpg", "image/webp" => "webp", _ => "png" };
+        let extension = match mime {
+            "image/jpeg" => "jpg",
+            "image/webp" => "webp",
+            "image/gif" => "gif",
+            _ => "png",
+        };
         let path = directory.join(format!("MemeHelper-batch-{index}.{extension}"));
         fs::write(&path, bytes).map_err(|error| error.to_string())?;
         paths.push(path);
@@ -705,6 +717,7 @@ fn read_clipboard_image() -> Result<Option<String>, String> {
                     "png" => "image/png",
                     "jpg" | "jpeg" => "image/jpeg",
                     "webp" => "image/webp",
+                    "gif" => "image/gif",
                     _ => return None,
                 };
                 Some((path, mime))
@@ -734,12 +747,144 @@ fn read_clipboard_image() -> Result<Option<String>, String> {
     )))
 }
 
+fn rgba_to_png_data_url(image: &image::RgbaImage) -> Result<String, String> {
+    let (width, height) = image.dimensions();
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png)
+        .write_image(
+            image.as_raw(),
+            width,
+            height,
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(format!("data:image/png;base64,{}", STANDARD.encode(png)))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GifFrameOutput {
+    data_url: String,
+    delay_ms: u32,
+    width: u32,
+    height: u32,
+}
+
+/// Decode an animated GIF into PNG frames for the web editor. The original
+/// GIF remains untouched on disk; this command is only a transport format for
+/// preview/compositing and therefore avoids browser-specific GIF decoders.
+#[tauri::command]
+fn decode_gif_frames(data_url: String) -> Result<Value, String> {
+    let (mime, bytes) = decode_image_data_url(&data_url)?;
+    if mime != "image/gif" {
+        return Err("data URL is not a GIF image".to_string());
+    }
+    let decoder = image::codecs::gif::GifDecoder::new(Cursor::new(bytes))
+        .map_err(|error| error.to_string())?;
+    let frames = decoder
+        .into_frames()
+        .collect_frames()
+        .map_err(|error| error.to_string())?;
+    let mut output = Vec::with_capacity(frames.len());
+    let mut canvas_size = None;
+    for frame in frames {
+        let (numerator, denominator) = frame.delay().numer_denom_ms();
+        let delay_ms = if denominator == 0 {
+            0
+        } else {
+            ((numerator as u64 + denominator as u64 / 2) / denominator as u64)
+                .min(u32::MAX as u64) as u32
+        };
+        let image = frame.into_buffer();
+        let (width, height) = image.dimensions();
+        canvas_size.get_or_insert((width, height));
+        output.push(GifFrameOutput {
+            data_url: rgba_to_png_data_url(&image)?,
+            delay_ms,
+            width,
+            height,
+        });
+    }
+    let (width, height) = canvas_size.unwrap_or((0, 0));
+    serde_json::to_value(json!({
+        "width": width,
+        "height": height,
+        "frames": output,
+    }))
+    .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GifFrameInput {
+    data_url: String,
+    #[serde(default = "default_gif_delay")]
+    delay_ms: u32,
+}
+
+fn default_gif_delay() -> u32 {
+    100
+}
+
+/// Encode PNG/JPEG/WebP frame data URLs into an animated GIF. Frames are
+/// required to share the same dimensions; the GIF encoder performs palette
+/// quantization and preserves the requested frame delays.
+#[tauri::command]
+fn encode_gif_frames(
+    frames: Vec<GifFrameInput>,
+    loop_count: Option<u16>,
+) -> Result<String, String> {
+    if frames.is_empty() {
+        return Err("at least one frame is required".to_string());
+    }
+    let mut encoded_frames = Vec::with_capacity(frames.len());
+    let mut dimensions = None;
+    for input in frames {
+        let (_, bytes) = decode_image_data_url(&input.data_url)?;
+        let image = image::load_from_memory(&bytes)
+            .map_err(|error| error.to_string())?
+            .to_rgba8();
+        let current_dimensions = image.dimensions();
+        if let Some(expected) = dimensions {
+            if expected != current_dimensions {
+                return Err("all GIF frames must have the same dimensions".to_string());
+            }
+        } else {
+            dimensions = Some(current_dimensions);
+        }
+        encoded_frames.push(image::Frame::from_parts(
+            image,
+            0,
+            0,
+            image::Delay::from_numer_denom_ms(input.delay_ms.max(1), 1),
+        ));
+    }
+
+    let mut gif = Vec::new();
+    let mut encoder = image::codecs::gif::GifEncoder::new(&mut gif);
+    if let Some(count) = loop_count {
+        encoder
+            .set_repeat(image::codecs::gif::Repeat::Finite(count))
+            .map_err(|error| error.to_string())?;
+    } else {
+        encoder
+            .set_repeat(image::codecs::gif::Repeat::Infinite)
+            .map_err(|error| error.to_string())?;
+    }
+    encoder
+        .encode_frames(encoded_frames)
+        .map_err(|error| error.to_string())?;
+    drop(encoder);
+    Ok(format!("data:image/gif;base64,{}", STANDARD.encode(gif)))
+}
+
 #[tauri::command]
 fn save_image(data_url: String, suggested_name: String) -> Result<Option<String>, String> {
     let (mime, bytes) = decode_image_data_url(&data_url)?;
     let (label, extensions, fallback) = match mime {
         "image/jpeg" => ("JPEG 图片", &["jpg", "jpeg"][..], "meme.jpg"),
         "image/webp" => ("WebP 图片", &["webp"][..], "meme.webp"),
+        "image/gif" => ("GIF 动图", &["gif"][..], "meme.gif"),
         _ => ("PNG 图片", &["png"][..], "meme.png"),
     };
     let safe_name = Path::new(&suggested_name)
@@ -1025,6 +1170,26 @@ mod tests {
         assert_ne!(template_id(&copied), Some("same-id"));
         fs::remove_dir_all(directory).expect("test directory must be removable");
     }
+
+    #[test]
+    fn encodes_and_decodes_gif_frames() {
+        let red = image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255]));
+        let blue = image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 255, 255]));
+        let red_url = rgba_to_png_data_url(&red).expect("red frame must encode");
+        let blue_url = rgba_to_png_data_url(&blue).expect("blue frame must encode");
+        let gif_url = encode_gif_frames(
+            vec![
+                GifFrameInput { data_url: red_url, delay_ms: 80 },
+                GifFrameInput { data_url: blue_url, delay_ms: 120 },
+            ],
+            None,
+        )
+        .expect("GIF must encode");
+        let decoded = decode_gif_frames(gif_url).expect("GIF must decode");
+        assert_eq!(decoded["width"], 2);
+        assert_eq!(decoded["height"], 2);
+        assert_eq!(decoded["frames"].as_array().map(Vec::len), Some(2));
+    }
 }
 
 fn main() {
@@ -1056,6 +1221,8 @@ fn main() {
             copy_image,
             copy_images,
             read_clipboard_image,
+            decode_gif_frames,
+            encode_gif_frames,
             save_image
         ])
         .run(tauri::generate_context!())
