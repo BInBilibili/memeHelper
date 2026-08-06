@@ -847,6 +847,8 @@ function useCanvasViewport(initialZoom, minZoom, maxZoom) {
   const zoomRef = useRef(initialZoom);
   const panRef = useRef(pan);
   const stopPanRef = useRef(null);
+  const zoomFrameRef = useRef(null);
+  const pendingZoomRef = useRef(null);
 
   const setZoom = useCallback((updater) => {
     const current = zoomRef.current;
@@ -863,24 +865,39 @@ function useCanvasViewport(initialZoom, minZoom, maxZoom) {
 
   const zoomAtPointer = useCallback((event) => {
     event.preventDefault();
-    // A wheel gesture starts a new viewport operation; never keep a prior
-    // blank-area pan gesture alive while the canvas is being rescaled.
     stopPanRef.current?.();
     const rect = event.currentTarget.getBoundingClientRect();
-    const pointer = {
-      x: event.clientX - rect.left - rect.width / 2,
-      y: event.clientY - rect.top - rect.height / 2
+    const previous = pendingZoomRef.current;
+    pendingZoomRef.current = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      rectLeft: rect.left,
+      rectTop: rect.top,
+      rectWidth: rect.width,
+      rectHeight: rect.height,
+      deltaY: (previous?.deltaY || 0) + event.deltaY
     };
-    const current = zoomRef.current;
-    const next = wheelZoom(current, event.deltaY, minZoom, maxZoom);
-    if (next === current) return;
-    const previousPan = panRef.current;
-    setPan({
-      x: pointer.x - (pointer.x - previousPan.x) * next / current,
-      y: pointer.y - (pointer.y - previousPan.y) * next / current
+    if (zoomFrameRef.current !== null) return;
+    zoomFrameRef.current = requestAnimationFrame(() => {
+      zoomFrameRef.current = null;
+      const request = pendingZoomRef.current;
+      pendingZoomRef.current = null;
+      if (!request) return;
+      const pointer = {
+        x: request.clientX - request.rectLeft - request.rectWidth / 2,
+        y: request.clientY - request.rectTop - request.rectHeight / 2
+      };
+      const current = zoomRef.current;
+      const next = wheelZoom(current, request.deltaY, minZoom, maxZoom);
+      if (next === current) return;
+      const previousPan = panRef.current;
+      setPan({
+        x: pointer.x - (pointer.x - previousPan.x) * next / current,
+        y: pointer.y - (pointer.y - previousPan.y) * next / current
+      });
+      zoomRef.current = next;
+      setZoomState(next);
     });
-    zoomRef.current = next;
-    setZoomState(next);
   }, [maxZoom, minZoom, setPan]);
 
   const beginPan = useCallback((event) => {
@@ -908,7 +925,7 @@ function useCanvasViewport(initialZoom, minZoom, maxZoom) {
     window.addEventListener('mouseup', stop);
   }, [setPan]);
 
-  useEffect(() => () => stopPanRef.current?.(), []);
+  useEffect(() => () => { stopPanRef.current?.(); if (zoomFrameRef.current !== null) cancelAnimationFrame(zoomFrameRef.current); }, []);
 
   return { zoom, pan, panning, setZoom, zoomAtPointer, beginPan };
 }
@@ -1190,6 +1207,20 @@ function TemplateCard({ template, onUse, onEdit, onRename, onDelete, onToggleFav
       setQuickWorking(false);
     }
   }, [canQuickReplace, notify, quickWorking, slots, template]);
+  const quickReplaceBatch = useCallback(async (sources) => {
+    if (!canQuickReplace || quickWorking || !sources.length) return;
+    setQuickWorking(true);
+    try {
+      const outputs = await Promise.all(sources.map((source) => renderTemplate(template, { [slots[0].id]: source })));
+      if (outputs.length === 1) await desktop.copyImage(outputs[0]);
+      else await desktop.copyImages(outputs);
+      notify(`已生成并复制 ${outputs.length} 张作品`);
+    } catch (error) {
+      notify(`批量生成或复制失败：${error?.message || error}`, 'error');
+    } finally {
+      setQuickWorking(false);
+    }
+  }, [canQuickReplace, notify, quickWorking, slots, template]);
   const pasteImage = useCallback(async () => {
     setPasteMenu(null);
     try {
@@ -1202,14 +1233,17 @@ function TemplateCard({ template, onUse, onEdit, onRename, onDelete, onToggleFav
   }, [notify, quickReplace]);
   const drop = async (event) => {
     event.preventDefault(); setDragging(false);
-    const file = event.dataTransfer.files?.[0];
-    if (!file?.type?.startsWith('image/')) return notify('请拖入图片文件', 'error');
+    const files = Array.from(event.dataTransfer.files || []).filter((file) => file.type?.startsWith('image/'));
+    if (!files.length) return notify('请拖入图片文件', 'error');
     if (canQuickReplace) {
-      try { await quickReplace(await fileToDataUrl(file)); }
-      catch (error) { notify(`读取图片失败：${error?.message || error}`, 'error'); }
+      try {
+        const sources = await Promise.all(files.map((file) => fileToDataUrl(file)));
+        if (sources.length > 1) await quickReplaceBatch(sources);
+        else await quickReplace(sources[0]);
+      } catch (error) { notify(`读取图片失败：${error?.message || error}`, 'error'); }
       return;
     }
-    onUse(template, file);
+    onUse(template, files[0]);
   };
   const openPasteMenu = (event) => {
     if (!canQuickReplace) return;
@@ -1460,7 +1494,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
         ...structuredClone(copiedLayer),
         id: uid(),
         groupId: copiedLayer.groupId ? groupMap.get(copiedLayer.groupId) : undefined,
-        name: `${copiedLayer.name} 副本`,
+        name: copiedLayer.groupId ? copiedLayer.name : `${copiedLayer.name} \u526f\u672c`,
         x: copiedLayer.x + 20,
         y: copiedLayer.y + 20
       };
@@ -1571,6 +1605,9 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
         if (textEditingId) {
           setTextEditingId(null);
           setTextSelection(null);
+        } else if (activeTool === 'text') {
+          setActiveTool('select');
+          setTextMenu(false);
         } else tryBack();
       }
     };
@@ -1578,7 +1615,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('pointerdown', closeMenus);
     return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('pointerdown', closeMenus); };
-  }, [copySelectedLayers, nudgeSelectedLayers, pasteLayers, redoDraft, removeSelectedLayers, selectedIds.length, textEditingId, tryBack, undoDraft]);
+  }, [activeTool, copySelectedLayers, nudgeSelectedLayers, pasteLayers, redoDraft, removeSelectedLayers, selectedIds.length, textEditingId, tryBack, undoDraft]);
 
   useEffect(() => {
     if (activeTool !== 'text') return undefined;
@@ -1833,7 +1870,8 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       if (!targetId || targetId === sourceId) return null;
       const target = draft.layers.find((item) => item.id === targetId);
       if (sourceGroupId && target?.groupId === sourceGroupId) return null;
-      if (row?.dataset.groupId && row.dataset.groupId !== sourceGroupId) return { id: targetId, placement: 'inside' };
+      const targetGroupId = row?.dataset.groupId || row?.dataset.parentGroupId;
+      if (!sourceGroupId && targetGroupId && targetGroupId !== sourceGroupId) return { id: targetId, placement: 'inside' };
       let rect = row.getBoundingClientRect();
       if (sourceGroupId && target?.groupId) {
         targetId = draft.layers.filter((item) => item.groupId === target.groupId).at(-1)?.id || targetId;
@@ -2230,7 +2268,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
           {toolPointer && !['select', 'marquee'].includes(activeTool) && !panning && (
             ['brush', 'mosaic', 'eraser'].includes(activeTool) && !(activeTool === 'brush' && toolPointer.altKey)
               ? <div className="tool-cursor brush-preview" style={{ left: toolPointer.x, top: toolPointer.y, width: Math.max(3, brushSize * zoom), height: Math.max(3, brushSize * zoom) }}/>
-              : <div className="tool-cursor" style={{ left: toolPointer.x, top: toolPointer.y }}>{activeTool === 'picker' || (activeTool === 'brush' && toolPointer.altKey) ? <Pipette size={19}/> : <PaintBucket size={19}/>}</div>
+              : <div className="tool-cursor" style={{ left: toolPointer.x, top: toolPointer.y }}>{activeTool === 'text' ? <Type size={19}/> : activeTool === 'picker' || (activeTool === 'brush' && toolPointer.altKey) ? <Pipette size={19}/> : <PaintBucket size={19}/>}</div>
           )}
         </div>
       </section>
@@ -2659,7 +2697,10 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     }
     drag.lastDx = dx;
     drag.lastDy = dy;
-    drag.ids.forEach((id) => nodeRefs.current[id]?.position({ x: drag.positions[id].x + dx, y: drag.positions[id].y + dy }));
+    drag.ids.forEach((id) => {
+      const member = group.members.find((layer) => layer.id === id);
+      nodeRefs.current[id]?.position({ x: drag.positions[id].x + dx + (member?.width || 0) / 2, y: drag.positions[id].y + dy + (member?.height || 0) / 2 });
+    });
   };
 
   const finishGroupDrag = (group, event) => {
