@@ -1822,18 +1822,21 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     layers.splice(direction > 0 ? targetEnd + 1 : targetStart, 0, ...moving);
     return { ...prev, layers };
   });
-  const reorderLayer = (sourceId, targetId, placement, wholeGroup = false) => {
-    if (!sourceId || sourceId === targetId) return;
+  const reorderLayer = (sourceId, targetId, placement, wholeGroup = false, selectedIdsOverride = null) => {
+    if (!sourceId || (sourceId === targetId && !(placement === 'inside' && selectedIdsOverride?.some((id) => id !== sourceId)))) return;
+    const movedSelectionIds = wholeGroup
+      ? draft.layers.filter((item) => item.groupId && item.groupId === draft.layers.find((layer) => layer.id === sourceId)?.groupId).map((item) => item.id)
+      : selectedIdsOverride?.length ? [...selectedIdsOverride] : [sourceId];
     updateDraft((previous) => {
       const source = previous.layers.find((item) => item.id === sourceId);
       const target = previous.layers.find((item) => item.id === targetId);
       if (!source || !target) return previous;
       const sourceIds = wholeGroup && source.groupId
         ? previous.layers.filter((item) => item.groupId === source.groupId).map((item) => item.id)
-        : [sourceId];
-      if (!wholeGroup && source.groupId && target.groupId !== source.groupId && placement !== 'inside') return previous;
+        : selectedIdsOverride?.length ? previous.layers.filter((item) => selectedIdsOverride.includes(item.id)).map((item) => item.id) : [sourceId];
+      if (!wholeGroup && source.groupId && target.groupId && target.groupId !== source.groupId && placement !== 'inside') return previous;
       if (placement === 'inside' && target.groupId) {
-        if (sourceIds.some((id) => previous.layers.find((item) => item.id === id)?.locked) || sourceIds.includes(targetId)) return previous;
+        if (sourceIds.some((id) => previous.layers.find((item) => item.id === id)?.locked)) return previous;
         const groupMembers = previous.layers.filter((item) => item.groupId === target.groupId);
         const moving = previous.layers.filter((item) => sourceIds.includes(item.id)).map((item) => ({ ...item, groupId: target.groupId }));
         const without = previous.layers.filter((item) => !sourceIds.includes(item.id));
@@ -1847,7 +1850,8 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
         ? previous.layers.filter((item) => item.groupId === target.groupId).map((item) => item.id)
         : [targetId];
       if (sourceIds.some((id) => targetIds.includes(id)) || sourceIds.some((id) => previous.layers.find((item) => item.id === id)?.locked)) return previous;
-      const moving = previous.layers.filter((item) => sourceIds.includes(item.id));
+      const detachFromGroup = !wholeGroup && source.groupId && !target.groupId;
+      const moving = previous.layers.filter((item) => sourceIds.includes(item.id)).map((item) => detachFromGroup ? { ...item, groupId: undefined } : item);
       const layers = previous.layers.filter((item) => !sourceIds.includes(item.id));
       const targetStart = layers.findIndex((item) => targetIds.includes(item.id));
       const targetEnd = targetStart + targetIds.length - 1;
@@ -1856,22 +1860,41 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       return { ...previous, layers };
     });
     const sourceLayer = draft.layers.find((item) => item.id === sourceId);
-    setSelectedIds(wholeGroup && sourceLayer?.groupId ? draft.layers.filter((item) => item.groupId === sourceLayer.groupId).map((item) => item.id) : [sourceId]);
+    setSelectedIds(movedSelectionIds);
     setSelectedGroupId(wholeGroup ? sourceLayer?.groupId || null : null);
   };
   const beginLayerReorder = (event, sourceId, sourceGroupId = null) => {
     if (event.button !== 0) return;
     event.stopPropagation();
+    const dragSelectedIds = !sourceGroupId && selectedIds.includes(sourceId) && selectedIds.length > 1 ? [...selectedIds] : null;
     if (sourceGroupId) selectGroup(sourceGroupId, event); else selectLayer(sourceId, event);
     const start = { x: event.clientX, y: event.clientY };
     const resolveTarget = (pointerEvent) => {
-      const row = document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)?.closest('[data-layer-id]');
+      let row = document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)?.closest('[data-layer-id]');
+      let edgePlacement = null;
+      if (!row) {
+        const list = document.querySelector('.layers-list');
+        const listRect = list?.getBoundingClientRect();
+        if (listRect && pointerEvent.clientY >= listRect.top && pointerEvent.clientY <= listRect.bottom) {
+          const rows = [...list.querySelectorAll('[data-layer-id]')];
+          if (rows.length) {
+            const first = rows[0]; const last = rows.at(-1);
+            const firstRect = first.getBoundingClientRect(); const lastRect = last.getBoundingClientRect();
+            if (pointerEvent.clientY < firstRect.top) { row = first; edgePlacement = 'before'; }
+            else if (pointerEvent.clientY > lastRect.bottom) { row = last; edgePlacement = 'after'; }
+          }
+        }
+      }
       let targetId = row?.dataset.layerId;
-      if (!targetId || targetId === sourceId) return null;
+      if (!targetId || (targetId === sourceId && !dragSelectedIds?.some((id) => id !== sourceId))) return null;
       const target = draft.layers.find((item) => item.id === targetId);
       if (sourceGroupId && target?.groupId === sourceGroupId) return null;
       const targetGroupId = row?.dataset.groupId || row?.dataset.parentGroupId;
-      if (!sourceGroupId && targetGroupId && targetGroupId !== sourceGroupId) return { id: targetId, placement: 'inside' };
+      const draggedLayersOutsideTargetGroup = (dragSelectedIds || [sourceId]).some((id) => draft.layers.find((item) => item.id === id)?.groupId !== targetGroupId);
+      if (!sourceGroupId && targetGroupId && draggedLayersOutsideTargetGroup) {
+        const groupMembers = draft.layers.filter((item) => item.groupId === targetGroupId);
+        return { id: groupMembers.at(-1)?.id || targetId, placement: 'inside' };
+      }
       let rect = row.getBoundingClientRect();
       if (sourceGroupId && target?.groupId) {
         targetId = draft.layers.filter((item) => item.groupId === target.groupId).at(-1)?.id || targetId;
@@ -1883,7 +1906,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
           rect = { top, height: bottom - top };
         }
       }
-      return { id: targetId, placement: pointerEvent.clientY < rect.top + rect.height / 2 ? 'before' : 'after' };
+      return { id: targetId, placement: edgePlacement || (pointerEvent.clientY < rect.top + rect.height / 2 ? 'before' : 'after') };
     };
     const cleanup = () => {
       window.removeEventListener('pointermove', move);
@@ -1902,7 +1925,9 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
       const active = layerReorderRef.current?.active;
       const target = resolveTarget(pointerEvent);
       cleanup();
-      if (active && target) reorderLayer(sourceId, target.id, target.placement, Boolean(sourceGroupId));
+      if (active && target) {
+        reorderLayer(sourceId, target.id, target.placement, Boolean(sourceGroupId), dragSelectedIds);
+      }
       setDraggedLayerId(null);
       setLayerDrop(null);
     };
@@ -2241,7 +2266,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
           <div className="canvas-size"><button type="button" className={`size-mode-button ${sizeMode === 'image' ? 'active' : ''}`} title={sizeMode === 'canvas' ? '点击切换为修改图像尺寸' : '点击切换为修改画布尺寸'} onClick={() => setSizeMode((mode) => mode === 'canvas' ? 'image' : 'canvas')}>{sizeMode === 'canvas' ? '画布' : '图像'}</button><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeWidth} disabled={sizeMode === 'image' && !imageBounds} onCommit={(width) => commitToolbarSize('width', width)}/><span>×</span><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeHeight} disabled={sizeMode === 'image' && !imageBounds} onCommit={(height) => commitToolbarSize('height', height)}/>{sizeMode === 'image' && <IconButton className={`size-lock-button ${imageSizeLocked ? 'active' : ''}`} label={imageSizeLocked ? '已锁定宽高比' : '锁定宽高比'} onClick={() => setImageSizeLocked((locked) => !locked)}><Link2 size={15}/></IconButton>}{sizeMode === 'canvas' && <button className="auto-canvas-button" onClick={autoSizeCanvas}>自动设置</button>}</div>
           <div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>
         </div>
-        <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropImageOnEditor} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, altKey: event.altKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { if (activeTool === 'text' && event.button === 0) { event.preventDefault(); event.stopPropagation(); const bounds = stageHostRef.current?.getBoundingClientRect(); const point = bounds ? { x: clamp((event.clientX - bounds.left) / zoom, 0, Math.max(0, draft.width)), y: clamp((event.clientY - bounds.top) / zoom, 0, Math.max(0, draft.height)) } : { x: 0, y: 0 }; addTextLayer(point, textOrientation); return; } if (beginOutsideSelectionDrag(event)) return; const blank = !event.target.closest('.stage-shadow, .canvas-tool-dock'); if (activeTool === 'select' && blank) { clearSelection(); beginPan(event); } else if (activeTool === 'marquee' && event.button === 0 && blank) { event.preventDefault(); setMarqueeStartRequest({ clientX: event.clientX, clientY: event.clientY, key: event.timeStamp }); } }}>
+        <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropImageOnEditor} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, altKey: event.altKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { if (activeTool === 'text' && event.button === 0 && !event.target.closest('.canvas-tool-dock')) { event.preventDefault(); event.stopPropagation(); const bounds = stageHostRef.current?.getBoundingClientRect(); const point = bounds ? { x: clamp((event.clientX - bounds.left) / zoom, 0, Math.max(0, draft.width)), y: clamp((event.clientY - bounds.top) / zoom, 0, Math.max(0, draft.height)) } : { x: 0, y: 0 }; addTextLayer(point, textOrientation); return; } if (beginOutsideSelectionDrag(event)) return; const blank = !event.target.closest('.stage-shadow, .canvas-tool-dock'); if (activeTool === 'select' && blank) { clearSelection(); beginPan(event); } else if (activeTool === 'marquee' && event.button === 0 && blank) { event.preventDefault(); setMarqueeStartRequest({ clientX: event.clientX, clientY: event.clientY, key: event.timeStamp }); } }}>
           <div className="canvas-tool-dock"><div className="editor-paint-tools">
             <IconButton label="选择与移动" className={activeTool === 'select' ? 'active' : ''} onClick={() => setActiveTool('select')}><MousePointer2 size={17}/></IconButton>
             <IconButton label="选框工具：拖动后右键复制或剪切图层" className={activeTool === 'marquee' ? 'active' : ''} onClick={() => setActiveTool('marquee')}><BoxSelect size={17}/></IconButton>
