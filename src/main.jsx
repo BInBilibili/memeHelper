@@ -95,6 +95,11 @@ applyTheme('system');
 const uid = () => crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 const clamp = (n, min, max) => Math.max(min, Math.min(max, Number(n) || 0));
 const shapeOf = (layer) => layer.shape || 'rect';
+const cornerRadiusOf = (layer) => clamp(
+  Number(layer.cornerRadius ?? 36),
+  0,
+  Math.max(0, Math.min(Number(layer.width) || 0, Number(layer.height) || 0) / 2)
+);
 const POLYGON_MIN_SIDES = 3;
 const POLYGON_MAX_SIDES = 12;
 const TEXT_STYLE_KEYS = ['fontSize', 'fontFamily', 'fontStyle', 'textDecoration', 'fill', 'stroke', 'strokeWidth', 'lineHeight'];
@@ -518,7 +523,7 @@ function traceLayerShape(ctx, layer) {
     ctx.bezierCurveTo(rx - rx * k, height, 0, ry + ry * k, 0, ry);
     ctx.bezierCurveTo(0, ry - ry * k, rx - rx * k, 0, rx, 0);
   } else if (shape === 'rounded') {
-    const radius = Math.min(36, width / 4, height / 4);
+    const radius = cornerRadiusOf(layer);
     ctx.moveTo(radius, 0); ctx.lineTo(width - radius, 0);
     ctx.quadraticCurveTo(width, 0, width, radius); ctx.lineTo(width, height - radius);
     ctx.quadraticCurveTo(width, height, width - radius, height); ctx.lineTo(radius, height);
@@ -1373,22 +1378,30 @@ function TemplateCard({ template, onUse, onEdit, onRename, onDelete, onToggleFav
   </article>{pasteMenu && <div ref={pasteMenuRef} className="library-paste-menu" style={{ left: pasteMenu.x, top: pasteMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={pasteImage} disabled={quickWorking}><Clipboard size={16}/>粘贴图片并复制作品</button></div>}{renaming && <RenameTemplateDialog template={template} onCancel={() => setRenaming(false)} onSave={onRename}/>}</>;
 }
 
-function GifTimeline({ frames, frameIndex, playing, onTogglePlay, onSelectFrame, onDropFrame }) {
-  if (!frames?.length) return null;
+function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, onTogglePlay, onSelectFrame, onDropFrame }) {
+  const selectedSet = new Set(selectedIndexes);
   const handleDrop = async (event) => {
     event.preventDefault();
+    event.stopPropagation();
     const files = Array.from(event.dataTransfer?.files || []).filter((file) => file.type.startsWith('image/'));
     const file = files[0];
     if (!file) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const ratio = rect.width ? (event.clientX - rect.left) / rect.width : 1;
+    const ratio = rect.width ? (event.clientX - rect.left + event.currentTarget.scrollLeft) / Math.max(rect.width, event.currentTarget.scrollWidth) : 1;
     const index = Math.max(0, Math.min(frames.length, Math.round(ratio * frames.length)));
     onDropFrame(await fileToDataUrl(file), index);
   };
-  return <div className="gif-timeline" onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={handleDrop}>
-    <div className="gif-timeline-heading"><div><strong>GIF 时间轴</strong><small>{frames.length} 帧</small></div><button type="button" className="gif-play-button" onClick={onTogglePlay}>{playing ? '暂停' : '播放'}</button></div>
-    <div className="gif-frame-strip">{frames.map((frame, index) => <button type="button" key={`${index}-${frame.dataUrl.slice(-12)}`} className={`gif-frame-cell ${index === frameIndex ? 'active' : ''}`} onClick={() => onSelectFrame(index)} title={`第 ${index + 1} 帧，${Math.max(20, Number(frame.delayMs) || 100)} ms`}><img src={frame.dataUrl} alt={`第 ${index + 1} 帧`}/><span>{index + 1}</span></button>)}</div>
-    <small className="gif-timeline-hint">将图片拖到时间轴可在当前帧前插入；选中帧后按 Ctrl+V 也可插入。</small>
+  const scrollFrames = (event) => {
+    if (!event.deltaX && !event.deltaY) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.scrollLeft += Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+  };
+  return <div className="gif-timeline">
+    <div className="gif-timeline-heading"><div><strong>GIF 时间轴</strong><small>{frames.length ? `${frames.length} 帧` : '正在读取帧'}</small></div><button type="button" className="gif-play-button" disabled={!frames.length} onClick={onTogglePlay}>{playing ? '暂停' : '播放'}</button></div>
+    <div className="gif-frame-strip" onWheel={scrollFrames} onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={handleDrop}>
+      {frames.length ? frames.map((frame, index) => <button type="button" key={`${index}-${frame.dataUrl.slice(-12)}`} className={`gif-frame-cell ${selectedSet.has(index) ? 'selected' : ''} ${index === frameIndex ? 'active' : ''}`} onClick={(event) => { if (event.shiftKey) event.preventDefault(); onSelectFrame(index, event); }} title={`第 ${index + 1} 帧，${Math.max(20, Number(frame.delayMs) || 100)} ms`}><img src={frame.dataUrl} alt={`第 ${index + 1} 帧`}/><span>{index + 1}</span></button>) : <div className="gif-timeline-empty">GIF 帧加载中…</div>}
+    </div>
   </div>;
 }
 function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, notify }) {
@@ -1447,41 +1460,88 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
   const layerReorderRef = useRef(null);
   const selectionAnchorRef = useRef(selectedIds.at(-1) || null);
   const groupSelectionAnchorRef = useRef(null);
-  const [gifTimeline, setGifTimeline] = useState({ layerId: null, frames: [], frameIndex: 0, playing: false });
+  const [gifTimeline, setGifTimeline] = useState({ layerId: null, frames: [], frameIndex: 0, selectedIndexes: [], playing: false });
+  const gifFrameAnchorRef = useRef(null);
   const selected = draft.layers.find((item) => item.id === selectedId);
   const selectedGifLayer = selected && isGifSource(selected.src) ? selected : null;
+  const timelineGifLayer = selectedGifLayer
+    || draft.layers.find((layer) => layer.id === gifTimeline.layerId && isGifSource(layer.src))
+    || draft.layers.find((layer) => isGifSource(layer.src))
+    || null;
   useEffect(() => {
-    if (!selectedGifLayer) {
-      setGifTimeline((current) => current.layerId ? { layerId: null, frames: [], frameIndex: 0, playing: false } : current);
+    if (!timelineGifLayer) {
+      setGifTimeline((current) => current.layerId ? { layerId: null, frames: [], frameIndex: 0, selectedIndexes: [], playing: false } : current);
+      gifFrameAnchorRef.current = null;
       return undefined;
     }
     let alive = true;
-    desktop.decodeGifFrames(selectedGifLayer.src).then((decoded) => {
+    desktop.decodeGifFrames(timelineGifLayer.src).then((decoded) => {
       if (!alive) return;
-      const customDelays = Array.isArray(selectedGifLayer.gifFrameDelays) && selectedGifLayer.gifFrameDelays.length === decoded.frames.length ? selectedGifLayer.gifFrameDelays : null;
+      const customDelays = Array.isArray(timelineGifLayer.gifFrameDelays) && timelineGifLayer.gifFrameDelays.length === decoded.frames.length ? timelineGifLayer.gifFrameDelays : null;
       const frames = customDelays ? decoded.frames.map((frame, index) => ({ ...frame, delayMs: Number(customDelays[index]) || frame.delayMs })) : decoded.frames;
-      setGifTimeline((current) => ({ layerId: selectedGifLayer.id, frames, frameIndex: Math.min(current.layerId === selectedGifLayer.id ? current.frameIndex : 0, Math.max(0, frames.length - 1)), playing: current.layerId === selectedGifLayer.id ? current.playing : false }));
-      if (selectedGifLayer.gifFrameCount !== frames.length) updateLayer(selectedGifLayer.id, { gifFrameCount: frames.length });
-    }).catch(() => { if (alive) setGifTimeline({ layerId: selectedGifLayer.id, frames: [], frameIndex: 0, playing: false }); });
+      setGifTimeline((current) => {
+        const sameLayer = current.layerId === timelineGifLayer.id;
+        const frameIndex = Math.min(sameLayer ? current.frameIndex : 0, Math.max(0, frames.length - 1));
+        const selectedIndexes = sameLayer
+          ? current.selectedIndexes.filter((index) => index >= 0 && index < frames.length)
+          : frames.length ? [frameIndex] : [];
+        return { layerId: timelineGifLayer.id, frames, frameIndex, selectedIndexes: selectedIndexes.length ? selectedIndexes : frames.length ? [frameIndex] : [], playing: sameLayer ? current.playing : false };
+      });
+      if (timelineGifLayer.gifFrameCount !== frames.length) updateLayer(timelineGifLayer.id, { gifFrameCount: frames.length });
+    }).catch(() => { if (alive) setGifTimeline({ layerId: timelineGifLayer.id, frames: [], frameIndex: 0, selectedIndexes: [], playing: false }); });
     return () => { alive = false; };
-  }, [selectedGifLayer?.id, selectedGifLayer?.src, selectedGifLayer?.gifFrameDelays]);
+  }, [timelineGifLayer?.id, timelineGifLayer?.src, timelineGifLayer?.gifFrameDelays]);
 
   useEffect(() => {
-    if (!gifTimeline.playing || gifTimeline.layerId !== selectedGifLayer?.id || !gifTimeline.frames.length) return undefined;
+    if (!gifTimeline.playing || gifTimeline.layerId !== timelineGifLayer?.id || !gifTimeline.frames.length) return undefined;
     const delay = Math.max(20, Number(gifTimeline.frames[gifTimeline.frameIndex]?.delayMs) || 100);
     const timer = setTimeout(() => setGifTimeline((current) => ({ ...current, frameIndex: (current.frameIndex + 1) % current.frames.length })), delay);
     return () => clearTimeout(timer);
-  }, [gifTimeline, selectedGifLayer?.id]);
+  }, [gifTimeline, timelineGifLayer?.id]);
 
-  const updateGifFrameDelay = (index, delayMs) => {
-    if (!selectedGifLayer || !gifTimeline.frames.length) return;
-    const delays = gifTimeline.frames.map((frame, frameIndex) => frameIndex === index ? Math.max(20, Number(delayMs) || 100) : Math.max(20, Number(frame.delayMs) || 100));
-    updateLayer(selectedGifLayer.id, { gifFrameDelays: delays });
-    setGifTimeline((current) => ({ ...current, frames: current.frames.map((frame, frameIndex) => frameIndex === index ? { ...frame, delayMs: delays[frameIndex] } : frame) }));
+  const selectGifFrame = (index, event = {}) => {
+    const extend = Boolean(event.shiftKey);
+    const toggle = Boolean(event.ctrlKey || event.metaKey);
+    setGifTimeline((current) => {
+      const safeIndex = Math.max(0, Math.min(current.frames.length - 1, index));
+      let selectedIndexes;
+      if (extend) {
+        const anchor = gifFrameAnchorRef.current ?? current.frameIndex ?? safeIndex;
+        const start = Math.min(anchor, safeIndex); const end = Math.max(anchor, safeIndex);
+        selectedIndexes = Array.from({ length: end - start + 1 }, (_, offset) => start + offset);
+      } else if (toggle) {
+        selectedIndexes = current.selectedIndexes.includes(safeIndex)
+          ? current.selectedIndexes.filter((item) => item !== safeIndex)
+          : [...current.selectedIndexes, safeIndex].sort((a, b) => a - b);
+        gifFrameAnchorRef.current = safeIndex;
+      } else {
+        selectedIndexes = [safeIndex];
+        gifFrameAnchorRef.current = safeIndex;
+      }
+      return { ...current, frameIndex: safeIndex, selectedIndexes, playing: false };
+    });
+    if (timelineGifLayer) {
+      setSelectedIds([timelineGifLayer.id]);
+      setSelectedGroupId(null);
+      setSelectedGroupIds([]);
+      selectionAnchorRef.current = timelineGifLayer.id;
+    }
+  };
+
+  const updateGifFrameDelay = (index, delayMs, applyToAll = false) => {
+    if (!timelineGifLayer || !gifTimeline.frames.length) return;
+    const normalizedDelay = Math.max(20, Number(delayMs) || 100);
+    const selectedIndexes = applyToAll
+      ? gifTimeline.frames.map((_, frameIndex) => frameIndex)
+      : gifTimeline.selectedIndexes.length ? gifTimeline.selectedIndexes : [index];
+    const selectedSet = new Set(selectedIndexes);
+    const delays = gifTimeline.frames.map((frame, frameIndex) => selectedSet.has(frameIndex) ? normalizedDelay : Math.max(20, Number(frame.delayMs) || 100));
+    updateLayer(timelineGifLayer.id, { gifFrameDelays: delays });
+    setGifTimeline((current) => ({ ...current, frames: current.frames.map((frame, frameIndex) => selectedSet.has(frameIndex) ? { ...frame, delayMs: delays[frameIndex] } : frame) }));
   };
 
   const insertGifFrame = async (dataUrl, index = gifTimeline.frameIndex + 1) => {
-    if (!selectedGifLayer || !dataUrl || !gifTimeline.frames.length) return;
+    if (!timelineGifLayer || !dataUrl || !gifTimeline.frames.length) return;
     const safeIndex = Math.round(clamp(index, 0, gifTimeline.frames.length));
     const width = gifTimeline.frames[0].width; const height = gifTimeline.frames[0].height;
     const image = await loadImage(dataUrl);
@@ -1492,8 +1552,9 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     const nextFrames = [...gifTimeline.frames.slice(0, safeIndex), { dataUrl: normalizedDataUrl, delayMs: 100, width, height }, ...gifTimeline.frames.slice(safeIndex)];
     try {
       const encoded = await desktop.encodeGifFrames(nextFrames, null);
-      updateLayer(selectedGifLayer.id, { src: encoded, gifFrameDelays: nextFrames.map((frame) => Math.max(20, Number(frame.delayMs) || 100)) });
-      setGifTimeline({ layerId: selectedGifLayer.id, frames: nextFrames, frameIndex: safeIndex, playing: false });
+      updateLayer(timelineGifLayer.id, { src: encoded, gifFrameDelays: nextFrames.map((frame) => Math.max(20, Number(frame.delayMs) || 100)) });
+      gifFrameAnchorRef.current = safeIndex;
+      setGifTimeline({ layerId: timelineGifLayer.id, frames: nextFrames, frameIndex: safeIndex, selectedIndexes: [safeIndex], playing: false });
     } catch (error) { notify(`插入 GIF 帧失败：${error?.message || error}`, 'error'); }
   };
   const activeTextSelection = selected?.type === 'text'
@@ -1908,7 +1969,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     const width = size;
     const height = size;
     const shapeName = shape === 'circle' ? '圆形' : shape === 'rounded' ? '圆角矩形' : shape === 'polygon' ? '多边形' : '矩形';
-    const layer = { id: uid(), name: `${shapeName}照片 ${draft.layers.filter((x) => x.type === 'slot').length + 1}`, type: 'slot', shape, src: '', x: initializeCanvas ? 0 : Math.round((draft.width - width) / 2), y: initializeCanvas ? 0 : Math.round((draft.height - height) / 2), width, height, rotation: 0, visible: true, fit: 'cover', ...(shape === 'polygon' ? { polygonSides: 5, polygonPoints: regularPolygonPoints(5) } : {}) };
+    const layer = { id: uid(), name: `${shapeName}照片 ${draft.layers.filter((x) => x.type === 'slot').length + 1}`, type: 'slot', shape, src: '', x: initializeCanvas ? 0 : Math.round((draft.width - width) / 2), y: initializeCanvas ? 0 : Math.round((draft.height - height) / 2), width, height, rotation: 0, visible: true, fit: 'cover', ...(shape === 'polygon' ? { polygonSides: 5, polygonPoints: regularPolygonPoints(5) } : shape === 'rounded' ? { cornerRadius: 36 } : {}) };
     updateDraft((prev) => ({ ...prev, width: initializeCanvas ? width : prev.width, height: initializeCanvas ? height : prev.height, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
     setShapeMenu(false); setActiveTool('select');
   };
@@ -2427,7 +2488,8 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     groupNumber += 1;
     const members = draft.layers.filter((item) => item.groupId === layer.groupId).reverse();
     const collapsed = collapsedGroups.has(layer.groupId);
-     const groupSelected = selectedGroupIds.includes(layer.groupId) || selectedGroupId === layer.groupId;
+     const groupContainsSelectedLayer = collapsed && members.some((member) => selectedIds.includes(member.id));
+     const groupSelected = selectedGroupIds.includes(layer.groupId) || selectedGroupId === layer.groupId || groupContainsSelectedLayer;
      const dropClass = layerDrop?.id === members[0].id ? `drop-${layerDrop.placement}` : '';
     const groupName = draft.groupMeta?.[layer.groupId]?.name || `图层组 ${groupNumber}`;
     layerListRows.push(<div
@@ -2541,7 +2603,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
           <div className="canvas-size"><button type="button" className={`size-mode-button ${sizeMode === 'image' ? 'active' : ''}`} title={sizeMode === 'canvas' ? '点击切换为修改图像尺寸' : '点击切换为修改画布尺寸'} onClick={() => setSizeMode((mode) => mode === 'canvas' ? 'image' : 'canvas')}>{sizeMode === 'canvas' ? '画布' : '图像'}</button><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeWidth} disabled={sizeMode === 'image' && !imageBounds} onCommit={(width) => commitToolbarSize('width', width)}/><span>×</span><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeHeight} disabled={sizeMode === 'image' && !imageBounds} onCommit={(height) => commitToolbarSize('height', height)}/>{sizeMode === 'image' && <IconButton className={`size-lock-button ${imageSizeLocked ? 'active' : ''}`} label={imageSizeLocked ? '已锁定宽高比' : '锁定宽高比'} onClick={() => setImageSizeLocked((locked) => !locked)}><Link2 size={15}/></IconButton>}{sizeMode === 'canvas' && <button className="auto-canvas-button" onClick={autoSizeCanvas}>自动设置</button>}</div>
           <div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>
         </div>
-        {selectedGifLayer && gifTimeline.layerId === selectedGifLayer.id && <GifTimeline frames={gifTimeline.frames} frameIndex={gifTimeline.frameIndex} playing={gifTimeline.playing} onTogglePlay={() => setGifTimeline((current) => ({ ...current, playing: !current.playing }))} onSelectFrame={(frameIndex) => setGifTimeline((current) => ({ ...current, frameIndex, playing: false }))} onDropFrame={insertGifFrame}/> }
+        {timelineGifLayer && <GifTimeline frames={gifTimeline.frames} frameIndex={gifTimeline.frameIndex} selectedIndexes={gifTimeline.selectedIndexes} playing={gifTimeline.playing} onTogglePlay={() => setGifTimeline((current) => ({ ...current, playing: !current.playing }))} onSelectFrame={selectGifFrame} onDropFrame={insertGifFrame}/> }
         <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropImageOnEditor} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, altKey: event.altKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { if (activeTool === 'text' && event.button === 0 && !event.target.closest('.canvas-tool-dock')) { event.preventDefault(); event.stopPropagation(); const bounds = stageHostRef.current?.getBoundingClientRect(); const point = bounds ? { x: clamp((event.clientX - bounds.left) / zoom, 0, Math.max(0, draft.width)), y: clamp((event.clientY - bounds.top) / zoom, 0, Math.max(0, draft.height)) } : { x: 0, y: 0 }; addTextLayer(point, textOrientation); return; } if (beginOutsideSelectionDrag(event)) return; const blank = !event.target.closest('.stage-shadow, .canvas-tool-dock'); if (activeTool === 'select' && blank) { clearSelection(); beginPan(event); } else if (activeTool === 'marquee' && event.button === 0 && blank) { event.preventDefault(); setMarqueeStartRequest({ clientX: event.clientX, clientY: event.clientY, key: event.timeStamp }); } }}>
           <div className="canvas-tool-dock"><div className="editor-paint-tools">
             <IconButton label="选择与移动" className={activeTool === 'select' ? 'active' : ''} onClick={() => setActiveTool('select')}><MousePointer2 size={17}/></IconButton>
@@ -2555,7 +2617,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
             <label className="brush-size" title="画笔和橡皮擦大小"><NumericInput aria-label="画笔大小" min={1} max={160} presets={[1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 160]} value={brushSize} onCommit={setBrushSize}/><input type="range" min="1" max="160" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))}/></label>
           </div></div>
           <div className="canvas-scroll-surface" style={{ width: `max(100%, ${Math.max(0, draft.width * zoom) + 160}px)`, height: `max(100%, ${Math.max(0, draft.height * zoom) + 160}px)` }}><div ref={stageHostRef} className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}>
-            <EditorStage gifFrameIndex={selectedGifLayer ? gifTimeline.frameIndex + 1 : null} gifFrameLayerId={selectedGifLayer?.id || null} gifFrameSource={selectedGifLayer?.id === gifTimeline.layerId ? gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl : null} template={draft} selectedIds={selectedIds} selectedGroupId={selectedGroupId} selectLayer={selectLayer} selectGroup={selectGroup} clearSelection={clearSelection} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onGroupContextMenu={openGroupMenu} onMarqueeContextMenu={openMarqueeMenu} marqueeStartRequest={marqueeStartRequest} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} eraserMode={eraserMode} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, patch) => updateLayer(id, patch)} onPickColor={setPaintColor} zoom={zoom}/>
+            <EditorStage gifFrameIndex={timelineGifLayer ? gifTimeline.frameIndex + 1 : null} gifFrameLayerId={timelineGifLayer?.id || null} gifFrameSource={timelineGifLayer?.id === gifTimeline.layerId ? gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl : null} template={draft} selectedIds={selectedIds} selectedGroupId={selectedGroupId} selectLayer={selectLayer} selectGroup={selectGroup} clearSelection={clearSelection} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onGroupContextMenu={openGroupMenu} onMarqueeContextMenu={openMarqueeMenu} marqueeStartRequest={marqueeStartRequest} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} eraserMode={eraserMode} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, patch) => updateLayer(id, patch)} onPickColor={setPaintColor} zoom={zoom}/>
             {selectedOutsideLayers.map((layer) => { const preview = outsideDragPreview?.ids.includes(layer.id) ? outsideDragPreview : null; return <div key={`outside-outline-${layer.id}`} className="outside-layer-outline" style={{ left: (layer.x + (preview?.dx || 0)) * zoom, top: (layer.y + (preview?.dy || 0)) * zoom, width: layer.width * zoom, height: layer.height * zoom, transform: `rotate(${layer.rotation || 0}deg)` }}/>; }) }
             {textEditingId && draft.layers.find((layer) => layer.id === textEditingId && layer.type === 'text') && <RichTextOverlay
               layer={draft.layers.find((layer) => layer.id === textEditingId)}
@@ -3336,7 +3398,7 @@ function LayerBorderShape({ layer }) {
     const points = polygonPointsOf(layer).flatMap((point) => [inset + point.x * Math.max(0, layer.width - borderWidth), inset + point.y * Math.max(0, layer.height - borderWidth)]);
     return <Line points={points} closed {...props}/>;
   }
-  return <Rect x={inset} y={inset} width={Math.max(0, layer.width - borderWidth)} height={Math.max(0, layer.height - borderWidth)} cornerRadius={shapeOf(layer) === 'rounded' ? Math.min(36, layer.width / 4, layer.height / 4) : 0} {...props}/>;
+  return <Rect x={inset} y={inset} width={Math.max(0, layer.width - borderWidth)} height={Math.max(0, layer.height - borderWidth)} cornerRadius={shapeOf(layer) === 'rounded' ? Math.max(0, cornerRadiusOf(layer) - inset) : 0} {...props}/>;
 }
 
 function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, source, paintSource, eraseSource, mosaicSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
@@ -3369,13 +3431,9 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
   const disabledReplacement = layer.type === 'slot' && layer.replacementDisabled;
   const colorFilled = layer.type === 'slot' && Boolean(layer.slotFill);
   const bindingActive = layer.type === 'slot' && Boolean(layer.boundLayerId);
-  const [frameMenuOpen, setFrameMenuOpen] = useState(false);
-  const visibleFrameValues = parseFrameList(layer.visibleFrames);
-  useEffect(() => setFrameMenuOpen(false), [layer.id]);
-  const addVisibleFrame = (frame) => update({ visibleFrames: [...new Set([...visibleFrameValues, frame])].sort((a, b) => a - b).join('、') });
   const placeholderProps = { fill: layer.slotFill || (disabledReplacement ? 'rgba(0,0,0,0)' : highlight ? 'rgba(233,78,55,.14)' : '#eceae4'), stroke: disabledReplacement ? undefined : highlight ? '#e94e37' : layer.slotFill ? undefined : '#77746d', strokeWidth: disabledReplacement ? 0 : highlight ? 5 : 2, dash: disabledReplacement || (layer.slotFill && !highlight) ? undefined : [12, 8] };
   return <Group {...common} clipFunc={layer.type === 'slot' ? clipFunc : undefined}>
-    {image ? <KonvaImage image={image} x={placement?.x || 0} y={placement?.y || 0} width={placement?.width || layer.width} height={placement?.height || layer.height} crop={placement ? undefined : crop} draggable={cropMode} onDragMove={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); onPhotoTransformMove ? onPhotoTransformMove({ event, x, y, placement }) : event.target.position({ x, y }); } : undefined} onDragEnd={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); event.target.position({ x, y }); if (onPhotoTransformEnd) onPhotoTransformEnd({ event, x, y, placement }); else onPhotoTransform?.({ offsetX: x - placement.centeredX, offsetY: y - placement.centeredY }); } : undefined}/> : shapeOf(layer) === 'circle' ? <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={layer.width / 2} radiusY={layer.height / 2} {...placeholderProps}/> : shapeOf(layer) === 'polygon' ? <Line points={polygonPixelPoints(layer)} closed {...placeholderProps}/> : <Rect width={layer.width} height={layer.height} cornerRadius={shapeOf(layer) === 'rounded' ? Math.min(36, layer.width / 4, layer.height / 4) : 0} {...placeholderProps}/>}
+    {image ? <KonvaImage image={image} x={placement?.x || 0} y={placement?.y || 0} width={placement?.width || layer.width} height={placement?.height || layer.height} crop={placement ? undefined : crop} draggable={cropMode} onDragMove={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); onPhotoTransformMove ? onPhotoTransformMove({ event, x, y, placement }) : event.target.position({ x, y }); } : undefined} onDragEnd={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); event.target.position({ x, y }); if (onPhotoTransformEnd) onPhotoTransformEnd({ event, x, y, placement }); else onPhotoTransform?.({ offsetX: x - placement.centeredX, offsetY: y - placement.centeredY }); } : undefined}/> : shapeOf(layer) === 'circle' ? <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={layer.width / 2} radiusY={layer.height / 2} {...placeholderProps}/> : shapeOf(layer) === 'polygon' ? <Line points={polygonPixelPoints(layer)} closed {...placeholderProps}/> : <Rect width={layer.width} height={layer.height} cornerRadius={shapeOf(layer) === 'rounded' ? cornerRadiusOf(layer) : 0} {...placeholderProps}/>}
     {paintImage && <KonvaImage image={paintImage} width={layer.width} height={layer.height} listening={false}/>}
     {mosaicImage && <KonvaImage image={mosaicImage} width={layer.width} height={layer.height} listening={false}/>}
     {cropMode && <Rect x={1} y={1} width={Math.max(0, layer.width - 2)} height={Math.max(0, layer.height - 2)} stroke="#e94e37" strokeWidth={3} dash={[10, 7]} listening={false}/>}
@@ -3474,6 +3532,10 @@ function MultiSelectionProperties({ layers, grouped, onGroup, onUngroup, onToggl
 }
 
 function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifFrameDelay, textStyle, textSelection, onBeginTextInteraction, onTextSelectionChange, updateTextStyle, updateText, update, toggleLock, remove, move }) {
+  const [frameMenuOpen, setFrameMenuOpen] = useState(false);
+  const visibleFrameValues = parseFrameList(layer.visibleFrames);
+  useEffect(() => setFrameMenuOpen(false), [layer.id]);
+  const addVisibleFrame = (frame) => update({ visibleFrames: [...new Set([...visibleFrameValues, frame])].sort((a, b) => a - b).join('、') });
   const disabledReplacement = layer.type === 'slot' && layer.replacementDisabled;
   const colorFilled = layer.type === 'slot' && Boolean(layer.slotFill);
   const bindingActive = layer.type === 'slot' && Boolean(layer.boundLayerId);
@@ -3494,7 +3556,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
   return <div className="property-content">
     <button className={`layer-lock-button ${layer.locked ? 'active' : ''}`} onClick={toggleLock}>{layer.locked ? <Lock size={16}/> : <Unlock size={16}/>}<span>{layer.locked ? '图层已锁定' : '锁定图层'}</span></button>
     <label className="text-field"><span>图层名称</span><input value={layer.name} onChange={(event) => update({ name: event.target.value })}/></label>
-    {isGifSource(layer.src) && gifTimeline?.frames?.length ? <div className="property-section"><h4>GIF 当前帧</h4><div className="gif-frame-property"><img src={gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl} alt="当前 GIF 帧"/><div><strong>第 {gifTimeline.frameIndex + 1} 帧</strong><NumberField label="播放时间" suffix="ms" value={Math.max(20, Number(gifTimeline.frames[gifTimeline.frameIndex]?.delayMs) || 100)} min={20} max={60000} presets={[20, 40, 50, 80, 100, 150, 200, 300, 500, 1000]} onChange={(value) => onGifFrameDelay?.(gifTimeline.frameIndex, value)}/></div></div></div> : null}
+    {isGifSource(layer.src) && gifTimeline?.frames?.length ? <div className="property-section"><h4>GIF 帧设置</h4><div className="gif-frame-property"><img src={gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl} alt="当前 GIF 帧"/><div><strong>第 {gifTimeline.frameIndex + 1} 帧{gifTimeline.selectedIndexes?.length > 1 ? ` · 已选 ${gifTimeline.selectedIndexes.length} 帧` : ''}</strong><NumberField label="播放时间" suffix="ms" value={Math.max(20, Number(gifTimeline.frames[gifTimeline.frameIndex]?.delayMs) || 100)} min={20} max={60000} presets={false} onChange={(value) => onGifFrameDelay?.(gifTimeline.frameIndex, value)}/><button type="button" className="wide-property-button gif-apply-all-button" onClick={() => onGifFrameDelay?.(gifTimeline.frameIndex, Math.max(20, Number(gifTimeline.frames[gifTimeline.frameIndex]?.delayMs) || 100), true)}>应用到所有帧</button></div></div></div> : null}
     {gifFrameCount > 0 && !isGifSource(layer.src) ? <div className="property-section"><h4>出现帧</h4><div className="frame-visibility-control"><input value={layer.visibleFrames || ''} placeholder="留空表示所有帧均显示" onChange={(event) => update({ visibleFrames: event.target.value })}/><button type="button" title="选择帧" onClick={() => setFrameMenuOpen((open) => !open)}>+</button>{frameMenuOpen && <div className="frame-visibility-menu">{Array.from({ length: gifFrameCount }, (_, index) => index + 1).map((frame) => <button type="button" key={frame} className={visibleFrameValues.includes(frame) ? 'active' : ''} onClick={() => { addVisibleFrame(frame); setFrameMenuOpen(false); }}>{frame}</button>)}</div>}</div><p className="property-note">留空时默认在 GIF 的所有帧中显示；可输入如 1、4、6。</p></div> : null}
     {layer.type === 'text' && <>
       <div className="property-section text-content-section"><h4>文字内容</h4><textarea value={layer.text || ''} onPointerDown={onBeginTextInteraction} onFocus={onBeginTextInteraction} onChange={(event) => { onBeginTextInteraction?.(); updateText(event.target.value); onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }); }} onSelect={(event) => onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}/></div>
@@ -3506,8 +3568,12 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
     <div className="property-section"><h4>旋转</h4><NumberField label="角度" value={layer.rotation} min={-360} max={360} presets={ROTATION_PRESETS} onChange={(rotation) => update({ rotation })}/><input className="range" type="range" min="-180" max="180" value={layer.rotation} onChange={(event) => update({ rotation: Number(event.target.value) })}/></div>
     <div className="property-section"><h4>边框</h4><div className="border-controls"><label><span>颜色</span><input type="color" value={layer.borderColor || '#000000'} onChange={(event) => update({ borderColor: event.target.value })}/></label><NumberField label="大小" value={layer.borderWidth || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(borderWidth) => update({ borderWidth })}/></div></div>
     {layer.type === 'slot' && <>
-      <div className="property-section"><h4>槽位形状</h4><div className="shape-segmented four"><button className={shapeOf(layer) === 'rect' ? 'active' : ''} onClick={() => update({ shape: 'rect' })}>矩形</button><button className={shapeOf(layer) === 'circle' ? 'active' : ''} onClick={() => update({ shape: 'circle' })}>圆形</button><button className={shapeOf(layer) === 'rounded' ? 'active' : ''} onClick={() => update({ shape: 'rounded' })}>圆角</button><button className={shapeOf(layer) === 'polygon' ? 'active' : ''} onClick={() => update({ shape: 'polygon', polygonSides: layer.polygonSides || 5, polygonPoints: polygonPointsOf(layer) })}>多边形</button></div>{shapeOf(layer) === 'polygon' && <div className="polygon-controls"><NumberField label="边数" value={layer.polygonSides || 5} min={POLYGON_MIN_SIDES} max={POLYGON_MAX_SIDES} presets={[3, 4, 5, 6, 8, 10, 12, 16]} onChange={(polygonSides) => update({ polygonSides, polygonPoints: regularPolygonPoints(polygonSides) })}/>{polygonPointsOf(layer).map((point, index) => <label key={index} className="polygon-radius"><span>顶点 {index + 1}</span><input type="range" min="10" max="100" value={polygonRadiusPercent(point)} onChange={(event) => update({ polygonPoints: polygonPointsOf(layer).map((item, itemIndex) => itemIndex === index ? polygonPointAtRadius(item, Number(event.target.value)) : item) })}/><output>{polygonRadiusPercent(point)}%</output></label>)}</div>}</div>
-      <div className="property-section"><h4>照片 / 颜色填充</h4><div className="segmented"><button disabled={disabledReplacement || colorFilled || bindingActive} className={layer.fit === 'cover' ? 'active' : ''} onClick={() => update({ fit: 'cover' })}>裁切铺满</button><button disabled={disabledReplacement || colorFilled || bindingActive} className={layer.fit === 'fill' ? 'active' : ''} onClick={() => update({ fit: 'fill' })}>拉伸填满</button></div><label className="check-row replacement-disable-row" title="禁用后，使用模板时不再要求添加照片；槽位保持透明，但颜色填充和边框仍会显示。"><input type="checkbox" disabled={colorFilled || bindingActive} checked={Boolean(layer.replacementDisabled)} onChange={(event) => update({ replacementDisabled: event.target.checked })}/><span>禁用替换照片</span></label><label className="text-field"><span>绑定图层</span><select value={layer.boundLayerId || ''} disabled={colorFilled} onChange={(event) => update({ boundLayerId: event.target.value || undefined, replacementDisabled: false })}><option value="">不绑定</option>{layers.filter((candidate) => candidate.type === 'slot' && candidate.id !== layer.id && !candidate.boundLayerId && !candidate.replacementDisabled && !candidate.slotFill).map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}</select></label>{bindingActive && <p className="property-note">使用模板时跟随绑定的可替换图层，不会单独显示在可替换图层列表中。</p>}<div className="slot-color-fill"><label><span>颜色填充</span><input type="color" value={layer.slotFill || '#e24b35'} onChange={(event) => update({ slotFill: event.target.value, replacementDisabled: false, boundLayerId: undefined })}/></label><button className={`wide-property-button ${colorFilled ? 'active' : ''}`} onClick={() => update(colorFilled ? { slotFill: '' } : { slotFill: '#e24b35', replacementDisabled: false, boundLayerId: undefined })}>{colorFilled ? '取消颜色填充' : '启用颜色填充'}</button></div></div>    </>}
+      <div className="property-section"><h4>槽位形状</h4><div className="shape-segmented four"><button className={shapeOf(layer) === 'rect' ? 'active' : ''} onClick={() => update({ shape: 'rect' })}>矩形</button><button className={shapeOf(layer) === 'circle' ? 'active' : ''} onClick={() => update({ shape: 'circle' })}>圆形</button><button className={shapeOf(layer) === 'rounded' ? 'active' : ''} onClick={() => update({ shape: 'rounded', cornerRadius: layer.cornerRadius ?? 36 })}>圆角</button><button className={shapeOf(layer) === 'polygon' ? 'active' : ''} onClick={() => update({ shape: 'polygon', polygonSides: layer.polygonSides || 5, polygonPoints: polygonPointsOf(layer) })}>多边形</button></div>{shapeOf(layer) === 'rounded' && <div className="rounded-radius-control"><NumberField label="圆角半径" value={layer.cornerRadius ?? 36} min={0} max={Math.floor(Math.min(layer.width, layer.height) / 2)} presets={[0, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128]} onChange={(cornerRadius) => update({ cornerRadius })}/></div>}{shapeOf(layer) === 'polygon' && <div className="polygon-controls"><NumberField label="边数" value={layer.polygonSides || 5} min={POLYGON_MIN_SIDES} max={POLYGON_MAX_SIDES} presets={[3, 4, 5, 6, 8, 10, 12, 16]} onChange={(polygonSides) => update({ polygonSides, polygonPoints: regularPolygonPoints(polygonSides) })}/>{polygonPointsOf(layer).map((point, index) => <label key={index} className="polygon-radius"><span>顶点 {index + 1}</span><input type="range" min="10" max="100" value={polygonRadiusPercent(point)} onChange={(event) => update({ polygonPoints: polygonPointsOf(layer).map((item, itemIndex) => itemIndex === index ? polygonPointAtRadius(item, Number(event.target.value)) : item) })}/><output>{polygonRadiusPercent(point)}%</output></label>)}</div>}</div>
+      <div className="property-section slot-fill-section"><h4>照片 / 颜色填充</h4>
+        <div className="slot-fill-mode" role="group" aria-label="填充类型"><button type="button" className={!colorFilled ? 'active' : ''} onClick={() => update({ slotFill: '' })}><FileImage size={15}/>照片填充</button><button type="button" className={colorFilled ? 'active' : ''} onClick={() => update({ slotFill: layer.slotFill || '#e24b35', replacementDisabled: false, boundLayerId: undefined })}><PaintBucket size={15}/>颜色填充</button></div>
+        <div className={`slot-photo-options ${colorFilled ? 'disabled' : ''}`}><div className="slot-option-heading"><span>照片适配</span>{colorFilled && <small>颜色填充已启用</small>}</div><div className="segmented"><button disabled={disabledReplacement || colorFilled || bindingActive} className={layer.fit === 'cover' ? 'active' : ''} onClick={() => update({ fit: 'cover' })}>裁切铺满</button><button disabled={disabledReplacement || colorFilled || bindingActive} className={layer.fit === 'fill' ? 'active' : ''} onClick={() => update({ fit: 'fill' })}>拉伸填满</button></div><label className="check-row replacement-disable-row" title="禁用后，使用模板时不再要求添加照片；槽位保持透明，但颜色填充和边框仍会显示。"><input type="checkbox" disabled={colorFilled || bindingActive} checked={Boolean(layer.replacementDisabled)} onChange={(event) => update({ replacementDisabled: event.target.checked })}/><span>禁用替换照片</span></label><label className="text-field slot-binding-field"><span>绑定图层</span><select value={layer.boundLayerId || ''} disabled={colorFilled} onChange={(event) => update({ boundLayerId: event.target.value || undefined, replacementDisabled: false })}><option value="">不绑定</option>{layers.filter((candidate) => candidate.type === 'slot' && candidate.id !== layer.id && !candidate.boundLayerId && !candidate.replacementDisabled && !candidate.slotFill).map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}</select></label>{bindingActive && <p className="property-note">使用模板时跟随绑定的可替换图层，不会单独显示在可替换图层列表中。</p>}</div>
+        <div className={`slot-color-options ${colorFilled ? 'active' : ''}`}><label className="slot-color-picker"><span>填充颜色</span><input type="color" disabled={!colorFilled} value={layer.slotFill || '#e24b35'} onChange={(event) => update({ slotFill: event.target.value, replacementDisabled: false, boundLayerId: undefined })}/><code>{layer.slotFill || '#e24b35'}</code></label><button type="button" className={`wide-property-button ${colorFilled ? 'active' : ''}`} onClick={() => update(colorFilled ? { slotFill: '' } : { slotFill: '#e24b35', replacementDisabled: false, boundLayerId: undefined })}>{colorFilled ? '关闭颜色填充' : '启用颜色填充'}</button></div>
+      </div>    </>}
     <div className="property-section"><h4>图层顺序</h4><div className="order-buttons"><button disabled={layer.locked} onClick={() => move(1)}><ChevronUp size={17}/>上移</button><button disabled={layer.locked} onClick={() => move(-1)}><ChevronDown size={17}/>下移</button></div></div>
     <button className="delete-button" disabled={layer.locked} onClick={remove}><Trash2 size={17}/>删除图层</button>
   </div>;
@@ -3529,6 +3595,14 @@ function pointInLayer(x, y, layer) {
       if (intersects) inside = !inside;
     }
     return inside;
+  }
+  if (shapeOf(layer) === 'rounded') {
+    const radius = cornerRadiusOf(layer);
+    if (!radius) return true;
+    const centerX = localX < radius ? radius : localX > layer.width - radius ? layer.width - radius : localX;
+    const centerY = localY < radius ? radius : localY > layer.height - radius ? layer.height - radius : localY;
+    const dx = localX - centerX; const dy = localY - centerY;
+    return dx * dx + dy * dy <= radius * radius;
   }
   if (shapeOf(layer) !== 'circle') return true;
   const nx = (localX - layer.width / 2) / (layer.width / 2);

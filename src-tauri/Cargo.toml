@@ -1,6 +1,6 @@
 [package]
 name = "meme-helper-tauri"
-version = "2.4.2"
+version = "2.4.3"
 description = "Offline meme template editor and generator"
 authors = ["Meme Helper"]
 edition = "2021"
