@@ -434,12 +434,12 @@ function starterTemplates() {
   const reaction = svgData(`<svg xmlns="http://www.w3.org/2000/svg" width="900" height="600"><rect width="900" height="600" fill="#171716"/><rect x="26" y="26" width="848" height="548" rx="12" fill="none" stroke="#f8f7f2" stroke-width="8"/><text x="450" y="92" text-anchor="middle" font-family="Arial,sans-serif" font-size="48" font-weight="700" fill="#fff">当我看到群里的新需求</text><text x="450" y="548" text-anchor="middle" font-family="Arial,sans-serif" font-size="42" font-weight="700" fill="#f2c94c">先保持微笑</text></svg>`);
   return [
     { id: uid(), name: '上班状态', width: 800, height: 800, createdAt: now, updatedAt: now, layers: [
-      { id: uid(), name: '底图与文字', type: 'static', src: office, x: 0, y: 0, width: 800, height: 800, rotation: 0, visible: true, fit: 'fill' },
-      { id: uid(), name: '人物照片', type: 'slot', src: '', x: 116, y: 150, width: 568, height: 400, rotation: 0, visible: true, fit: 'cover' }
+      { id: uid(), name: '底图与文字', type: 'static', src: office, x: 0, y: 0, width: 800, height: 800, rotation: 0, opacity: 1, visible: true, fit: 'fill' },
+      { id: uid(), name: '人物照片', type: 'slot', src: '', x: 116, y: 150, width: 568, height: 400, rotation: 0, opacity: 1, visible: true, fit: 'cover' }
     ]},
     { id: uid(), name: '需求来了', width: 900, height: 600, createdAt: now, updatedAt: now, layers: [
-      { id: uid(), name: '黑色边框', type: 'static', src: reaction, x: 0, y: 0, width: 900, height: 600, rotation: 0, visible: true, fit: 'fill' },
-      { id: uid(), name: '反应照片', type: 'slot', src: '', x: 92, y: 125, width: 716, height: 350, rotation: 0, visible: true, fit: 'cover' }
+      { id: uid(), name: '黑色边框', type: 'static', src: reaction, x: 0, y: 0, width: 900, height: 600, rotation: 0, opacity: 1, visible: true, fit: 'fill' },
+      { id: uid(), name: '反应照片', type: 'slot', src: '', x: 92, y: 125, width: 716, height: 350, rotation: 0, opacity: 1, visible: true, fit: 'cover' }
     ]}
   ];
 }
@@ -727,6 +727,11 @@ function borderWidthOf(layer) {
   return Math.max(0, Number(layer.borderWidth) || 0);
 }
 
+function layerOpacityOf(layer) {
+  const value = Number(layer?.opacity);
+  return Number.isFinite(value) ? clamp(value, 0, 1) : 1;
+}
+
 function drawLayerBorder(ctx, layer) {
   const borderWidth = borderWidthOf(layer);
   if (!borderWidth) return;
@@ -816,6 +821,7 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
   for (const layer of template.layers) {
     if (!layer.visible || !isLayerVisibleAtFrame(layer, frameIndex)) continue;
     ctx.save();
+    ctx.globalAlpha = layerOpacityOf(layer);
     ctx.translate(layer.x, layer.y);
     ctx.rotate((layer.rotation || 0) * Math.PI / 180);
     const suppliedReplacement = typeof replacements === 'string' ? replacements : replacements?.[layer.id];
@@ -1756,6 +1762,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
   const selectLayer = useCallback((id, event = {}) => {
     const layer = draft.layers.find((item) => item.id === id);
     if (!layer) return;
+    setLayerMenu(null);
     if (event.shiftKey) event.preventDefault?.();
     setTextEditingId((current) => current === id ? current : null);
     setTextSelection((current) => current?.id === id ? current : null);
@@ -1792,6 +1799,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
   const selectGroup = useCallback((groupId, event = {}) => {
     const memberIds = draft.layers.filter((item) => item.groupId === groupId).map((item) => item.id);
     if (!memberIds.length) return;
+    setLayerMenu(null);
     if (event.shiftKey) event.preventDefault?.();
     const groupOrder = [];
     const seen = new Set();
@@ -1869,7 +1877,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
       return {
         id: uid(), name: `${layer.name} 选区`, type: 'static', src: trimmed.toDataURL('image/png'),
         x: selection.x + left, y: selection.y + top, width, height,
-        rotation: 0, visible: true, locked: false, fit: 'fill', aspectRatioLocked: true
+        rotation: 0, opacity: 1, visible: true, locked: false, fit: 'fill', aspectRatioLocked: true
       };
     }))).filter(Boolean);
     return { fragments, selection };
@@ -1925,6 +1933,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
       return {
         ...structuredClone(copiedLayer),
         id: uid(),
+        opacity: layerOpacityOf(copiedLayer),
         groupId: copiedLayer.groupId ? groupMap.get(copiedLayer.groupId) : undefined,
         name: copiedLayer.groupId ? copiedLayer.name : `${copiedLayer.name} \u526f\u672c`,
         x: copiedLayer.x + 20,
@@ -2044,16 +2053,10 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
         event.preventDefault(); redoDraft();
         return;
       }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c' && textEditingId && textSelection?.id === textEditingId && textSelection.start !== textSelection.end) {
-        event.preventDefault();
-        const layer = draft.layers.find((item) => item.id === textEditingId && item.type === 'text');
-        const start = Math.min(textSelection.start, textSelection.end); const end = Math.max(textSelection.start, textSelection.end);
-        const copiedText = String(layer?.text || '').slice(start, end);
-        if (copiedText) navigator.clipboard.writeText(copiedText).catch(() => notify('复制文字失败', 'error'));
-        return;
-      }
       if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && !isTextEditingTarget(event.target)) {
         if (event.key.toLowerCase() === 'c' && selectedIds.length) {
+          const nativeSelection = window.getSelection?.();
+          if (nativeSelection?.toString()) return;
           event.preventDefault(); copySelectedLayers();
           return;
         }
@@ -2088,7 +2091,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('pointerdown', closeMenus);
     return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('pointerdown', closeMenus); };
-  }, [activeTool, copySelectedLayers, draft.layers, gifTimeline, notify, nudgeSelectedLayers, pasteLayers, redoDraft, removeSelectedLayers, selectedGifLayer, selectedIds.length, textEditingId, textSelection, tryBack, undoDraft]);
+  }, [activeTool, copySelectedLayers, gifTimeline, nudgeSelectedLayers, pasteLayers, redoDraft, removeSelectedLayers, selectedGifLayer, selectedIds.length, textEditingId, tryBack, undoDraft]);
 
   useEffect(() => {
     if (activeTool !== 'text') return undefined;
@@ -2141,7 +2144,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
       const width = Math.round(image.width * scale); const height = Math.round(image.height * scale);
       const x = initializeCanvas ? 0 : Math.round((dropPoint?.x ?? draft.width / 2) - width / 2);
       const y = initializeCanvas ? 0 : Math.round((dropPoint?.y ?? draft.height / 2) - height / 2);
-      const layer = { id: uid(), name: file.name.replace(/\.[^.]+$/, ''), type: 'static', src, x, y, width, height, rotation: 0, visible: true, fit: 'fill', ...(createdSingleFrameGif ? { gifFrameCount: 1, gifFrameDelays: [100] } : {}) };
+      const layer = { id: uid(), name: file.name.replace(/\.[^.]+$/, ''), type: 'static', src, x, y, width, height, rotation: 0, opacity: 1, visible: true, fit: 'fill', ...(createdSingleFrameGif ? { gifFrameCount: 1, gifFrameDelays: [100] } : {}) };
       updateDraft((prev) => ({ ...prev, width: initializeCanvas ? width : prev.width, height: initializeCanvas ? height : prev.height, layers: [...prev.layers, layer] }));
       setSelectedIds([layer.id]); setSelectedGroupId(null); setActiveTool('select');
     } catch (error) { notify(error.message, 'error'); }
@@ -2186,14 +2189,14 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
     const width = size;
     const height = size;
     const shapeName = shape === 'circle' ? '圆形' : shape === 'rounded' ? '圆角矩形' : shape === 'polygon' ? '多边形' : '矩形';
-    const layer = { id: uid(), name: `${shapeName}照片 ${draft.layers.filter((x) => x.type === 'slot').length + 1}`, type: 'slot', shape, src: '', x: initializeCanvas ? 0 : Math.round((draft.width - width) / 2), y: initializeCanvas ? 0 : Math.round((draft.height - height) / 2), width, height, rotation: 0, visible: true, fit: 'cover', ...(shape === 'polygon' ? { polygonSides: 5, polygonPoints: regularPolygonPoints(5) } : shape === 'rounded' ? { cornerRadius: 36 } : {}) };
+    const layer = { id: uid(), name: `${shapeName}照片 ${draft.layers.filter((x) => x.type === 'slot').length + 1}`, type: 'slot', shape, src: '', x: initializeCanvas ? 0 : Math.round((draft.width - width) / 2), y: initializeCanvas ? 0 : Math.round((draft.height - height) / 2), width, height, rotation: 0, opacity: 1, visible: true, fit: 'cover', ...(shape === 'polygon' ? { polygonSides: 5, polygonPoints: regularPolygonPoints(5) } : shape === 'rounded' ? { cornerRadius: 36 } : {}) };
     updateDraft((prev) => ({ ...prev, width: initializeCanvas ? width : prev.width, height: initializeCanvas ? height : prev.height, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
     setShapeMenu(false); setActiveTool('select');
   };
 
   const addTextLayer = (point = null, orientation = textOrientation) => {
     const initializeCanvas = !draft.layers.length && draft.width === 0 && draft.height === 0;
-    const seed = { id: uid(), name: `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`, type: 'text', text: '输入文字', textOrientation: orientation, x: initializeCanvas ? 0 : Math.round(point?.x ?? draft.width * .18), y: initializeCanvas ? 0 : Math.round(point?.y ?? draft.height * .18), width: 1, height: 1, rotation: 0, visible: true, fontSize: 48, fontFamily: 'Microsoft YaHei', fontStyle: 'normal', textDecoration: '', align: 'center', fill: '#22211f', lineHeight: 1.25, autoFit: false, stroke: '#ffffff', strokeWidth: 0, shadowEnabled: false, shadowColor: '#000000', shadowBlur: 8, shadowOffsetX: 2, shadowOffsetY: 2, background: '', backgroundPadding: 8 };
+    const seed = { id: uid(), name: `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`, type: 'text', text: '输入文字', textOrientation: orientation, x: initializeCanvas ? 0 : Math.round(point?.x ?? draft.width * .18), y: initializeCanvas ? 0 : Math.round(point?.y ?? draft.height * .18), width: 1, height: 1, rotation: 0, opacity: 1, visible: true, fontSize: 48, fontFamily: 'Microsoft YaHei', fontStyle: 'normal', textDecoration: '', align: 'center', fill: '#22211f', lineHeight: 1.25, autoFit: false, stroke: '#ffffff', strokeWidth: 0, shadowEnabled: false, shadowColor: '#000000', shadowBlur: 8, shadowOffsetX: 2, shadowOffsetY: 2, background: '', backgroundPadding: 8 };
     seed.name = `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`;
     const layer = fitTextLayerToContent(seed);
     updateDraft((prev) => ({ ...prev, width: initializeCanvas ? layer.width : prev.width, height: initializeCanvas ? layer.height : prev.height, layers: [...prev.layers, layer] }));
@@ -2603,7 +2606,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
         height,
         layers: layers.map((layer) => ({ ...structuredClone(layer), x: layer.x - left, y: layer.y - top }))
       }, {}, {}, { mime: 'image/png', transparent: true });
-      const merged = { id: uid(), name: '合并图层', type: 'static', src, x: left, y: top, width, height, rotation: 0, visible: true, fit: 'fill' };
+      const merged = { id: uid(), name: '合并图层', type: 'static', src, x: left, y: top, width, height, rotation: 0, opacity: 1, visible: true, fit: 'fill' };
       updateDraft((previous) => {
         const topIndex = Math.max(...previous.layers.map((layer, index) => selectedIds.includes(layer.id) ? index : -1));
         const nextLayers = [];
@@ -2690,7 +2693,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
       onPointerDown={(event) => { if (!layer.locked && !event.target.closest('button, input')) beginLayerReorder(event, layer.id); }}
       onClick={(event) => selectLayer(layer.id, event)}
       onContextMenu={(event) => openLayerMenu(layer.id, event)}
-    ><span className="layer-grip" title={layer.locked ? '图层已锁定' : '拖动排序'}><GripVertical size={15}/></span><div className={`layer-thumb ${layer.type}`}><LayerThumb layer={layer}/></div><div className="layer-copy">{layerNameEditor('layer', layer.id, layer.name)}<span>{layer.type === 'slot' ? `${shapeOf(layer) === 'circle' ? '圆形' : shapeOf(layer) === 'rounded' ? '圆角矩形' : shapeOf(layer) === 'polygon' ? '多边形' : '矩形'}照片` : layer.type === 'text' ? '文字图层' : isGifSource(layer.src) ? '固定图层 (GIF)' : '固定图层'}</span></div><IconButton label={layer.locked ? '解锁图层' : '锁定图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { locked: !layer.locked }); }}>{layer.locked ? <Lock size={15}/> : <Unlock size={15}/>}</IconButton><IconButton label={layer.visible ? '隐藏图层' : '显示图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { visible: !layer.visible }); }}>{layer.visible ? <Eye size={16}/> : <EyeOff size={16}/>}</IconButton>{layer.type === 'slot' && <IconButton label='打开图层菜单' onClick={(event) => { event.stopPropagation(); openLayerMenu(layer.id, event); }}><MoreHorizontal size={16}/></IconButton>}</div>;
+    ><span className="layer-grip" title={layer.locked ? '图层已锁定' : '拖动排序'}><GripVertical size={15}/></span><div className={`layer-thumb ${layer.type}`}><LayerThumb layer={layer}/></div><div className="layer-copy">{layerNameEditor('layer', layer.id, layer.name)}<span>{layer.type === 'slot' ? `${shapeOf(layer) === 'circle' ? '圆形' : shapeOf(layer) === 'rounded' ? '圆角矩形' : shapeOf(layer) === 'polygon' ? '多边形' : '矩形'}照片` : layer.type === 'text' ? '文字图层' : isGifSource(layer.src) ? '固定图层 (GIF)' : '固定图层'}</span></div><IconButton label={layer.locked ? '解锁图层' : '锁定图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { locked: !layer.locked }); }}>{layer.locked ? <Lock size={15}/> : <Unlock size={15}/>}</IconButton><IconButton label={layer.visible ? '隐藏图层' : '显示图层'} onClick={(event) => { event.stopPropagation(); updateLayer(layer.id, { visible: !layer.visible }); }}>{layer.visible ? <Eye size={16}/> : <EyeOff size={16}/>}</IconButton></div>;
   };
   const layerListRows = [];
   const seenGroups = new Set();
@@ -2818,7 +2821,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
             <button onClick={() => memeInput.current?.click()} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setFixedLayerMenu((open) => !open); }}><ImagePlus size={18}/><span>添加固定图层</span></button>
             {fixedLayerMenu && <div className="fixed-layer-menu" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setFixedLayerMenu(false); gifLayerInput.current?.click(); }}><ImagePlus size={16}/><span>选择一张图片创建 GIF 图层</span></button></div>}
           </div>
-          <div className="shape-picker-wrap"><button onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Shapes size={18}/><span>添加可替换照片</span></button>{shapeMenu && <div className="shape-picker" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => addEmptySlot('rect')}><Square size={17}/><span>矩形</span></button><button onClick={() => addEmptySlot('circle')}><Circle size={17}/><span>圆形</span></button><button onClick={() => addEmptySlot('rounded')}><Shapes size={17}/><span>圆角矩形</span></button><button onClick={() => addEmptySlot('polygon')}><Pentagon size={17}/><span>多边形</span></button></div>}</div>
+          <div className="shape-picker-wrap"><button onClick={(event) => { event.stopPropagation(); setShapeMenu((open) => !open); }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setShapeMenu(true); }}><Shapes size={18}/><span>添加可替换照片</span></button>{shapeMenu && <div className="shape-picker" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => addEmptySlot('rect')}><Square size={17}/><span>矩形</span></button><button onClick={() => addEmptySlot('circle')}><Circle size={17}/><span>圆形</span></button><button onClick={() => addEmptySlot('rounded')}><Shapes size={17}/><span>圆角矩形</span></button><button onClick={() => addEmptySlot('polygon')}><Pentagon size={17}/><span>多边形</span></button></div>}</div>
           <div className="text-add-wrap"><button className={activeTool === 'text' ? 'active' : ''} onClick={() => { setTextOrientation('horizontal'); setTextMenu(false); setActiveTool('text'); }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setTextMenu(true); }}><Type size={18}/><span>添加文字</span></button>{textMenu && <div className="text-orientation-menu" onPointerDown={(event) => event.stopPropagation()}><button className={textOrientation === 'horizontal' ? 'active' : ''} onClick={() => { setTextOrientation('horizontal'); setTextMenu(false); setActiveTool('text'); }}>横排文本</button><button className={textOrientation === 'vertical' ? 'active' : ''} onClick={() => { setTextOrientation('vertical'); setTextMenu(false); setActiveTool('text'); }}>竖排文本</button></div>}</div>
         </div>
         <label className="template-tags-field"><span>模板标签</span><input value={tagsText} onChange={(event) => { const value = event.target.value; setTagsText(value); updateDraft({ ...draft, tags: value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 10) }); }} placeholder="反应、工作、猫"/></label>
@@ -3023,6 +3026,7 @@ function RichTextOverlay({ layer, zoom, selectionRange, onChange, onSelectionCha
       height: layer.height * zoom,
       padding: `${Math.max(0, Number(layer.backgroundPadding) || 0) * zoom}px`,
       transform: `rotate(${layer.rotation || 0}deg)`,
+      opacity: layerOpacityOf(layer),
       textAlign: layer.align || 'left',
       writingMode: layer.textOrientation === 'vertical' ? 'vertical-rl' : 'horizontal-tb',
       textOrientation: layer.textOrientation === 'vertical' ? 'upright' : 'mixed',
@@ -3642,7 +3646,7 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
   const crop = image && layer.fit === 'cover' ? getCoverCrop(image, layer.width, layer.height) : undefined;
   const placement = image && layer.type === 'slot' && source ? getPhotoPlacement(image, layer, photoTransform) : null;
   if (!layer.visible) return null;
-  const common = { ref: setRef, x: layer.x + layer.width / 2, y: layer.y + layer.height / 2, offsetX: layer.width / 2, offsetY: layer.height / 2, width: layer.width, height: layer.height, rotation: layer.rotation || 0, draggable: interactive, listening: selectable };
+  const common = { ref: setRef, x: layer.x + layer.width / 2, y: layer.y + layer.height / 2, offsetX: layer.width / 2, offsetY: layer.height / 2, width: layer.width, height: layer.height, rotation: layer.rotation || 0, opacity: layerOpacityOf(layer), draggable: interactive, listening: selectable };
   if (selectable) Object.assign(common, { onMouseDown: onPointerDown, onTouchStart: onPointerDown, onClick: onSelect, onTap: onSelect, onDblClick: onEnterCrop, onDblTap: onEnterCrop, onContextMenu });
   if (interactive) {
     Object.assign(common, { onDragStart, onDragMove, onDragEnd: onDragEnd || ((event) => onChange({ x: Math.round(event.target.x() - layer.width / 2), y: Math.round(event.target.y() - layer.height / 2) })) });
@@ -3678,6 +3682,7 @@ const FONT_SIZE_PRESETS = [6, 8, 9, 10, 11, 12, 14, 16, 18, 24, 30, 36, 48, 60, 
 const ROTATION_PRESETS = [-180, -135, -90, -45, 0, 45, 90, 135, 180];
 const LINE_HEIGHT_PRESETS = [0.8, 1, 1.2, 1.25, 1.5, 2, 3];
 const EFFECT_SIZE_PRESETS = [0, 1, 2, 4, 8, 12, 16, 24, 30, 50];
+const OPACITY_PRESETS = [0, 25, 50, 75, 100];
 
 function NumericInput({ value, onCommit, min, max, step = 1, integer = true, className = '', presets, menuActions = [], ...props }) {
   const [draftValue, setDraftValue] = useState(() => String(value ?? ''));
@@ -3807,6 +3812,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
   return <div className="property-content">
     <button className={`layer-lock-button ${layer.locked ? 'active' : ''}`} onClick={toggleLock}>{layer.locked ? <Lock size={16}/> : <Unlock size={16}/>}<span>{layer.locked ? '图层已锁定' : '锁定图层'}</span></button>
     <label className="text-field"><span>图层名称</span><input value={layer.name} onChange={(event) => update({ name: event.target.value })}/></label>
+    <div className="property-section"><h4>透明度</h4><NumberField label="不透明度" suffix="%" value={Math.round(layerOpacityOf(layer) * 100)} min={0} max={100} presets={OPACITY_PRESETS} onChange={(opacity) => update({ opacity: clamp(opacity / 100, 0, 1) })}/></div>
     {isGifSource(layer.src) && gifTimeline?.frames?.length ? <div className="property-section"><h4>GIF 帧设置</h4><div className="gif-frame-property"><img src={gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl} alt="当前 GIF 帧"/><div><strong>第 {gifTimeline.frameIndex + 1} 帧{gifTimeline.selectedIndexes?.length > 1 ? ` · 已选 ${gifTimeline.selectedIndexes.length} 帧` : ''}</strong><NumberField label="播放时间" suffix="ms" value={Math.max(20, Number(gifTimeline.frames[gifTimeline.frameIndex]?.delayMs) || 100)} min={20} max={60000} presets={false} menuActions={[{ label: '应用到所有帧', onSelect: () => onGifFrameDelay?.(gifTimeline.frameIndex, Math.max(20, Number(gifTimeline.frames[gifTimeline.frameIndex]?.delayMs) || 100), true) }]} onChange={(value) => onGifFrameDelay?.(gifTimeline.frameIndex, value)}/></div></div></div> : null}
     {gifFrameCount > 0 && !isGifSource(layer.src) ? <div className="property-section"><h4>出现帧</h4><div ref={frameMenuRef} className="frame-visibility-control"><input value={layer.visibleFrames || ''} placeholder="留空表示所有帧均显示" onChange={(event) => update({ visibleFrames: event.target.value })}/><button type="button" title="选择帧" onClick={() => setFrameMenuOpen((open) => !open)}>+</button>{frameMenuOpen && <div className="frame-visibility-menu">{Array.from({ length: gifFrameCount }, (_, index) => index + 1).map((frame) => <button type="button" key={frame} className={visibleFrameValues.includes(frame) ? 'active' : ''} onClick={() => toggleVisibleFrame(frame)}>{frame}</button>)}</div>}</div></div> : null}
     {layer.type === 'text' && <>
