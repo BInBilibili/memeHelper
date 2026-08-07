@@ -299,20 +299,26 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .color-swatch { width: 38px; height: 34px; padding: 3px; border: 1px solid var(--line); border-radius: 4px; background: #fff; cursor: pointer; }
 .format-buttons { margin-top: 9px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; }
 .format-buttons button { height: 32px; border: 1px solid var(--line); border-radius: 4px; background: #fff; display: grid; place-items: center; cursor: pointer; }
-.format-buttons button:hover, .format-buttons button.active { border-color: #e6a092; color: var(--accent); background: #fff4f1; }
+.format-buttons button:hover { border-color: #e6a092; color: var(--accent); background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface)); }
+.format-buttons button.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent); }
 .align-buttons { grid-template-columns: repeat(3, 1fr); }
 .property-section { margin-top: 20px; padding-top: 17px; border-top: 1px solid #ebe9e3; }
 .property-section h4 { margin: 0 0 10px; font-size: 10px; }
-.property-compact-section { margin-top: 14px; padding-top: 12px; }
-.property-inline-select { display: grid; grid-template-columns: 82px minmax(0, 1fr); align-items: center; gap: 8px; }
-.property-inline-select > span, .rotation-inline-row > span, .opacity-inline-row > span { color: var(--muted); font-size: 9px; font-weight: 600; }
-.property-inline-select .property-select { min-width: 0; }
-.rotation-inline-row { display: grid; grid-template-columns: 32px 82px minmax(56px, 1fr); align-items: center; gap: 8px; margin-top: 10px; }
+.layer-composite-section { display: grid; gap: 10px; }
+.blend-mode-row, .opacity-inline-row, .layer-order-inline-row { display: grid; grid-template-columns: 82px minmax(0, 1fr); align-items: center; gap: 8px; }
+.layer-composite-section h4, .rotation-inline-control h4 { margin: 0; color: var(--ink); font-size: 10px; font-weight: 700; }
+.opacity-inline-row, .layer-order-inline-row { padding-top: 10px; border-top: 1px solid var(--line); }
+.blend-mode-field { min-width: 0; }
+.blend-mode-menu { max-height: 280px; }
+.blend-mode-menu button { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.blend-mode-menu button.active::after { content: '✓'; color: var(--accent); font-weight: 800; }
+.rotation-inline-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: 9px; margin-top: 10px; }
+.rotation-inline-control { min-width: 0; display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: center; gap: 8px; }
 .rotation-inline-input, .opacity-inline-control { position: relative; min-width: 0; }
 .rotation-inline-input .numeric-input > input, .opacity-inline-control .numeric-input > input { width: 100%; height: 34px; border: 1px solid var(--line); border-radius: 4px; padding: 0 30px 0 8px; font-size: 11px; }
-.rotation-inline-row .range { min-width: 0; margin: 0; }
-.opacity-inline-row { display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: center; gap: 8px; }
+.rotation-inline-row .range { width: 100%; min-width: 0; margin: 0; }
 .opacity-inline-control em { position: absolute; z-index: 3; right: 28px; top: 9px; color: var(--muted); font-size: 10px; font-style: normal; pointer-events: none; }
+.layer-order-inline-row .order-buttons { min-width: 0; }
 .property-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .number-field-control { position: relative; }
 .number-field em { position: absolute; right: 28px; top: 9px; color: var(--muted); font-size: 10px; font-style: normal; pointer-events: none; }

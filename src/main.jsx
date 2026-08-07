@@ -239,9 +239,13 @@ function updateTextContent(layer, text) {
   return { text: next, textRuns: compressTextStyles(layer, styles) };
 }
 
+function renderedTextFontStyle(style) {
+  const tokens = new Set(String(style.fontStyle || '').split(/\s+/).filter(Boolean));
+  return [tokens.has('italic') ? 'oblique 14deg' : '', tokens.has('bold') ? 'bold' : ''].filter(Boolean).join(' ') || 'normal';
+}
+
 function textFontString(style) {
-  const tokens = String(style.fontStyle || '').split(' ');
-  return `${tokens.includes('italic') ? 'italic ' : ''}${tokens.includes('bold') ? 'bold ' : ''}${Math.max(.01, style.fontSize)}px "${style.fontFamily || 'Microsoft YaHei'}"`;
+  return `${renderedTextFontStyle(style)} ${Math.max(.01, style.fontSize)}px "${style.fontFamily || 'Microsoft YaHei'}"`;
 }
 
 function measureTextLayer(layer) {
@@ -1643,6 +1647,14 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
     || draft.layers.find((layer) => isGifSource(layer.src))
     || null;
   useEffect(() => {
+    if (!leavePrompt) return undefined;
+    const closeOnOutsidePointer = (event) => {
+      if (!event.target.closest?.('.leave-editor-prompt')) setLeavePrompt(null);
+    };
+    window.addEventListener('pointerdown', closeOnOutsidePointer);
+    return () => window.removeEventListener('pointerdown', closeOnOutsidePointer);
+  }, [leavePrompt]);
+  useEffect(() => {
     if (!timelineGifLayer) {
       setGifTimeline((current) => current.layerId ? { layerId: null, frames: [], frameIndex: 0, selectedIndexes: [], playing: false } : current);
       gifFrameAnchorRef.current = null;
@@ -3017,7 +3029,8 @@ function RichTextOverlay({ layer, zoom, selectionRange, onChange, onSelectionCha
         fontFamily: segment.style.fontFamily,
         fontSize: `${fontSizePx}px`,
         fontWeight: String(segment.style.fontStyle).includes('bold') ? '700' : '400',
-        fontStyle: String(segment.style.fontStyle).includes('italic') ? 'italic' : 'normal',
+        fontStyle: String(segment.style.fontStyle).includes('italic') ? 'oblique 14deg' : 'normal',
+        fontSynthesis: 'style weight',
         textDecoration: segment.style.textDecoration,
         color: segment.style.fill,
         lineHeight: String(segment.style.lineHeight),
@@ -3691,7 +3704,7 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
   if (layer.type === 'text') {
     return <Group {...common}>
       <Rect width={layer.width} height={layer.height} fill={layer.background || 'rgba(0,0,0,.001)'}/>
-      {layoutStyledText(layer).map((run, index) => <KonvaText key={`${run.x}-${run.y}-${index}`} x={run.x} y={run.y} text={run.text} fontSize={run.style.fontSize} fontFamily={run.style.fontFamily} fontStyle={run.style.fontStyle} textDecoration={run.style.textDecoration} fill={run.style.fill} stroke={run.style.strokeWidth > 0 ? run.style.stroke : undefined} strokeWidth={run.style.strokeWidth * 2} fillAfterStrokeEnabled lineJoin="round" shadowEnabled={Boolean(layer.shadowEnabled)} shadowColor={layer.shadowColor || '#000000'} shadowBlur={Number(layer.shadowBlur) || 0} shadowOffsetX={Number(layer.shadowOffsetX) || 0} shadowOffsetY={Number(layer.shadowOffsetY) || 0}/>) }
+      {layoutStyledText(layer).map((run, index) => <KonvaText key={`${run.x}-${run.y}-${index}`} x={run.x} y={run.y} text={run.text} fontSize={run.style.fontSize} fontFamily={run.style.fontFamily} fontStyle={renderedTextFontStyle(run.style)} textDecoration={run.style.textDecoration} fill={run.style.fill} stroke={run.style.strokeWidth > 0 ? run.style.stroke : undefined} strokeWidth={run.style.strokeWidth * 2} fillAfterStrokeEnabled lineJoin="round" shadowEnabled={Boolean(layer.shadowEnabled)} shadowColor={layer.shadowColor || '#000000'} shadowBlur={Number(layer.shadowBlur) || 0} shadowOffsetX={Number(layer.shadowOffsetX) || 0} shadowOffsetY={Number(layer.shadowOffsetY) || 0}/>) }
       {paintImage && <KonvaImage image={paintImage} width={layer.width} height={layer.height} listening={false}/>}
       {mosaicImage && <KonvaImage image={mosaicImage} width={layer.width} height={layer.height} listening={false}/>}
        <LayerBorderShape layer={layer}/>
@@ -3805,10 +3818,12 @@ function MultiSelectionProperties({ layers, grouped, onGroup, onUngroup, onToggl
 function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifFrameDelay, textStyle, textSelection, onBeginTextInteraction, onTextSelectionChange, updateTextStyle, updateText, update, toggleLock, remove, move }) {
   const [frameMenuOpen, setFrameMenuOpen] = useState(false);
   const [bindingMenuOpen, setBindingMenuOpen] = useState(false);
+  const [blendMenuOpen, setBlendMenuOpen] = useState(false);
   const frameMenuRef = useRef(null);
   const bindingMenuRef = useRef(null);
+  const blendMenuRef = useRef(null);
   const visibleFrameValues = parseFrameList(layer.visibleFrames);
-  useEffect(() => setFrameMenuOpen(false), [layer.id]);
+  useEffect(() => { setFrameMenuOpen(false); setBindingMenuOpen(false); setBlendMenuOpen(false); }, [layer.id]);
   useEffect(() => {
     if (!frameMenuOpen) return undefined;
     const close = (event) => { if (!frameMenuRef.current?.contains(event.target)) setFrameMenuOpen(false); };
@@ -3821,6 +3836,12 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
     window.addEventListener('pointerdown', close);
     return () => window.removeEventListener('pointerdown', close);
   }, [bindingMenuOpen]);
+  useEffect(() => {
+    if (!blendMenuOpen) return undefined;
+    const close = (event) => { if (!blendMenuRef.current?.contains(event.target)) setBlendMenuOpen(false); };
+    window.addEventListener('pointerdown', close);
+    return () => window.removeEventListener('pointerdown', close);
+  }, [blendMenuOpen]);
   const toggleVisibleFrame = (frame) => {
     const next = visibleFrameValues.includes(frame) ? visibleFrameValues.filter((item) => item !== frame) : [...visibleFrameValues, frame];
     update({ visibleFrames: [...new Set(next)].sort((a, b) => a - b).join(',') });
@@ -3830,11 +3851,20 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
   const bindingActive = layer.type === 'slot' && Boolean(layer.boundLayerId);
   const bindingCandidates = layers.filter((candidate) => candidate.type === 'slot' && candidate.id !== layer.id && !candidate.boundLayerId && !candidate.replacementDisabled && !candidate.slotFill);
   const boundLayerName = bindingCandidates.find((candidate) => candidate.id === layer.boundLayerId)?.name || layers.find((candidate) => candidate.id === layer.boundLayerId)?.name || '不绑定';
+  const activeBlendMode = LAYER_BLEND_MODES.find((option) => option.value === layerBlendModeOf(layer)) || LAYER_BLEND_MODES[0];
   const activeTextStyle = textStyle || baseTextStyle(layer);
-  const fontTokens = String(activeTextStyle.fontStyle || '').split(' ').filter((token) => token && token !== 'normal');
-  const decorationTokens = String(activeTextStyle.textDecoration || '').split(' ').filter(Boolean);
-  const toggleFont = (token) => updateTextStyle({ fontStyle: fontTokens.includes(token) ? fontTokens.filter((item) => item !== token).join(' ') || 'normal' : [...fontTokens, token].join(' ') });
-  const toggleDecoration = (token) => updateTextStyle({ textDecoration: decorationTokens.includes(token) ? decorationTokens.filter((item) => item !== token).join(' ') : [...decorationTokens, token].join(' ') });
+  const fontTokenSet = new Set(String(activeTextStyle.fontStyle || '').split(/\s+/).filter((token) => token && token !== 'normal'));
+  const decorationTokenSet = new Set(String(activeTextStyle.textDecoration || '').split(/\s+/).filter(Boolean));
+  const toggleFont = (token) => {
+    const next = new Set(fontTokenSet);
+    if (next.has(token)) next.delete(token); else next.add(token);
+    updateTextStyle({ fontStyle: ['italic', 'bold'].filter((item) => next.has(item)).join(' ') || 'normal' });
+  };
+  const toggleDecoration = (token) => {
+    const next = new Set(decorationTokenSet);
+    if (next.has(token)) next.delete(token); else next.add(token);
+    updateTextStyle({ textDecoration: ['underline', 'line-through'].filter((item) => next.has(item)).join(' ') });
+  };
   const updateDimension = (axis, rawValue) => {
     const value = Math.max(10, rawValue);
     if (!aspectRatioLockedOf(layer)) { update({ [axis]: value }); return; }
@@ -3852,11 +3882,15 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
     {gifFrameCount > 0 && !isGifSource(layer.src) ? <div className="property-section"><h4>出现帧</h4><div ref={frameMenuRef} className="frame-visibility-control"><input value={layer.visibleFrames || ''} placeholder="留空表示所有帧均显示" onChange={(event) => update({ visibleFrames: event.target.value })}/><button type="button" title="选择帧" onClick={() => setFrameMenuOpen((open) => !open)}>+</button>{frameMenuOpen && <div className="frame-visibility-menu">{Array.from({ length: gifFrameCount }, (_, index) => index + 1).map((frame) => <button type="button" key={frame} className={visibleFrameValues.includes(frame) ? 'active' : ''} onClick={() => toggleVisibleFrame(frame)}>{frame}</button>)}</div>}</div></div> : null}
     {layer.type === 'text' && <>
       <div className="property-section text-content-section"><h4>文字内容</h4><textarea value={layer.text || ''} onPointerDown={onBeginTextInteraction} onFocus={onBeginTextInteraction} onChange={(event) => { onBeginTextInteraction?.(); updateText(event.target.value); onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }); }} onSelect={(event) => onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}/></div>
-      <div className="property-section"><h4>字体{textSelection && textSelection.start !== textSelection.end ? ' · 已选 ' + Math.abs(textSelection.end - textSelection.start) + ' 字' : ''}</h4><select className="property-select" value={activeTextStyle.fontFamily} onChange={(event) => updateTextStyle({ fontFamily: event.target.value })}><option value="Microsoft YaHei">微软雅黑</option><option value="SimHei">黑体</option><option value="SimSun">宋体</option><option value="KaiTi">楷体</option><option value="Arial">Arial</option><option value="Segoe UI">Segoe UI</option></select><div className="text-format-row"><div><span>字号</span><NumericInput min={TEXT_SIZE_MIN} max={TEXT_SIZE_MAX} presets={FONT_SIZE_PRESETS} value={activeTextStyle.fontSize} onCommit={(fontSize) => updateTextStyle({ fontSize })}/></div><input className="color-swatch" type="color" title="文字颜色" value={activeTextStyle.fill} onChange={(event) => updateTextStyle({ fill: event.target.value })}/></div><NumberField label="间距" value={activeTextStyle.lineHeight} min={0} max={20} step={0.05} integer={false} presets={LINE_HEIGHT_PRESETS} onChange={(lineHeight) => updateTextStyle({ lineHeight })}/><label className="check-row" title="内容超出文本框时自动缩小字号；关闭后保持设定字号，超出部分可能被裁切。"><input type="checkbox" checked={Boolean(layer.autoFit)} onChange={(event) => update({ autoFit: event.target.checked })}/><span>文字自动适配文本框</span></label><div className="format-buttons"><button title="加粗" className={fontTokens.includes('bold') ? 'active' : ''} onClick={() => toggleFont('bold')}><Bold size={17}/></button><button title="斜体" className={fontTokens.includes('italic') ? 'active' : ''} onClick={() => toggleFont('italic')}><Italic size={17}/></button><button title="下划线" className={decorationTokens.includes('underline') ? 'active' : ''} onClick={() => toggleDecoration('underline')}><Underline size={17}/></button><button title="删除线" className={decorationTokens.includes('line-through') ? 'active' : ''} onClick={() => toggleDecoration('line-through')}><Strikethrough size={17}/></button></div><div className="format-buttons align-buttons"><button title="左对齐" className={layer.align === 'left' ? 'active' : ''} onClick={() => update({ align: 'left' })}><AlignLeft size={17}/></button><button title="居中" className={layer.align === 'center' ? 'active' : ''} onClick={() => update({ align: 'center' })}><AlignCenter size={17}/></button><button title="右对齐" className={layer.align === 'right' ? 'active' : ''} onClick={() => update({ align: 'right' })}><AlignRight size={17}/></button></div></div>
+      <div className="property-section"><h4>字体{textSelection && textSelection.start !== textSelection.end ? ' · 已选 ' + Math.abs(textSelection.end - textSelection.start) + ' 字' : ''}</h4><select className="property-select" value={activeTextStyle.fontFamily} onChange={(event) => updateTextStyle({ fontFamily: event.target.value })}><option value="Microsoft YaHei">微软雅黑</option><option value="SimHei">黑体</option><option value="SimSun">宋体</option><option value="KaiTi">楷体</option><option value="Arial">Arial</option><option value="Segoe UI">Segoe UI</option></select><div className="text-format-row"><div><span>字号</span><NumericInput min={TEXT_SIZE_MIN} max={TEXT_SIZE_MAX} presets={FONT_SIZE_PRESETS} value={activeTextStyle.fontSize} onCommit={(fontSize) => updateTextStyle({ fontSize })}/></div><input className="color-swatch" type="color" title="文字颜色" value={activeTextStyle.fill} onChange={(event) => updateTextStyle({ fill: event.target.value })}/></div><NumberField label="间距" value={activeTextStyle.lineHeight} min={0} max={20} step={0.05} integer={false} presets={LINE_HEIGHT_PRESETS} onChange={(lineHeight) => updateTextStyle({ lineHeight })}/><label className="check-row" title="内容超出文本框时自动缩小字号；关闭后保持设定字号，超出部分可能被裁切。"><input type="checkbox" checked={Boolean(layer.autoFit)} onChange={(event) => update({ autoFit: event.target.checked })}/><span>文字自动适配文本框</span></label><div className="format-buttons"><button type="button" title="加粗" className={fontTokenSet.has('bold') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleFont('bold')}><Bold size={17}/></button><button type="button" title="斜体" className={fontTokenSet.has('italic') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleFont('italic')}><Italic size={17}/></button><button type="button" title="下划线" className={decorationTokenSet.has('underline') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleDecoration('underline')}><Underline size={17}/></button><button type="button" title="删除线" className={decorationTokenSet.has('line-through') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleDecoration('line-through')}><Strikethrough size={17}/></button></div><div className="format-buttons align-buttons"><button title="左对齐" className={layer.align === 'left' ? 'active' : ''} onClick={() => update({ align: 'left' })}><AlignLeft size={17}/></button><button title="居中" className={layer.align === 'center' ? 'active' : ''} onClick={() => update({ align: 'center' })}><AlignCenter size={17}/></button><button title="右对齐" className={layer.align === 'right' ? 'active' : ''} onClick={() => update({ align: 'right' })}><AlignRight size={17}/></button></div></div>
       <div className="property-section"><h4>文字效果</h4><div className="effect-grid"><label><span>外描边</span><input type="color" value={activeTextStyle.stroke} onChange={(event) => updateTextStyle({ stroke: event.target.value })}/></label><NumberField label="外描边宽度" value={activeTextStyle.strokeWidth} min={0} max={30} presets={EFFECT_SIZE_PRESETS} onChange={(strokeWidth) => updateTextStyle({ strokeWidth })}/><label><span>背景</span><input type="color" value={layer.background || '#ffffff'} onChange={(event) => update({ background: event.target.value })}/></label><NumberField label="背景内边距" value={layer.backgroundPadding || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(backgroundPadding) => update({ backgroundPadding })}/></div><button className="wide-property-button subtle" onClick={() => update({ background: layer.background ? '' : '#ffffff' })}>{layer.background ? '移除文字背景' : '启用文字背景'}</button><label className="check-row"><input type="checkbox" checked={Boolean(layer.shadowEnabled)} onChange={(event) => update({ shadowEnabled: event.target.checked })}/><span>启用文字阴影</span></label>{layer.shadowEnabled && <div className="effect-grid"><label><span>阴影颜色</span><input type="color" value={layer.shadowColor || '#000000'} onChange={(event) => update({ shadowColor: event.target.value })}/></label><NumberField label="模糊" value={layer.shadowBlur || 0} min={0} max={50} presets={EFFECT_SIZE_PRESETS} onChange={(shadowBlur) => update({ shadowBlur })}/><NumberField label="水平偏移" value={layer.shadowOffsetX || 0} onChange={(shadowOffsetX) => update({ shadowOffsetX })}/><NumberField label="垂直偏移" value={layer.shadowOffsetY || 0} onChange={(shadowOffsetY) => update({ shadowOffsetY })}/></div>}</div>
     </>}
-    <div className="property-section property-compact-section"><label className="property-inline-select"><span>图层混合模式</span><select className="property-select" value={layerBlendModeOf(layer)} onChange={(event) => update({ blendMode: event.target.value })}>{LAYER_BLEND_MODES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></div>
-    <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} presets={false} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} presets={false} onChange={(y) => update({ y })}/></div><div className="rotation-inline-row"><span>旋转</span><div className="rotation-inline-input"><NumericInput value={layer.rotation} min={-360} max={360} presets={ROTATION_PRESETS} onCommit={(rotation) => update({ rotation })}/></div><input className="range" type="range" min="-180" max="180" value={layer.rotation} onChange={(event) => update({ rotation: Number(event.target.value) })}/></div></div>
+    <div className="property-section layer-composite-section">
+      <div className="blend-mode-row"><h4>图层混合模式</h4><div ref={blendMenuRef} className="property-dropdown blend-mode-field"><button type="button" className="property-dropdown-trigger" aria-expanded={blendMenuOpen} onClick={() => { setBlendMenuOpen((open) => !open); setBindingMenuOpen(false); setFrameMenuOpen(false); }}><span>{activeBlendMode.label}</span><ChevronDown size={14}/></button>{blendMenuOpen && <div className="property-dropdown-menu blend-mode-menu">{LAYER_BLEND_MODES.map((option) => <button type="button" key={option.value} className={activeBlendMode.value === option.value ? 'active' : ''} onClick={() => { update({ blendMode: option.value }); setBlendMenuOpen(false); }}><span>{option.label}</span></button>)}</div>}</div></div>
+      <div className="opacity-inline-row"><h4>透明度</h4><div className="opacity-inline-control"><NumericInput value={Math.round(layerOpacityOf(layer) * 100)} min={0} max={100} presets={OPACITY_PRESETS} onCommit={(opacity) => update({ opacity: clamp(opacity / 100, 0, 1) })}/><em>%</em></div></div>
+      <div className="layer-order-inline-row"><h4>图层顺序</h4><div className="order-buttons"><button disabled={layer.locked} onClick={() => move(1)}><ChevronUp size={17}/>上移</button><button disabled={layer.locked} onClick={() => move(-1)}><ChevronDown size={17}/>下移</button></div></div>
+    </div>
+    <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} presets={false} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} presets={false} onChange={(y) => update({ y })}/></div><div className="rotation-inline-row"><div className="rotation-inline-control"><h4>旋转</h4><div className="rotation-inline-input"><NumericInput value={Number(layer.rotation) || 0} min={-360} max={360} presets={ROTATION_PRESETS} onCommit={(rotation) => update({ rotation })}/></div></div><input className="range" type="range" min="-180" max="180" value={Number(layer.rotation) || 0} onChange={(event) => update({ rotation: Number(event.target.value) })}/></div></div>
     <div className="property-section"><div className="property-heading-row"><h4>尺寸</h4><button type="button" className={`aspect-lock-button ${aspectRatioLockedOf(layer) ? 'active' : ''}`} title={aspectRatioLockedOf(layer) ? '取消锁定宽高比' : '锁定宽高比'} onClick={() => update({ aspectRatioLocked: !aspectRatioLockedOf(layer) })}>{aspectRatioLockedOf(layer) ? <Lock size={13}/> : <Unlock size={13}/>}<span>宽高比</span></button></div><div className="property-grid"><NumberField label="宽" value={layer.width} min={10} presets={SIZE_PRESETS} onChange={(width) => updateDimension('width', width)}/><NumberField label="高" value={layer.height} min={10} presets={SIZE_PRESETS} onChange={(height) => updateDimension('height', height)}/></div></div>
     <div className="property-section"><h4>边框</h4><div className="border-controls"><label><span>颜色</span><input type="color" value={layer.borderColor || '#000000'} onChange={(event) => update({ borderColor: event.target.value })}/></label><NumberField label="大小" value={layer.borderWidth || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(borderWidth) => update({ borderWidth })}/></div></div>
     {layer.type === 'slot' && <>
@@ -3866,8 +3900,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
         <div className={`slot-photo-options ${colorFilled ? 'disabled' : ''}`}><div className="slot-option-heading"><span>照片适配</span>{colorFilled && <small>颜色填充已启用</small>}</div><div className="segmented"><button disabled={disabledReplacement || colorFilled || bindingActive} className={layer.fit === 'cover' ? 'active' : ''} onClick={() => update({ fit: 'cover' })}>裁切铺满</button><button disabled={disabledReplacement || colorFilled || bindingActive} className={layer.fit === 'fill' ? 'active' : ''} onClick={() => update({ fit: 'fill' })}>拉伸填满</button></div><label className="check-row replacement-disable-row" title="禁用后，使用模板时不再要求添加照片；槽位保持透明，但颜色填充和边框仍会显示。"><input type="checkbox" disabled={colorFilled || bindingActive} checked={Boolean(layer.replacementDisabled)} onChange={(event) => update({ replacementDisabled: event.target.checked })}/><span>禁用替换照片</span></label><div ref={bindingMenuRef} className={`property-dropdown slot-binding-field ${colorFilled ? 'disabled' : ''}`}><span className="property-dropdown-label">绑定图层</span><button type="button" className="property-dropdown-trigger" disabled={colorFilled} aria-expanded={bindingMenuOpen} onClick={() => setBindingMenuOpen((open) => !open)}><span>{boundLayerName}</span><ChevronDown size={14}/></button>{bindingMenuOpen && !colorFilled && <div className="property-dropdown-menu"><button type="button" className={!layer.boundLayerId ? 'active' : ''} onClick={() => { update({ boundLayerId: undefined, replacementDisabled: false }); setBindingMenuOpen(false); }}>不绑定</button>{bindingCandidates.map((candidate) => <button type="button" key={candidate.id} className={layer.boundLayerId === candidate.id ? 'active' : ''} onClick={() => { update({ boundLayerId: candidate.id, replacementDisabled: false }); setBindingMenuOpen(false); }}>{candidate.name}</button>)}</div>}</div>{bindingActive && <p className="property-note">使用模板时跟随绑定的可替换图层，不会单独显示在可替换图层列表中。</p>}</div>
         <div className={`slot-color-options ${colorFilled ? 'active' : ''}`}><label className="slot-color-picker"><span>填充颜色</span><input type="color" disabled={!colorFilled} value={layer.slotFill || '#e24b35'} onChange={(event) => update({ slotFill: event.target.value, replacementDisabled: false, boundLayerId: undefined })}/><code>{layer.slotFill || '#e24b35'}</code></label><button type="button" className={`wide-property-button ${colorFilled ? 'active' : ''}`} onClick={() => update(colorFilled ? { slotFill: '' } : { slotFill: '#e24b35', replacementDisabled: false, boundLayerId: undefined })}>{colorFilled ? '关闭颜色填充' : '启用颜色填充'}</button></div>
       </div>    </>}
-    <div className="property-section"><h4>图层顺序</h4><div className="order-buttons"><button disabled={layer.locked} onClick={() => move(1)}><ChevronUp size={17}/>上移</button><button disabled={layer.locked} onClick={() => move(-1)}><ChevronDown size={17}/>下移</button></div></div>
-    <div className="property-section property-compact-section"><div className="opacity-inline-row"><span>透明度</span><div className="opacity-inline-control"><NumericInput value={Math.round(layerOpacityOf(layer) * 100)} min={0} max={100} presets={OPACITY_PRESETS} onCommit={(opacity) => update({ opacity: clamp(opacity / 100, 0, 1) })}/><em>%</em></div></div></div>
+
     <button className="delete-button" disabled={layer.locked} onClick={remove}><Trash2 size={17}/>删除图层</button>
   </div>;
 }
