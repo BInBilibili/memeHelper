@@ -303,6 +303,16 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .align-buttons { grid-template-columns: repeat(3, 1fr); }
 .property-section { margin-top: 20px; padding-top: 17px; border-top: 1px solid #ebe9e3; }
 .property-section h4 { margin: 0 0 10px; font-size: 10px; }
+.property-compact-section { margin-top: 14px; padding-top: 12px; }
+.property-inline-select { display: grid; grid-template-columns: 82px minmax(0, 1fr); align-items: center; gap: 8px; }
+.property-inline-select > span, .rotation-inline-row > span, .opacity-inline-row > span { color: var(--muted); font-size: 9px; font-weight: 600; }
+.property-inline-select .property-select { min-width: 0; }
+.rotation-inline-row { display: grid; grid-template-columns: 32px 82px minmax(56px, 1fr); align-items: center; gap: 8px; margin-top: 10px; }
+.rotation-inline-input, .opacity-inline-control { position: relative; min-width: 0; }
+.rotation-inline-input .numeric-input > input, .opacity-inline-control .numeric-input > input { width: 100%; height: 34px; border: 1px solid var(--line); border-radius: 4px; padding: 0 30px 0 8px; font-size: 11px; }
+.rotation-inline-row .range { min-width: 0; margin: 0; }
+.opacity-inline-row { display: grid; grid-template-columns: 44px minmax(0, 1fr); align-items: center; gap: 8px; }
+.opacity-inline-control em { position: absolute; z-index: 3; right: 28px; top: 9px; color: var(--muted); font-size: 10px; font-style: normal; pointer-events: none; }
 .property-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .number-field-control { position: relative; }
 .number-field em { position: absolute; right: 28px; top: 9px; color: var(--muted); font-size: 10px; font-style: normal; pointer-events: none; }

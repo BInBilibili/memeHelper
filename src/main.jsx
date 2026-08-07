@@ -434,12 +434,12 @@ function starterTemplates() {
   const reaction = svgData(`<svg xmlns="http://www.w3.org/2000/svg" width="900" height="600"><rect width="900" height="600" fill="#171716"/><rect x="26" y="26" width="848" height="548" rx="12" fill="none" stroke="#f8f7f2" stroke-width="8"/><text x="450" y="92" text-anchor="middle" font-family="Arial,sans-serif" font-size="48" font-weight="700" fill="#fff">当我看到群里的新需求</text><text x="450" y="548" text-anchor="middle" font-family="Arial,sans-serif" font-size="42" font-weight="700" fill="#f2c94c">先保持微笑</text></svg>`);
   return [
     { id: uid(), name: '上班状态', width: 800, height: 800, createdAt: now, updatedAt: now, layers: [
-      { id: uid(), name: '底图与文字', type: 'static', src: office, x: 0, y: 0, width: 800, height: 800, rotation: 0, opacity: 1, visible: true, fit: 'fill' },
-      { id: uid(), name: '人物照片', type: 'slot', src: '', x: 116, y: 150, width: 568, height: 400, rotation: 0, opacity: 1, visible: true, fit: 'cover' }
+      { id: uid(), name: '底图与文字', type: 'static', src: office, x: 0, y: 0, width: 800, height: 800, rotation: 0, opacity: 1, blendMode: 'source-over', aspectRatioLocked: true, visible: true, fit: 'fill' },
+      { id: uid(), name: '人物照片', type: 'slot', src: '', x: 116, y: 150, width: 568, height: 400, rotation: 0, opacity: 1, blendMode: 'source-over', aspectRatioLocked: true, visible: true, fit: 'cover' }
     ]},
     { id: uid(), name: '需求来了', width: 900, height: 600, createdAt: now, updatedAt: now, layers: [
-      { id: uid(), name: '黑色边框', type: 'static', src: reaction, x: 0, y: 0, width: 900, height: 600, rotation: 0, opacity: 1, visible: true, fit: 'fill' },
-      { id: uid(), name: '反应照片', type: 'slot', src: '', x: 92, y: 125, width: 716, height: 350, rotation: 0, opacity: 1, visible: true, fit: 'cover' }
+      { id: uid(), name: '黑色边框', type: 'static', src: reaction, x: 0, y: 0, width: 900, height: 600, rotation: 0, opacity: 1, blendMode: 'source-over', aspectRatioLocked: true, visible: true, fit: 'fill' },
+      { id: uid(), name: '反应照片', type: 'slot', src: '', x: 92, y: 125, width: 716, height: 350, rotation: 0, opacity: 1, blendMode: 'source-over', aspectRatioLocked: true, visible: true, fit: 'cover' }
     ]}
   ];
 }
@@ -727,9 +727,42 @@ function borderWidthOf(layer) {
   return Math.max(0, Number(layer.borderWidth) || 0);
 }
 
+const LAYER_BLEND_MODES = [
+  { value: 'source-over', label: '正常' },
+  { value: 'multiply', label: '正片叠底' },
+  { value: 'screen', label: '滤色' },
+  { value: 'overlay', label: '叠加' },
+  { value: 'darken', label: '变暗' },
+  { value: 'lighten', label: '变亮' },
+  { value: 'color-dodge', label: '颜色减淡' },
+  { value: 'color-burn', label: '颜色加深' },
+  { value: 'hard-light', label: '强光' },
+  { value: 'soft-light', label: '柔光' },
+  { value: 'difference', label: '差值' },
+  { value: 'exclusion', label: '排除' },
+  { value: 'hue', label: '色相' },
+  { value: 'saturation', label: '饱和度' },
+  { value: 'color', label: '颜色' },
+  { value: 'luminosity', label: '明度' }
+];
+const LAYER_BLEND_MODE_VALUES = new Set(LAYER_BLEND_MODES.map((option) => option.value));
+
 function layerOpacityOf(layer) {
   const value = Number(layer?.opacity);
   return Number.isFinite(value) ? clamp(value, 0, 1) : 1;
+}
+
+function layerBlendModeOf(layer) {
+  return LAYER_BLEND_MODE_VALUES.has(layer?.blendMode) ? layer.blendMode : 'source-over';
+}
+
+function layerCssBlendModeOf(layer) {
+  const mode = layerBlendModeOf(layer);
+  return mode === 'source-over' ? 'normal' : mode;
+}
+
+function aspectRatioLockedOf(layer) {
+  return layer?.aspectRatioLocked !== false;
 }
 
 function drawLayerBorder(ctx, layer) {
@@ -822,6 +855,7 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
     if (!layer.visible || !isLayerVisibleAtFrame(layer, frameIndex)) continue;
     ctx.save();
     ctx.globalAlpha = layerOpacityOf(layer);
+    ctx.globalCompositeOperation = layerBlendModeOf(layer);
     ctx.translate(layer.x, layer.y);
     ctx.rotate((layer.rotation || 0) * Math.PI / 180);
     const suppliedReplacement = typeof replacements === 'string' ? replacements : replacements?.[layer.id];
@@ -1877,7 +1911,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
       return {
         id: uid(), name: `${layer.name} 选区`, type: 'static', src: trimmed.toDataURL('image/png'),
         x: selection.x + left, y: selection.y + top, width, height,
-        rotation: 0, opacity: 1, visible: true, locked: false, fit: 'fill', aspectRatioLocked: true
+        rotation: 0, opacity: 1, blendMode: 'source-over', aspectRatioLocked: true, visible: true, locked: false, fit: 'fill'
       };
     }))).filter(Boolean);
     return { fragments, selection };
@@ -2144,7 +2178,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
       const width = Math.round(image.width * scale); const height = Math.round(image.height * scale);
       const x = initializeCanvas ? 0 : Math.round((dropPoint?.x ?? draft.width / 2) - width / 2);
       const y = initializeCanvas ? 0 : Math.round((dropPoint?.y ?? draft.height / 2) - height / 2);
-      const layer = { id: uid(), name: file.name.replace(/\.[^.]+$/, ''), type: 'static', src, x, y, width, height, rotation: 0, opacity: 1, visible: true, fit: 'fill', ...(createdSingleFrameGif ? { gifFrameCount: 1, gifFrameDelays: [100] } : {}) };
+      const layer = { id: uid(), name: file.name.replace(/\.[^.]+$/, ''), type: 'static', src, x, y, width, height, rotation: 0, opacity: 1, blendMode: 'source-over', aspectRatioLocked: true, visible: true, fit: 'fill', ...(createdSingleFrameGif ? { gifFrameCount: 1, gifFrameDelays: [100] } : {}) };
       updateDraft((prev) => ({ ...prev, width: initializeCanvas ? width : prev.width, height: initializeCanvas ? height : prev.height, layers: [...prev.layers, layer] }));
       setSelectedIds([layer.id]); setSelectedGroupId(null); setActiveTool('select');
     } catch (error) { notify(error.message, 'error'); }
@@ -2189,14 +2223,14 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
     const width = size;
     const height = size;
     const shapeName = shape === 'circle' ? '圆形' : shape === 'rounded' ? '圆角矩形' : shape === 'polygon' ? '多边形' : '矩形';
-    const layer = { id: uid(), name: `${shapeName}照片 ${draft.layers.filter((x) => x.type === 'slot').length + 1}`, type: 'slot', shape, src: '', x: initializeCanvas ? 0 : Math.round((draft.width - width) / 2), y: initializeCanvas ? 0 : Math.round((draft.height - height) / 2), width, height, rotation: 0, opacity: 1, visible: true, fit: 'cover', ...(shape === 'polygon' ? { polygonSides: 5, polygonPoints: regularPolygonPoints(5) } : shape === 'rounded' ? { cornerRadius: 36 } : {}) };
+    const layer = { id: uid(), name: `${shapeName}照片 ${draft.layers.filter((x) => x.type === 'slot').length + 1}`, type: 'slot', shape, src: '', x: initializeCanvas ? 0 : Math.round((draft.width - width) / 2), y: initializeCanvas ? 0 : Math.round((draft.height - height) / 2), width, height, rotation: 0, opacity: 1, blendMode: 'source-over', aspectRatioLocked: true, visible: true, fit: 'cover', ...(shape === 'polygon' ? { polygonSides: 5, polygonPoints: regularPolygonPoints(5) } : shape === 'rounded' ? { cornerRadius: 36 } : {}) };
     updateDraft((prev) => ({ ...prev, width: initializeCanvas ? width : prev.width, height: initializeCanvas ? height : prev.height, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
     setShapeMenu(false); setActiveTool('select');
   };
 
   const addTextLayer = (point = null, orientation = textOrientation) => {
     const initializeCanvas = !draft.layers.length && draft.width === 0 && draft.height === 0;
-    const seed = { id: uid(), name: `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`, type: 'text', text: '输入文字', textOrientation: orientation, x: initializeCanvas ? 0 : Math.round(point?.x ?? draft.width * .18), y: initializeCanvas ? 0 : Math.round(point?.y ?? draft.height * .18), width: 1, height: 1, rotation: 0, opacity: 1, visible: true, fontSize: 48, fontFamily: 'Microsoft YaHei', fontStyle: 'normal', textDecoration: '', align: 'center', fill: '#22211f', lineHeight: 1.25, autoFit: false, stroke: '#ffffff', strokeWidth: 0, shadowEnabled: false, shadowColor: '#000000', shadowBlur: 8, shadowOffsetX: 2, shadowOffsetY: 2, background: '', backgroundPadding: 8 };
+    const seed = { id: uid(), name: `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`, type: 'text', text: '输入文字', textOrientation: orientation, x: initializeCanvas ? 0 : Math.round(point?.x ?? draft.width * .18), y: initializeCanvas ? 0 : Math.round(point?.y ?? draft.height * .18), width: 1, height: 1, rotation: 0, opacity: 1, blendMode: 'source-over', aspectRatioLocked: true, visible: true, fontSize: 48, fontFamily: 'Microsoft YaHei', fontStyle: 'normal', textDecoration: '', align: 'center', fill: '#22211f', lineHeight: 1.25, autoFit: false, stroke: '#ffffff', strokeWidth: 0, shadowEnabled: false, shadowColor: '#000000', shadowBlur: 8, shadowOffsetX: 2, shadowOffsetY: 2, background: '', backgroundPadding: 8 };
     seed.name = `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`;
     const layer = fitTextLayerToContent(seed);
     updateDraft((prev) => ({ ...prev, width: initializeCanvas ? layer.width : prev.width, height: initializeCanvas ? layer.height : prev.height, layers: [...prev.layers, layer] }));
@@ -2606,7 +2640,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
         height,
         layers: layers.map((layer) => ({ ...structuredClone(layer), x: layer.x - left, y: layer.y - top }))
       }, {}, {}, { mime: 'image/png', transparent: true });
-      const merged = { id: uid(), name: '合并图层', type: 'static', src, x: left, y: top, width, height, rotation: 0, opacity: 1, visible: true, fit: 'fill' };
+      const merged = { id: uid(), name: '合并图层', type: 'static', src, x: left, y: top, width, height, rotation: 0, opacity: 1, blendMode: 'source-over', aspectRatioLocked: true, visible: true, fit: 'fill' };
       updateDraft((previous) => {
         const topIndex = Math.max(...previous.layers.map((layer, index) => selectedIds.includes(layer.id) ? index : -1));
         const nextLayers = [];
@@ -3027,6 +3061,7 @@ function RichTextOverlay({ layer, zoom, selectionRange, onChange, onSelectionCha
       padding: `${Math.max(0, Number(layer.backgroundPadding) || 0) * zoom}px`,
       transform: `rotate(${layer.rotation || 0}deg)`,
       opacity: layerOpacityOf(layer),
+      mixBlendMode: layerCssBlendModeOf(layer),
       textAlign: layer.align || 'left',
       writingMode: layer.textOrientation === 'vertical' ? 'vertical-rl' : 'horizontal-tb',
       textOrientation: layer.textOrientation === 'vertical' ? 'upright' : 'mixed',
@@ -3602,7 +3637,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
       {tool === 'select' && !selectedGroupId && selectedIds.map((id) => template.layers.find((layer) => layer.id === id)).filter((layer) => layer && !layer.locked && layer.visible && layer.id !== textEditingId && isLayerVisibleAtFrame(layer, gifFrameIndex)).map((layer) => <Rect key={`selected-hit-${layer.id}`} x={layer.x + layer.width / 2} y={layer.y + layer.height / 2} offsetX={layer.width / 2} offsetY={layer.height / 2} width={layer.width} height={layer.height} rotation={layer.rotation || 0} fill="rgba(0,0,0,0.001)" draggable listening onMouseDown={(event) => { event.cancelBubble = true; startDrag(layer); }} onTouchStart={(event) => { event.cancelBubble = true; startDrag(layer); }} onClick={(event) => { event.cancelBubble = true; selectLayer(layer.id, event.evt); }} onTap={(event) => { event.cancelBubble = true; selectLayer(layer.id, event.evt); }} onContextMenu={(event) => { event.cancelBubble = true; onLayerContextMenu(layer.id, event.evt); }} onDblClick={(event) => { if (layer.type === 'text') { event.cancelBubble = true; onEditText(layer.id); } }} onDblTap={(event) => { if (layer.type === 'text') { event.cancelBubble = true; onEditText(layer.id); } }} onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)}/>) }{template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
       {tool === 'marquee' && template.layers.filter((layer) => selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`marquee-selected-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
       {guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94b37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }
-      <Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} keepRatio={selectedIds.length === 1 && Boolean(template.layers.find((item) => item.id === selectedIds[0])?.aspectRatioLocked)} enabledAnchors={selectedIds.length === 1 && template.layers.find((item) => item.id === selectedIds[0])?.aspectRatioLocked ? ['top-left','top-right','bottom-left','bottom-right'] : ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/>
+      <Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} keepRatio={selectedIds.length === 1 && aspectRatioLockedOf(template.layers.find((item) => item.id === selectedIds[0]))} enabledAnchors={selectedIds.length === 1 && aspectRatioLockedOf(template.layers.find((item) => item.id === selectedIds[0])) ? ['top-left','top-right','bottom-left','bottom-right'] : ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/>
       {selectedPolygon && <Group x={selectedPolygon.x} y={selectedPolygon.y} rotation={selectedPolygon.rotation || 0}>{polygonPointsOf(selectedPolygon).map((point, index) => <KonvaCircle key={`polygon-handle-${selectedPolygon.id}-${index}`} x={point.x * selectedPolygon.width} y={point.y * selectedPolygon.height} radius={6 / zoom} fill="#fff" stroke="#e24b35" strokeWidth={1.5 / zoom} draggable onMouseDown={(event) => { event.cancelBubble = true; }} onDragMove={(event) => { event.cancelBubble = true; event.target.position({ x: clamp(event.target.x(), 0, selectedPolygon.width), y: clamp(event.target.y(), 0, selectedPolygon.height) }); }} onDragEnd={(event) => { event.cancelBubble = true; const next = { x: clamp(event.target.x() / selectedPolygon.width, 0, 1), y: clamp(event.target.y() / selectedPolygon.height, 0, 1) }; updateLayer(selectedPolygon.id, { polygonPoints: polygonPointsOf(selectedPolygon).map((item, itemIndex) => itemIndex === index ? next : item) }); }} />)}</Group>}
     </Layer>
   </Stage>{tool === 'marquee' && marquee && <div className="marquee-selection-overlay" style={{ left: marquee.x * zoom, top: marquee.y * zoom, width: marquee.width * zoom, height: marquee.height * zoom }} onMouseDown={(event) => beginMarquee({ evt: event.nativeEvent })} onContextMenu={openMarqueeContextMenu}/>}</>;
@@ -3646,7 +3681,7 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
   const crop = image && layer.fit === 'cover' ? getCoverCrop(image, layer.width, layer.height) : undefined;
   const placement = image && layer.type === 'slot' && source ? getPhotoPlacement(image, layer, photoTransform) : null;
   if (!layer.visible) return null;
-  const common = { ref: setRef, x: layer.x + layer.width / 2, y: layer.y + layer.height / 2, offsetX: layer.width / 2, offsetY: layer.height / 2, width: layer.width, height: layer.height, rotation: layer.rotation || 0, opacity: layerOpacityOf(layer), draggable: interactive, listening: selectable };
+  const common = { ref: setRef, x: layer.x + layer.width / 2, y: layer.y + layer.height / 2, offsetX: layer.width / 2, offsetY: layer.height / 2, width: layer.width, height: layer.height, rotation: layer.rotation || 0, opacity: layerOpacityOf(layer), globalCompositeOperation: layerBlendModeOf(layer), draggable: interactive, listening: selectable };
   if (selectable) Object.assign(common, { onMouseDown: onPointerDown, onTouchStart: onPointerDown, onClick: onSelect, onTap: onSelect, onDblClick: onEnterCrop, onDblTap: onEnterCrop, onContextMenu });
   if (interactive) {
     Object.assign(common, { onDragStart, onDragMove, onDragEnd: onDragEnd || ((event) => onChange({ x: Math.round(event.target.x() - layer.width / 2), y: Math.round(event.target.y() - layer.height / 2) })) });
@@ -3802,7 +3837,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
   const toggleDecoration = (token) => updateTextStyle({ textDecoration: decorationTokens.includes(token) ? decorationTokens.filter((item) => item !== token).join(' ') : [...decorationTokens, token].join(' ') });
   const updateDimension = (axis, rawValue) => {
     const value = Math.max(10, rawValue);
-    if (!layer.aspectRatioLocked) { update({ [axis]: value }); return; }
+    if (!aspectRatioLockedOf(layer)) { update({ [axis]: value }); return; }
     const width = Math.max(0.0001, Number(layer.width) || 0.0001);
     const height = Math.max(0.0001, Number(layer.height) || 0.0001);
     if (axis === 'width') update({ width: value, height: Math.max(10, Math.round(value * height / width)) });
@@ -3812,7 +3847,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
   return <div className="property-content">
     <button className={`layer-lock-button ${layer.locked ? 'active' : ''}`} onClick={toggleLock}>{layer.locked ? <Lock size={16}/> : <Unlock size={16}/>}<span>{layer.locked ? '图层已锁定' : '锁定图层'}</span></button>
     <label className="text-field"><span>图层名称</span><input value={layer.name} onChange={(event) => update({ name: event.target.value })}/></label>
-    <div className="property-section"><h4>透明度</h4><NumberField label="不透明度" suffix="%" value={Math.round(layerOpacityOf(layer) * 100)} min={0} max={100} presets={OPACITY_PRESETS} onChange={(opacity) => update({ opacity: clamp(opacity / 100, 0, 1) })}/></div>
+
     {isGifSource(layer.src) && gifTimeline?.frames?.length ? <div className="property-section"><h4>GIF 帧设置</h4><div className="gif-frame-property"><img src={gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl} alt="当前 GIF 帧"/><div><strong>第 {gifTimeline.frameIndex + 1} 帧{gifTimeline.selectedIndexes?.length > 1 ? ` · 已选 ${gifTimeline.selectedIndexes.length} 帧` : ''}</strong><NumberField label="播放时间" suffix="ms" value={Math.max(20, Number(gifTimeline.frames[gifTimeline.frameIndex]?.delayMs) || 100)} min={20} max={60000} presets={false} menuActions={[{ label: '应用到所有帧', onSelect: () => onGifFrameDelay?.(gifTimeline.frameIndex, Math.max(20, Number(gifTimeline.frames[gifTimeline.frameIndex]?.delayMs) || 100), true) }]} onChange={(value) => onGifFrameDelay?.(gifTimeline.frameIndex, value)}/></div></div></div> : null}
     {gifFrameCount > 0 && !isGifSource(layer.src) ? <div className="property-section"><h4>出现帧</h4><div ref={frameMenuRef} className="frame-visibility-control"><input value={layer.visibleFrames || ''} placeholder="留空表示所有帧均显示" onChange={(event) => update({ visibleFrames: event.target.value })}/><button type="button" title="选择帧" onClick={() => setFrameMenuOpen((open) => !open)}>+</button>{frameMenuOpen && <div className="frame-visibility-menu">{Array.from({ length: gifFrameCount }, (_, index) => index + 1).map((frame) => <button type="button" key={frame} className={visibleFrameValues.includes(frame) ? 'active' : ''} onClick={() => toggleVisibleFrame(frame)}>{frame}</button>)}</div>}</div></div> : null}
     {layer.type === 'text' && <>
@@ -3820,9 +3855,9 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
       <div className="property-section"><h4>字体{textSelection && textSelection.start !== textSelection.end ? ' · 已选 ' + Math.abs(textSelection.end - textSelection.start) + ' 字' : ''}</h4><select className="property-select" value={activeTextStyle.fontFamily} onChange={(event) => updateTextStyle({ fontFamily: event.target.value })}><option value="Microsoft YaHei">微软雅黑</option><option value="SimHei">黑体</option><option value="SimSun">宋体</option><option value="KaiTi">楷体</option><option value="Arial">Arial</option><option value="Segoe UI">Segoe UI</option></select><div className="text-format-row"><div><span>字号</span><NumericInput min={TEXT_SIZE_MIN} max={TEXT_SIZE_MAX} presets={FONT_SIZE_PRESETS} value={activeTextStyle.fontSize} onCommit={(fontSize) => updateTextStyle({ fontSize })}/></div><input className="color-swatch" type="color" title="文字颜色" value={activeTextStyle.fill} onChange={(event) => updateTextStyle({ fill: event.target.value })}/></div><NumberField label="间距" value={activeTextStyle.lineHeight} min={0} max={20} step={0.05} integer={false} presets={LINE_HEIGHT_PRESETS} onChange={(lineHeight) => updateTextStyle({ lineHeight })}/><label className="check-row" title="内容超出文本框时自动缩小字号；关闭后保持设定字号，超出部分可能被裁切。"><input type="checkbox" checked={Boolean(layer.autoFit)} onChange={(event) => update({ autoFit: event.target.checked })}/><span>文字自动适配文本框</span></label><div className="format-buttons"><button title="加粗" className={fontTokens.includes('bold') ? 'active' : ''} onClick={() => toggleFont('bold')}><Bold size={17}/></button><button title="斜体" className={fontTokens.includes('italic') ? 'active' : ''} onClick={() => toggleFont('italic')}><Italic size={17}/></button><button title="下划线" className={decorationTokens.includes('underline') ? 'active' : ''} onClick={() => toggleDecoration('underline')}><Underline size={17}/></button><button title="删除线" className={decorationTokens.includes('line-through') ? 'active' : ''} onClick={() => toggleDecoration('line-through')}><Strikethrough size={17}/></button></div><div className="format-buttons align-buttons"><button title="左对齐" className={layer.align === 'left' ? 'active' : ''} onClick={() => update({ align: 'left' })}><AlignLeft size={17}/></button><button title="居中" className={layer.align === 'center' ? 'active' : ''} onClick={() => update({ align: 'center' })}><AlignCenter size={17}/></button><button title="右对齐" className={layer.align === 'right' ? 'active' : ''} onClick={() => update({ align: 'right' })}><AlignRight size={17}/></button></div></div>
       <div className="property-section"><h4>文字效果</h4><div className="effect-grid"><label><span>外描边</span><input type="color" value={activeTextStyle.stroke} onChange={(event) => updateTextStyle({ stroke: event.target.value })}/></label><NumberField label="外描边宽度" value={activeTextStyle.strokeWidth} min={0} max={30} presets={EFFECT_SIZE_PRESETS} onChange={(strokeWidth) => updateTextStyle({ strokeWidth })}/><label><span>背景</span><input type="color" value={layer.background || '#ffffff'} onChange={(event) => update({ background: event.target.value })}/></label><NumberField label="背景内边距" value={layer.backgroundPadding || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(backgroundPadding) => update({ backgroundPadding })}/></div><button className="wide-property-button subtle" onClick={() => update({ background: layer.background ? '' : '#ffffff' })}>{layer.background ? '移除文字背景' : '启用文字背景'}</button><label className="check-row"><input type="checkbox" checked={Boolean(layer.shadowEnabled)} onChange={(event) => update({ shadowEnabled: event.target.checked })}/><span>启用文字阴影</span></label>{layer.shadowEnabled && <div className="effect-grid"><label><span>阴影颜色</span><input type="color" value={layer.shadowColor || '#000000'} onChange={(event) => update({ shadowColor: event.target.value })}/></label><NumberField label="模糊" value={layer.shadowBlur || 0} min={0} max={50} presets={EFFECT_SIZE_PRESETS} onChange={(shadowBlur) => update({ shadowBlur })}/><NumberField label="水平偏移" value={layer.shadowOffsetX || 0} onChange={(shadowOffsetX) => update({ shadowOffsetX })}/><NumberField label="垂直偏移" value={layer.shadowOffsetY || 0} onChange={(shadowOffsetY) => update({ shadowOffsetY })}/></div>}</div>
     </>}
-    <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} presets={false} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} presets={false} onChange={(y) => update({ y })}/></div></div>
-    <div className="property-section"><div className="property-heading-row"><h4>尺寸</h4><button type="button" className={`aspect-lock-button ${layer.aspectRatioLocked ? 'active' : ''}`} title={layer.aspectRatioLocked ? '取消锁定宽高比' : '锁定宽高比'} onClick={() => update({ aspectRatioLocked: !layer.aspectRatioLocked })}>{layer.aspectRatioLocked ? <Lock size={13}/> : <Unlock size={13}/>}<span>宽高比</span></button></div><div className="property-grid"><NumberField label="宽" value={layer.width} min={10} presets={SIZE_PRESETS} onChange={(width) => updateDimension('width', width)}/><NumberField label="高" value={layer.height} min={10} presets={SIZE_PRESETS} onChange={(height) => updateDimension('height', height)}/></div></div>
-    <div className="property-section"><h4>旋转</h4><NumberField label="角度" value={layer.rotation} min={-360} max={360} presets={ROTATION_PRESETS} onChange={(rotation) => update({ rotation })}/><input className="range" type="range" min="-180" max="180" value={layer.rotation} onChange={(event) => update({ rotation: Number(event.target.value) })}/></div>
+    <div className="property-section property-compact-section"><label className="property-inline-select"><span>图层混合模式</span><select className="property-select" value={layerBlendModeOf(layer)} onChange={(event) => update({ blendMode: event.target.value })}>{LAYER_BLEND_MODES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label></div>
+    <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} presets={false} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} presets={false} onChange={(y) => update({ y })}/></div><div className="rotation-inline-row"><span>旋转</span><div className="rotation-inline-input"><NumericInput value={layer.rotation} min={-360} max={360} presets={ROTATION_PRESETS} onCommit={(rotation) => update({ rotation })}/></div><input className="range" type="range" min="-180" max="180" value={layer.rotation} onChange={(event) => update({ rotation: Number(event.target.value) })}/></div></div>
+    <div className="property-section"><div className="property-heading-row"><h4>尺寸</h4><button type="button" className={`aspect-lock-button ${aspectRatioLockedOf(layer) ? 'active' : ''}`} title={aspectRatioLockedOf(layer) ? '取消锁定宽高比' : '锁定宽高比'} onClick={() => update({ aspectRatioLocked: !aspectRatioLockedOf(layer) })}>{aspectRatioLockedOf(layer) ? <Lock size={13}/> : <Unlock size={13}/>}<span>宽高比</span></button></div><div className="property-grid"><NumberField label="宽" value={layer.width} min={10} presets={SIZE_PRESETS} onChange={(width) => updateDimension('width', width)}/><NumberField label="高" value={layer.height} min={10} presets={SIZE_PRESETS} onChange={(height) => updateDimension('height', height)}/></div></div>
     <div className="property-section"><h4>边框</h4><div className="border-controls"><label><span>颜色</span><input type="color" value={layer.borderColor || '#000000'} onChange={(event) => update({ borderColor: event.target.value })}/></label><NumberField label="大小" value={layer.borderWidth || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(borderWidth) => update({ borderWidth })}/></div></div>
     {layer.type === 'slot' && <>
       <div className="property-section"><h4>槽位形状</h4><div className="shape-segmented four"><button className={shapeOf(layer) === 'rect' ? 'active' : ''} onClick={() => update({ shape: 'rect' })}>矩形</button><button className={shapeOf(layer) === 'circle' ? 'active' : ''} onClick={() => update({ shape: 'circle' })}>圆形</button><button className={shapeOf(layer) === 'rounded' ? 'active' : ''} onClick={() => update({ shape: 'rounded', cornerRadius: layer.cornerRadius ?? 36 })}>圆角</button><button className={shapeOf(layer) === 'polygon' ? 'active' : ''} onClick={() => update({ shape: 'polygon', polygonSides: layer.polygonSides || 5, polygonPoints: polygonPointsOf(layer) })}>多边形</button></div>{shapeOf(layer) === 'rounded' && <div className="rounded-radius-control"><NumberField label="圆角半径" value={layer.cornerRadius ?? 36} min={0} max={Math.floor(Math.min(layer.width, layer.height) / 2)} presets={[0, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128]} onChange={(cornerRadius) => update({ cornerRadius })}/></div>}{shapeOf(layer) === 'polygon' && <div className="polygon-controls"><NumberField label="边数" value={layer.polygonSides || 5} min={POLYGON_MIN_SIDES} max={POLYGON_MAX_SIDES} presets={[3, 4, 5, 6, 8, 10, 12, 16]} onChange={(polygonSides) => update({ polygonSides, polygonPoints: regularPolygonPoints(polygonSides) })}/>{polygonPointsOf(layer).map((point, index) => <label key={index} className="polygon-radius"><span>顶点 {index + 1}</span><input type="range" min="10" max="100" value={polygonRadiusPercent(point)} onChange={(event) => update({ polygonPoints: polygonPointsOf(layer).map((item, itemIndex) => itemIndex === index ? polygonPointAtRadius(item, Number(event.target.value)) : item) })}/><output>{polygonRadiusPercent(point)}%</output></label>)}</div>}</div>
@@ -3832,6 +3867,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
         <div className={`slot-color-options ${colorFilled ? 'active' : ''}`}><label className="slot-color-picker"><span>填充颜色</span><input type="color" disabled={!colorFilled} value={layer.slotFill || '#e24b35'} onChange={(event) => update({ slotFill: event.target.value, replacementDisabled: false, boundLayerId: undefined })}/><code>{layer.slotFill || '#e24b35'}</code></label><button type="button" className={`wide-property-button ${colorFilled ? 'active' : ''}`} onClick={() => update(colorFilled ? { slotFill: '' } : { slotFill: '#e24b35', replacementDisabled: false, boundLayerId: undefined })}>{colorFilled ? '关闭颜色填充' : '启用颜色填充'}</button></div>
       </div>    </>}
     <div className="property-section"><h4>图层顺序</h4><div className="order-buttons"><button disabled={layer.locked} onClick={() => move(1)}><ChevronUp size={17}/>上移</button><button disabled={layer.locked} onClick={() => move(-1)}><ChevronDown size={17}/>下移</button></div></div>
+    <div className="property-section property-compact-section"><div className="opacity-inline-row"><span>透明度</span><div className="opacity-inline-control"><NumericInput value={Math.round(layerOpacityOf(layer) * 100)} min={0} max={100} presets={OPACITY_PRESETS} onCommit={(opacity) => update({ opacity: clamp(opacity / 100, 0, 1) })}/><em>%</em></div></div></div>
     <button className="delete-button" disabled={layer.locked} onClick={remove}><Trash2 size={17}/>删除图层</button>
   </div>;
 }
