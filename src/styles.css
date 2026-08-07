@@ -78,6 +78,10 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .library-controls select { padding: 0 28px 0 10px; }
 .favorite-filter { padding: 0 11px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 .favorite-filter.active, .favorite-active { color: #b8860b; }
+.template-type-filter { height: 42px; display: inline-flex; align-items: stretch; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--surface); }
+.template-type-filter button { min-width: 42px; padding: 0 9px; border: 0; border-right: 1px solid var(--line); background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
+.template-type-filter button:last-child { border-right: 0; }
+.template-type-filter button:hover, .template-type-filter button.active { background: var(--surface-hover); color: var(--ink); }
 .search-box { width: 250px; height: 42px; padding: 0 12px; border: 1px solid var(--line); border-radius: 6px; background: #fff; display: flex; align-items: center; gap: 9px; color: #85827a; }
 .search-box input { width: 100%; border: 0; outline: 0; background: transparent; font-size: 13px; }
 .template-grid { max-width: 1460px; margin: 0 auto; padding: 0 42px 70px; display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 20px; }
@@ -161,12 +165,16 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .panel-title > div { display: flex; align-items: center; gap: 7px; }
 .panel-title small { min-width: 19px; height: 19px; display: grid; place-items: center; border-radius: 10px; background: #eeece6; color: var(--muted); }
 .layer-add-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding: 12px 8px; border-bottom: 1px solid var(--line); }
-.layer-add-row > button, .shape-picker-wrap > button { width: 100%; min-width: 0; height: 63px; padding: 0 3px; border: 1px solid var(--line); border-radius: 5px; background: #faf9f6; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 9px; line-height: 1.25; cursor: pointer; }
-.layer-add-row > button:hover, .shape-picker-wrap > button:hover { color: var(--accent); border-color: #e6a092; background: #fff9f7; }
+.layer-add-row > button, .fixed-layer-add-wrap > button, .shape-picker-wrap > button { width: 100%; min-width: 0; height: 63px; padding: 0 3px; border: 1px solid var(--line); border-radius: 5px; background: #faf9f6; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; font-size: 9px; line-height: 1.25; cursor: pointer; }
+.layer-add-row > button:hover, .fixed-layer-add-wrap > button:hover, .shape-picker-wrap > button:hover { color: var(--accent); border-color: #e6a092; background: #fff9f7; }
 .template-tags-field { padding: 9px 10px 10px; border-bottom: 1px solid var(--line); display: block; }
 .template-tags-field span { display: block; margin-bottom: 5px; color: var(--muted); font-size: 9px; font-weight: 600; }
 .template-tags-field input { width: 100%; height: 30px; padding: 0 8px; border: 1px solid var(--line); border-radius: 4px; font-size: 10px; }
-.shape-picker-wrap { position: relative; min-width: 0; }
+.fixed-layer-add-wrap, .shape-picker-wrap { position: relative; min-width: 0; }
+.fixed-layer-add-wrap::after { content: ""; position: absolute; right: 3px; bottom: 3px; z-index: 1; width: 0; height: 0; border-top: 4px solid transparent; border-left: 4px solid transparent; border-right: 4px solid var(--muted); pointer-events: none; }
+.fixed-layer-menu { position: absolute; top: 69px; left: 0; z-index: 17; width: 210px; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); box-shadow: 0 10px 28px rgba(25,24,21,.16); }
+.fixed-layer-menu button { width: 100%; min-height: 36px; padding: 7px 9px; border: 0; border-radius: 4px; background: transparent; color: var(--ink); display: flex; align-items: center; gap: 8px; text-align: left; font-size: 11px; cursor: pointer; }
+.fixed-layer-menu button:hover { background: var(--surface-hover); color: var(--accent); }
 .shape-picker { position: absolute; top: 69px; left: 0; z-index: 15; width: 158px; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: #fff; box-shadow: 0 10px 28px rgba(25,24,21,.16); display: grid; gap: 3px; }
 .shape-picker button { width: 100%; height: 36px; padding: 0 9px; border: 0; border-radius: 4px; background: transparent; display: flex; flex-direction: row; align-items: center; justify-content: flex-start; gap: 9px; font-size: 11px; cursor: pointer; }
 .shape-picker button:hover { background: #f3f2ed; color: var(--accent); }
@@ -415,6 +423,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 :root[data-theme="dark"] .use-sidebar,
 :root[data-theme="dark"] .context-menu,
 :root[data-theme="dark"] .library-paste-menu,
+:root[data-theme="dark"] .fixed-layer-menu,
 :root[data-theme="dark"] .shape-picker,
 :root[data-theme="dark"] .text-orientation-menu,
 :root[data-theme="dark"] .layer-context-menu,
@@ -470,6 +479,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 :root[data-theme="dark"] .icon-button:hover,
 :root[data-theme="dark"] .context-menu button:hover,
 :root[data-theme="dark"] .library-paste-menu button:hover,
+:root[data-theme="dark"] .fixed-layer-menu button:hover,
 :root[data-theme="dark"] .shape-picker button:hover,
 :root[data-theme="dark"] .text-orientation-menu button:hover,
 :root[data-theme="dark"] .text-orientation-menu button.active,
@@ -497,6 +507,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 
 :root[data-theme="dark"] .new-template-card:hover,
 :root[data-theme="dark"] .layer-add-row > button:hover,
+:root[data-theme="dark"] .fixed-layer-add-wrap > button:hover,
 :root[data-theme="dark"] .shape-picker-wrap > button:hover,
 :root[data-theme="dark"] .text-add-wrap > button:hover,
 :root[data-theme="dark"] .text-add-wrap > button.active {
@@ -504,6 +515,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 }
 
 :root[data-theme="dark"] .layer-add-row > button,
+:root[data-theme="dark"] .fixed-layer-add-wrap > button,
 :root[data-theme="dark"] .shape-picker-wrap > button,
 :root[data-theme="dark"] .text-add-wrap > button {
   background: var(--surface-soft);

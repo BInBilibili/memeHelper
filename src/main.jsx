@@ -444,13 +444,53 @@ function starterTemplates() {
   ];
 }
 
-function fileToDataUrl(file) {
+const IMAGE_FILE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'avif', 'tif', 'tiff', 'ico']);
+
+function imageMimeFromBytes(bytes) {
+  if (!bytes || bytes.length < 4) return null;
+  const ascii = (offset, length) => String.fromCharCode(...bytes.slice(offset, offset + length));
+  if (ascii(0, 6) === 'GIF87a' || ascii(0, 6) === 'GIF89a') return 'image/gif';
+  if (bytes[0] === 0x89 && ascii(1, 3) === 'PNG') return 'image/png';
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (ascii(0, 4) === 'RIFF' && ascii(8, 4) === 'WEBP') return 'image/webp';
+  if (ascii(0, 2) === 'BM') return 'image/bmp';
+  if ((ascii(0, 4) === 'II*\0') || (ascii(0, 4) === 'MM\0*')) return 'image/tiff';
+  const text = new TextDecoder().decode(bytes.slice(0, 512)).replace(/^\uFEFF/, '').trimStart().toLowerCase();
+  if (text.startsWith('<svg') || (text.startsWith('<?xml') && text.includes('<svg'))) return 'image/svg+xml';
+  return null;
+}
+
+function isGifBytes(bytes) {
+  return Boolean(bytes && bytes.length >= 6 && (
+    String.fromCharCode(...bytes.slice(0, 6)) === 'GIF87a'
+    || String.fromCharCode(...bytes.slice(0, 6)) === 'GIF89a'
+  ));
+}
+
+function isImageFileLike(file) {
+  const extension = String(file?.name || '').split('.').pop()?.toLowerCase();
+  return Boolean(file && (file.type?.startsWith('image/') || IMAGE_FILE_EXTENSIONS.has(extension)));
+}
+
+async function fileToDataUrl(file) {
+  const extension = String(file?.name || '').split('.').pop()?.toLowerCase();
+  if (!isImageFileLike(file)) {
+    throw new Error('请选择图片文件');
+  }
+  const prefix = new Uint8Array(await file.slice(0, 512).arrayBuffer());
+  const detectedMime = imageMimeFromBytes(prefix);
+  const claimsGif = file.type?.toLowerCase() === 'image/gif' || extension === 'gif';
+  if (claimsGif && !isGifBytes(prefix) && !detectedMime) {
+    throw new Error('该文件扩展名为 GIF，但不是有效的 GIF87a/GIF89a 图片');
+  }
+  const blob = detectedMime && detectedMime !== file.type
+    ? new Blob([file], { type: detectedMime })
+    : file;
   return new Promise((resolve, reject) => {
-    if (!file?.type?.startsWith('image/')) return reject(new Error('请选择图片文件'));
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
     reader.onerror = () => reject(new Error('图片读取失败'));
-    reader.readAsDataURL(file);
+    reader.readAsDataURL(blob);
   });
 }
 
@@ -461,6 +501,22 @@ function loadImage(src) {
     image.onerror = reject;
     image.src = src;
   });
+}
+
+async function normalizeStaticImageDataUrl(source) {
+  const image = await loadImage(source);
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width;
+  canvas.height = image.height;
+  canvas.getContext('2d').drawImage(image, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
+async function createGifSourceFromImage(source) {
+  const png = await normalizeStaticImageDataUrl(source);
+  const encoded = await desktop.encodeGifFrames([{ dataUrl: png, delayMs: 100 }], null);
+  if (!isGifDataUrl(encoded)) throw new Error('GIF 编码失败，请重新选择图片');
+  return encoded;
 }
 
 function getCoverCrop(image, boxWidth, boxHeight) {
@@ -817,7 +873,21 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
 }
 
 
-const isGifSource = (source) => typeof source === 'string' && (/^data:image\/gif(?:;|,)/i.test(source) || /\.gif(?:[?#]|$)/i.test(source));
+const isGifDataUrl = (source) => {
+  if (typeof source !== 'string') return false;
+  const match = source.match(/^data:image\/gif(?:;[^,]*)?;base64,([^,]*)$/i);
+  if (!match) return false;
+  try {
+    return isGifBytes(Uint8Array.from(atob(match[1].slice(0, 12)), (character) => character.charCodeAt(0)));
+  } catch {
+    return false;
+  }
+};
+
+const isGifSource = (source) => typeof source === 'string' && (
+  isGifDataUrl(source)
+  || (!/^data:/i.test(source) && /\.gif(?:[?#]|$)/i.test(source))
+);
 
 function sourceForLayer(template, layer, replacements = {}) {
   return layerSourceForRender(layer, replacements);
@@ -1161,7 +1231,7 @@ function App() {
     const next = templates.map((item) => item.id === template.id ? nextTemplate : item);
     setTemplates(next);
     desktop.saveTemplates(next).catch(() => undefined);
-    setPage({ name: 'use', template: nextTemplate, file });
+    setPage({ name: 'use', template: nextTemplate, files: Array.isArray(file) ? file : file ? [file] : [] });
   };
 
   const toggleFavorite = async (id) => {
@@ -1214,7 +1284,7 @@ function App() {
   return <div className="app-shell">
     {page.name === 'library' && <Library templates={templates} query={query} setQuery={setQuery} onRefresh={refreshTemplates} onCreate={() => setPage({ name: 'editor' })} onOpenSettings={() => setSettingsOpen(true)} onEdit={(template) => setPage({ name: 'editor', template })} onRename={renameTemplate} onUse={useTemplate} onDelete={deleteTemplate} onToggleFavorite={toggleFavorite} notify={notify}/>}
     {page.name === 'editor' && <Editor initial={page.template} autosave={editorDrafts[page.template?.id || 'new']} onSaveDraft={saveEditorDraft} onClearDraft={clearEditorDraft} onBack={() => setPage({ name: 'library' })} onSave={saveTemplate} notify={notify}/>}
-    {page.name === 'use' && <UseTemplate template={page.template} initialFile={page.file} cachedSession={useSessions[page.template.id]} onSaveSession={saveUseSession} onBack={() => setPage({ name: 'library' })} onEdit={() => setPage({ name: 'editor', template: page.template })} notify={notify}/>}
+    {page.name === 'use' && <UseTemplate template={page.template} initialFiles={page.files} cachedSession={useSessions[page.template.id]} onSaveSession={saveUseSession} onBack={() => setPage({ name: 'library' })} onEdit={() => setPage({ name: 'editor', template: page.template })} notify={notify}/>}
     {settingsOpen && <SettingsDialog config={config} onChange={updateConfig} onClose={() => setSettingsOpen(false)}/>}
     <Toast toast={toast}/>
   </div>;
@@ -1229,6 +1299,7 @@ function SettingsDialog({ config, onChange, onClose }) { const options = [{ valu
 function Library({ templates, query, setQuery, onRefresh, onCreate, onOpenSettings, onEdit, onRename, onUse, onDelete, onToggleFavorite, notify }) {
   const [sort, setSort] = useState('recent');
   const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [templateType, setTemplateType] = useState('all');
   const [refreshing, setRefreshing] = useState(false);
   const refresh = async () => {
     if (refreshing) return;
@@ -1240,11 +1311,17 @@ function Library({ templates, query, setQuery, onRefresh, onCreate, onOpenSettin
   const normalizedQuery = query.trim().toLowerCase();
   const filtered = templates
     .filter((item) => !favoritesOnly || item.favorite)
+    .filter((item) => {
+      const isGifTemplate = item.layers?.some((layer) => isGifSource(layer.src));
+      if (templateType === 'gif') return Boolean(isGifTemplate);
+      if (templateType === 'static') return !isGifTemplate;
+      return true;
+    })
     .filter((item) => !normalizedQuery || item.name.toLowerCase().includes(normalizedQuery) || (item.tags || []).some((tag) => tag.toLowerCase().includes(normalizedQuery)))
     .sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name, 'zh-CN') : sort === 'created' ? (b.createdAt || 0) - (a.createdAt || 0) : (b.lastUsedAt || b.updatedAt || 0) - (a.lastUsedAt || a.updatedAt || 0));
   return <main className="library-page">
     <header className="topbar"><Brand/><div className="topbar-actions"><button className="secondary-button" onClick={onOpenSettings}><Settings size={17}/>设置</button><span className="storage-note">{desktop.isDesktop ? '模板保存在程序目录的 meme 文件夹' : '模板保存在浏览器'}</span><button className="secondary-button" onClick={refresh} disabled={refreshing}><RefreshCw className={refreshing ? 'refresh-icon spinning' : 'refresh-icon'} size={17}/>{refreshing ? '刷新中' : '刷新'}</button><button className="primary-button" onClick={onCreate}><Plus size={18}/>新建模板</button></div></header>
-    <section className="library-heading"><div><p className="eyebrow">模板工作台</p><h1>选择一个模板，马上开始</h1><p>点击使用，或把图片直接拖到模板上。</p></div><div className="library-controls"><div className="search-box"><LayoutTemplate size={18}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索名称或标签"/></div><button className={`favorite-filter ${favoritesOnly ? 'active' : ''}`} onClick={() => setFavoritesOnly((current) => !current)}><Star size={16} fill={favoritesOnly ? 'currentColor' : 'none'}/>收藏</button><select value={sort} onChange={(event) => setSort(event.target.value)} aria-label="模板排序"><option value="recent">最近使用</option><option value="created">最近创建</option><option value="name">按名称</option></select></div></section>
+    <section className="library-heading"><div><p className="eyebrow">模板工作台</p><h1>选择一个模板，马上开始</h1><p>点击使用，或把图片直接拖到模板上。</p></div><div className="library-controls"><div className="search-box"><LayoutTemplate size={18}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索名称或标签"/></div><button className={`favorite-filter ${favoritesOnly ? 'active' : ''}`} onClick={() => setFavoritesOnly((current) => !current)}><Star size={16} fill={favoritesOnly ? 'currentColor' : 'none'}/>收藏</button><div className="template-type-filter" role="group" aria-label="模板类型"><button className={templateType === 'all' ? 'active' : ''} onClick={() => setTemplateType('all')}>全部</button><button className={templateType === 'gif' ? 'active' : ''} onClick={() => setTemplateType('gif')}>GIF</button><button className={templateType === 'static' ? 'active' : ''} onClick={() => setTemplateType('static')}>普通</button></div><select value={sort} onChange={(event) => setSort(event.target.value)} aria-label="模板排序"><option value="recent">最近使用</option><option value="created">最近创建</option><option value="name">按名称</option></select></div></section>
     <section className="template-grid">
       <button className="new-template-card" onClick={onCreate}><span className="new-icon"><Plus size={26}/></span><strong>创建新模板</strong><small>设置底图与照片位置</small></button>
       {filtered.map((template) => <TemplateCard key={template.id} template={template} onUse={onUse} onEdit={onEdit} onRename={onRename} onDelete={onDelete} onToggleFavorite={onToggleFavorite} notify={notify}/>) }
@@ -1343,7 +1420,7 @@ function TemplateCard({ template, onUse, onEdit, onRename, onDelete, onToggleFav
   }, [notify, quickReplace]);
   const drop = async (event) => {
     event.preventDefault(); setDragging(false);
-    const files = Array.from(event.dataTransfer.files || []).filter((file) => file.type?.startsWith('image/'));
+    const files = Array.from(event.dataTransfer.files || []).filter((file) => isImageFileLike(file));
     if (!files.length) return notify('请拖入图片文件', 'error');
     if (canQuickReplace) {
       try {
@@ -1353,7 +1430,9 @@ function TemplateCard({ template, onUse, onEdit, onRename, onDelete, onToggleFav
       } catch (error) { notify(`读取图片失败：${error?.message || error}`, 'error'); }
       return;
     }
-    onUse(template, files[0]);
+    // Templates with multiple replacement slots are opened in the use page;
+    // pass every dropped image so the page can fill slots in sidebar order.
+    onUse(template, files.length > 1 ? files : files[0]);
   };
   const openPasteMenu = (event) => {
     if (!canQuickReplace) return;
@@ -1403,7 +1482,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
       setDragState(null); setDropState(null);
       return;
     }
-    const files = Array.from(event.dataTransfer?.files || []).filter((file) => file.type.startsWith('image/'));
+    const files = Array.from(event.dataTransfer?.files || []).filter((file) => isImageFileLike(file));
     const file = files[0];
     if (!file) return;
     let index = targetIndex == null ? frames.length : targetIndex + (placement === 'after' ? 1 : 0);
@@ -1482,6 +1561,8 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
   const [hasCopiedLayers, setHasCopiedLayers] = useState(false);
   const [tagsText, setTagsText] = useState(() => (initialStateRef.current.draft.tags || []).join(', '));
   const memeInput = useRef();
+  const gifLayerInput = useRef();
+  const [fixedLayerMenu, setFixedLayerMenu] = useState(false);
   const stageHostRef = useRef();
   const outsideDragRef = useRef(null);
   const clipboardLayersRef = useRef({ layers: [], groupMeta: {} });
@@ -1959,7 +2040,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
         } else tryBack();
       }
     };
-    const closeMenus = () => { setShapeMenu(false); setLayerMenu(null); setEraserMenu(false); setTextMenu(false); };
+    const closeMenus = () => { setShapeMenu(false); setLayerMenu(null); setFixedLayerMenu(false); setEraserMenu(false); setTextMenu(false); };
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('pointerdown', closeMenus);
     return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('pointerdown', closeMenus); };
@@ -2001,9 +2082,12 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
     });
   }, [draft.layers, selectedGroupId]);
 
-  const addImage = async (file, dropPoint = null) => {
+  const addImage = async (file, dropPoint = null, { asGif = false } = {}) => {
     try {
-      const src = await fileToDataUrl(file); const image = await loadImage(src);
+      let src = await fileToDataUrl(file);
+      const image = await loadImage(src);
+      const createdSingleFrameGif = asGif && !isGifSource(src);
+      if (createdSingleFrameGif) src = await createGifSourceFromImage(src);
       const initializeCanvas = !draft.layers.length && draft.width === 0 && draft.height === 0;
       const initialWidth = Math.min(4000, image.width); const initialHeight = Math.min(4000, image.height);
       const maxW = initializeCanvas ? initialWidth : Math.max(1, draft.width * .9); const maxH = initializeCanvas ? initialHeight : Math.max(1, draft.height * .9);
@@ -2011,14 +2095,14 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
       const width = Math.round(image.width * scale); const height = Math.round(image.height * scale);
       const x = initializeCanvas ? 0 : Math.round((dropPoint?.x ?? draft.width / 2) - width / 2);
       const y = initializeCanvas ? 0 : Math.round((dropPoint?.y ?? draft.height / 2) - height / 2);
-      const layer = { id: uid(), name: file.name.replace(/\.[^.]+$/, ''), type: 'static', src, x, y, width, height, rotation: 0, visible: true, fit: 'fill' };
+      const layer = { id: uid(), name: file.name.replace(/\.[^.]+$/, ''), type: 'static', src, x, y, width, height, rotation: 0, visible: true, fit: 'fill', ...(createdSingleFrameGif ? { gifFrameCount: 1, gifFrameDelays: [100] } : {}) };
       updateDraft((prev) => ({ ...prev, width: initializeCanvas ? width : prev.width, height: initializeCanvas ? height : prev.height, layers: [...prev.layers, layer] }));
       setSelectedIds([layer.id]); setSelectedGroupId(null); setActiveTool('select');
     } catch (error) { notify(error.message, 'error'); }
   };
 
   const dropImageOnEditor = async (event) => {
-    const file = Array.from(event.dataTransfer?.files || []).find((item) => item.type.startsWith('image/'));
+    const file = Array.from(event.dataTransfer?.files || []).find((item) => isImageFileLike(item));
     if (!file) return;
     event.preventDefault(); event.stopPropagation();
     const bounds = stageHostRef.current?.getBoundingClientRect();
@@ -2657,7 +2741,19 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
   return <main className="editor-page">
     <header className="editor-topbar"><div className="editor-left"><IconButton label="返回模板库" onClick={tryBack}><ArrowLeft size={21}/></IconButton><div className="title-field"><div className="editable-template-name" title="点击编辑模板名称"><input aria-label="模板名称" value={draft.name} onChange={(e) => updateDraft({ ...draft, name: e.target.value })}/><Pencil size={13} aria-hidden="true"/></div><span>{draft.width} x {draft.height}px</span></div></div><div className="editor-center"><span className="status-dot"></span>{autosaveState === 'saving' ? '正在自动保存' : autosaveState === 'error' ? '自动保存失败' : initialStateRef.current.restored ? '已恢复草稿' : dirty ? '已自动保存' : '已保存'}</div><div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undoDraft} disabled={!canUndo}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redoDraft} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={tryBack}>取消</button><button className="primary-button" onClick={save}><Save size={17}/>保存模板</button></div></header>
     <div className="editor-body">
-      <aside className="layers-panel" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu}><div className="panel-title"><div><span>{templateHasGif ? 'GIF' : '图层'}</span><small>{draft.layers.length}</small></div></div><div className="layer-add-row"><button onClick={() => memeInput.current.click()}><ImagePlus size={18}/><span>添加固定图层</span></button><div className="shape-picker-wrap"><button onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Shapes size={18}/><span>添加可替换照片</span></button>{shapeMenu && <div className="shape-picker" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => addEmptySlot('rect')}><Square size={17}/><span>矩形</span></button><button onClick={() => addEmptySlot('circle')}><Circle size={17}/><span>圆形</span></button><button onClick={() => addEmptySlot('rounded')}><Shapes size={17}/><span>圆角矩形</span></button><button onClick={() => addEmptySlot('polygon')}><Pentagon size={17}/><span>多边形</span></button></div>}</div><div className="text-add-wrap"><button className={activeTool === 'text' ? 'active' : ''} onClick={() => { setTextOrientation('horizontal'); setTextMenu(false); setActiveTool('text'); }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setTextMenu(true); }}><Type size={18}/><span>添加文字</span></button>{textMenu && <div className="text-orientation-menu" onPointerDown={(event) => event.stopPropagation()}><button className={textOrientation === 'horizontal' ? 'active' : ''} onClick={() => { setTextOrientation('horizontal'); setTextMenu(false); setActiveTool('text'); }}>横排文本</button><button className={textOrientation === 'vertical' ? 'active' : ''} onClick={() => { setTextOrientation('vertical'); setTextMenu(false); setActiveTool('text'); }}>竖排文本</button></div>}</div></div><label className="template-tags-field"><span>模板标签</span><input value={tagsText} onChange={(event) => { const value = event.target.value; setTagsText(value); updateDraft({ ...draft, tags: value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 10) }); }} placeholder="反应、工作、猫"/></label><input ref={memeInput} hidden type="file" accept="image/*" onChange={(event) => event.target.files[0] && addImage(event.target.files[0])}/>
+      <aside className="layers-panel" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu}>
+        <div className="panel-title"><div><span>{templateHasGif ? 'GIF' : '图层'}</span><small>{draft.layers.length}</small></div></div>
+        <div className="layer-add-row">
+          <div className="fixed-layer-add-wrap">
+            <button onClick={() => memeInput.current?.click()} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setFixedLayerMenu((open) => !open); }}><ImagePlus size={18}/><span>添加固定图层</span></button>
+            {fixedLayerMenu && <div className="fixed-layer-menu" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setFixedLayerMenu(false); gifLayerInput.current?.click(); }}><ImagePlus size={16}/><span>选择一张图片创建 GIF 图层</span></button></div>}
+          </div>
+          <div className="shape-picker-wrap"><button onClick={(event) => { event.stopPropagation(); setShapeMenu(!shapeMenu); }}><Shapes size={18}/><span>添加可替换照片</span></button>{shapeMenu && <div className="shape-picker" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => addEmptySlot('rect')}><Square size={17}/><span>矩形</span></button><button onClick={() => addEmptySlot('circle')}><Circle size={17}/><span>圆形</span></button><button onClick={() => addEmptySlot('rounded')}><Shapes size={17}/><span>圆角矩形</span></button><button onClick={() => addEmptySlot('polygon')}><Pentagon size={17}/><span>多边形</span></button></div>}</div>
+          <div className="text-add-wrap"><button className={activeTool === 'text' ? 'active' : ''} onClick={() => { setTextOrientation('horizontal'); setTextMenu(false); setActiveTool('text'); }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setTextMenu(true); }}><Type size={18}/><span>添加文字</span></button>{textMenu && <div className="text-orientation-menu" onPointerDown={(event) => event.stopPropagation()}><button className={textOrientation === 'horizontal' ? 'active' : ''} onClick={() => { setTextOrientation('horizontal'); setTextMenu(false); setActiveTool('text'); }}>横排文本</button><button className={textOrientation === 'vertical' ? 'active' : ''} onClick={() => { setTextOrientation('vertical'); setTextMenu(false); setActiveTool('text'); }}>竖排文本</button></div>}</div>
+        </div>
+        <label className="template-tags-field"><span>模板标签</span><input value={tagsText} onChange={(event) => { const value = event.target.value; setTagsText(value); updateDraft({ ...draft, tags: value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 10) }); }} placeholder="反应、工作、猫"/></label>
+        <input ref={memeInput} hidden type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) addImage(file); }}/>
+        <input ref={gifLayerInput} hidden type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) addImage(file, null, { asGif: true }); }}/>
         <div className="layers-list" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu}>{layerListRows}</div>
         {!draft.layers.length && <div className="layers-empty" onClick={clearSelection} onContextMenu={openLayersBlankMenu}><Layers3 size={28}/><p>添加第一个图层后，画布会自动匹配图层大小。</p></div>}
       </aside>
@@ -3427,7 +3523,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
           onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)} onTransformEnd={false}/>;
       })}
       {groupHitAreas.filter((group) => group.groupId === selectedGroupId).map((group) => renderGroupHitArea(group, true))}
-      {tool === 'select' && !selectedGroupId && selectedIds.map((id) => template.layers.find((layer) => layer.id === id)).filter((layer) => layer && !layer.locked && layer.visible && layer.id !== textEditingId && isLayerVisibleAtFrame(layer, gifFrameIndex)).map((layer) => <Rect key={`selected-hit-${layer.id}`} x={layer.x + layer.width / 2} y={layer.y + layer.height / 2} offsetX={layer.width / 2} offsetY={layer.height / 2} width={layer.width} height={layer.height} rotation={layer.rotation || 0} fill="rgba(0,0,0,0.001)" draggable listening onMouseDown={(event) => { event.cancelBubble = true; startDrag(layer); }} onTouchStart={(event) => { event.cancelBubble = true; startDrag(layer); }} onClick={(event) => { event.cancelBubble = true; selectLayer(layer.id, event.evt); }} onTap={(event) => { event.cancelBubble = true; selectLayer(layer.id, event.evt); }} onContextMenu={(event) => { event.cancelBubble = true; onLayerContextMenu(layer.id, event.evt); }} onDblClick={(event) => { if (layer.type === 'text') { event.cancelBubble = true; onEditText(layer.id); } }} onDblTap={(event) => { if (layer.type === 'text') { event.cancelBubble = true; onEditText(layer.id); } }} onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)}/>) }      {template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
+      {tool === 'select' && !selectedGroupId && selectedIds.map((id) => template.layers.find((layer) => layer.id === id)).filter((layer) => layer && !layer.locked && layer.visible && layer.id !== textEditingId && isLayerVisibleAtFrame(layer, gifFrameIndex)).map((layer) => <Rect key={`selected-hit-${layer.id}`} x={layer.x + layer.width / 2} y={layer.y + layer.height / 2} offsetX={layer.width / 2} offsetY={layer.height / 2} width={layer.width} height={layer.height} rotation={layer.rotation || 0} fill="rgba(0,0,0,0.001)" draggable listening onMouseDown={(event) => { event.cancelBubble = true; startDrag(layer); }} onTouchStart={(event) => { event.cancelBubble = true; startDrag(layer); }} onClick={(event) => { event.cancelBubble = true; selectLayer(layer.id, event.evt); }} onTap={(event) => { event.cancelBubble = true; selectLayer(layer.id, event.evt); }} onContextMenu={(event) => { event.cancelBubble = true; onLayerContextMenu(layer.id, event.evt); }} onDblClick={(event) => { if (layer.type === 'text') { event.cancelBubble = true; onEditText(layer.id); } }} onDblTap={(event) => { if (layer.type === 'text') { event.cancelBubble = true; onEditText(layer.id); } }} onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)}/>) }{template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
       {tool === 'marquee' && template.layers.filter((layer) => selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`marquee-selected-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
       {guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94b37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }
       <Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} keepRatio={selectedIds.length === 1 && Boolean(template.layers.find((item) => item.id === selectedIds[0])?.aspectRatioLocked)} enabledAnchors={selectedIds.length === 1 && template.layers.find((item) => item.id === selectedIds[0])?.aspectRatioLocked ? ['top-left','top-right','bottom-left','bottom-right'] : ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/>
@@ -3494,8 +3590,6 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
   const disabledReplacement = layer.type === 'slot' && layer.replacementDisabled;
   const colorFilled = layer.type === 'slot' && Boolean(layer.slotFill);
   const bindingActive = layer.type === 'slot' && Boolean(layer.boundLayerId);
-  const bindingCandidates = layers.filter((candidate) => candidate.type === 'slot' && candidate.id !== layer.id && !candidate.boundLayerId && !candidate.replacementDisabled && !candidate.slotFill);
-  const boundLayerName = bindingCandidates.find((candidate) => candidate.id === layer.boundLayerId)?.name || layers.find((candidate) => candidate.id === layer.boundLayerId)?.name || '不绑定';
   const placeholderProps = { fill: layer.slotFill || (disabledReplacement ? 'rgba(0,0,0,0)' : highlight ? 'rgba(233,78,55,.14)' : '#eceae4'), stroke: disabledReplacement ? undefined : highlight ? '#e94e37' : layer.slotFill ? undefined : '#77746d', strokeWidth: disabledReplacement ? 0 : highlight ? 5 : 2, dash: disabledReplacement || (layer.slotFill && !highlight) ? undefined : [12, 8] };
   return <Group {...common} clipFunc={layer.type === 'slot' ? clipFunc : undefined}>
     {image ? <KonvaImage image={image} x={placement?.x || 0} y={placement?.y || 0} width={placement?.width || layer.width} height={placement?.height || layer.height} crop={placement ? undefined : crop} draggable={cropMode} onDragMove={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); onPhotoTransformMove ? onPhotoTransformMove({ event, x, y, placement }) : event.target.position({ x, y }); } : undefined} onDragEnd={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); event.target.position({ x, y }); if (onPhotoTransformEnd) onPhotoTransformEnd({ event, x, y, placement }); else onPhotoTransform?.({ offsetX: x - placement.centeredX, offsetY: y - placement.centeredY }); } : undefined}/> : shapeOf(layer) === 'circle' ? <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={layer.width / 2} radiusY={layer.height / 2} {...placeholderProps}/> : shapeOf(layer) === 'polygon' ? <Line points={polygonPixelPoints(layer)} closed {...placeholderProps}/> : <Rect width={layer.width} height={layer.height} cornerRadius={shapeOf(layer) === 'rounded' ? cornerRadiusOf(layer) : 0} {...placeholderProps}/>}
@@ -3843,7 +3937,7 @@ function createUseSession(template) {
   };
 }
 
-function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBack, onEdit, notify }) {
+function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onBack, onEdit, notify }) {
   const initialSessionRef = useRef();
   if (!initialSessionRef.current) {
     const canRestore = cachedSession?.templateUpdatedAt === (template.updatedAt || 0)
@@ -3958,6 +4052,7 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
     setSelectedId(slotId);
   }, [commitSession]);
 
+
   const removeSlotSource = useCallback((slotId) => {
     commitSession((previous) => {
       if (!previous.slotSources[slotId]) return previous;
@@ -4055,6 +4150,30 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
     } catch (error) { notify(error.message, 'error'); }
   }, [composition.layers, notify, replaceSlotSource, selectedId]);
 
+  const acceptInitialFiles = useCallback(async (files) => {
+    const incoming = Array.from(files || []).filter((file) => isImageFileLike(file));
+    if (!incoming.length) return;
+    const targetSlots = composition.layers
+      .filter((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId)
+      .slice(0, incoming.length);
+    if (!targetSlots.length) return;
+    try {
+      const sources = await Promise.all(targetSlots.map((slot, index) => fileToDataUrl(incoming[index])));
+      const sourceEntries = Object.fromEntries(targetSlots.map((slot, index) => [slot.id, sources[index]]));
+      const nameEntries = Object.fromEntries(targetSlots.map((slot, index) => [slot.id, incoming[index]?.name || '']));
+      const transformEntries = Object.fromEntries(targetSlots.map((slot) => [slot.id, { zoom: 1, offsetX: 0, offsetY: 0 }]));
+      commitSession((previous) => ({
+        ...previous,
+        slotSources: { ...previous.slotSources, ...sourceEntries },
+        slotNames: { ...previous.slotNames, ...nameEntries },
+        slotTransforms: { ...previous.slotTransforms, ...transformEntries }
+      }));
+      setSelectedId(targetSlots.at(-1)?.id || null);
+    } catch (error) {
+      notify(`读取图片失败：${error?.message || error}`, 'error');
+    }
+  }, [commitSession, composition.layers, notify]);
+
   const generateBatch = useCallback(async (files, targetId) => {
     const requestedLayer = composition.layers.find((layer) => layer.id === targetId);
     const slotId = requestedLayer?.type === 'slot' && !requestedLayer.replacementDisabled ? requestedLayer.id : slots.length === 1 ? slots[0].id : null;
@@ -4078,11 +4197,15 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
   }, [composition.layers]);
 
   useEffect(() => {
-    if (initialFile && !initialHandled.current) {
-      initialHandled.current = true;
-      acceptFile(initialFile, composition.layers.find((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId)?.id);
+    const incomingFiles = Array.isArray(initialFiles) ? initialFiles : [];
+    if (!incomingFiles.length || initialHandled.current) return;
+    initialHandled.current = true;
+    if (incomingFiles.length > 1) {
+      acceptInitialFiles(incomingFiles);
+    } else {
+      acceptFile(incomingFiles[0], composition.layers.find((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId)?.id);
     }
-  }, [acceptFile, composition.layers, initialFile]);
+  }, [acceptFile, acceptInitialFiles, composition.layers, initialFiles]);
 
   const currentResult = useCallback(async () => {
     const dataUrl = await renderOutput(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: outputMime });
@@ -4177,7 +4300,7 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
   };
 
   const dropOnSlot = (event) => {
-    const files = Array.from(event.dataTransfer.files || []).filter((item) => item.type.startsWith('image/'));
+    const files = Array.from(event.dataTransfer.files || []).filter((item) => isImageFileLike(item));
     const file = files[0];
     if (!file) return;
     event.preventDefault();
@@ -4193,7 +4316,7 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
 
   const dropOnSlotList = (event, slotId) => {
     event.preventDefault(); event.stopPropagation(); setSlotDropId(null);
-    const files = Array.from(event.dataTransfer.files || []).filter((item) => item.type.startsWith('image/')); const file = files[0];
+    const files = Array.from(event.dataTransfer.files || []).filter((item) => isImageFileLike(item)); const file = files[0];
     if (!file) return notify('请拖入图片文件', 'error');
     if (files.length > 1 && slots.length === 1) generateBatch(files, slotId); else acceptFile(file, slotId);
   };

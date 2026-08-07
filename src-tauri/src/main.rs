@@ -526,6 +526,10 @@ fn decode_image_data_url(data_url: &str) -> Result<(&str, Vec<u8>), String> {
     Ok((mime, bytes))
 }
 
+fn is_gif_signature(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")
+}
+
 #[tauri::command]
 fn load_config() -> Value {
     read_config()
@@ -635,6 +639,9 @@ fn save_use_sessions(sessions: Value) -> Result<bool, String> {
 #[tauri::command]
 fn copy_image(data_url: String, clipboard_data_url: Option<String>) -> Result<bool, String> {
     let (mime, bytes) = decode_image_data_url(&data_url)?;
+    if mime == "image/gif" && !is_gif_signature(&bytes) {
+        return Err("该文件扩展名为 GIF，但不是有效的 GIF87a/GIF89a 图片".to_string());
+    }
     let extension = match mime {
         "image/jpeg" => "jpg",
         "image/webp" => "webp",
@@ -684,6 +691,9 @@ fn copy_images(data_urls: Vec<String>) -> Result<bool, String> {
     let mut paths = Vec::with_capacity(data_urls.len());
     for (index, data_url) in data_urls.iter().enumerate() {
         let (mime, bytes) = decode_image_data_url(data_url)?;
+        if mime == "image/gif" && !is_gif_signature(&bytes) {
+            return Err("该文件扩展名为 GIF，但不是有效的 GIF87a/GIF89a 图片".to_string());
+        }
         let extension = match mime {
             "image/jpeg" => "jpg",
             "image/webp" => "webp",
@@ -779,6 +789,10 @@ fn decode_gif_frames(data_url: String) -> Result<Value, String> {
     if mime != "image/gif" {
         return Err("data URL is not a GIF image".to_string());
     }
+    if !is_gif_signature(&bytes) {
+        return Err("该文件扩展名为 GIF，但不是有效的 GIF87a/GIF89a 图片".to_string());
+    }
+
     let decoder = image::codecs::gif::GifDecoder::new(Cursor::new(bytes))
         .map_err(|error| error.to_string())?;
     let frames = decoder
@@ -1189,6 +1203,13 @@ mod tests {
         assert_eq!(decoded["width"], 2);
         assert_eq!(decoded["height"], 2);
         assert_eq!(decoded["frames"].as_array().map(Vec::len), Some(2));
+    }
+
+    #[test]
+    fn rejects_gif_payloads_without_a_gif_signature() {
+        assert!(is_gif_signature(b"GIF87a\x01\x00"));
+        assert!(is_gif_signature(b"GIF89a\x01\x00"));
+        assert!(!is_gif_signature(b"PNG\x89\x00\x00"));
     }
 }
 
