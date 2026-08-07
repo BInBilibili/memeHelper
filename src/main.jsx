@@ -495,7 +495,7 @@ function getPhotoPlacement(image, layer, transform = {}) {
 
 function parseFrameList(value) {
   if (Array.isArray(value)) return value.map(Number).filter((item) => Number.isInteger(item) && item > 0);
-  return String(value || '').split(/[,，、\s]+/).map((item) => Number(item.trim())).filter((item) => Number.isInteger(item) && item > 0);
+  return String(value || '').split(/[.,，、\s]+/).map((item) => Number(item.trim())).filter((item) => Number.isInteger(item) && item > 0);
 }
 
 function isLayerVisibleAtFrame(layer, frameIndex) {
@@ -1378,18 +1378,42 @@ function TemplateCard({ template, onUse, onEdit, onRename, onDelete, onToggleFav
   </article>{pasteMenu && <div ref={pasteMenuRef} className="library-paste-menu" style={{ left: pasteMenu.x, top: pasteMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={pasteImage} disabled={quickWorking}><Clipboard size={16}/>粘贴图片并复制作品</button></div>}{renaming && <RenameTemplateDialog template={template} onCancel={() => setRenaming(false)} onSave={onRename}/>}</>;
 }
 
-function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, onTogglePlay, onSelectFrame, onDropFrame }) {
+function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, onTogglePlay, onSelectFrame, onDropFrame, onDuplicateFrame, onDeleteFrame, onReorderFrame }) {
+  const [frameMenu, setFrameMenu] = useState(null);
+  const [dragState, setDragState] = useState(null);
+  const [dropState, setDropState] = useState(null);
+  const menuRef = useRef(null);
   const selectedSet = new Set(selectedIndexes);
-  const handleDrop = async (event) => {
+  useEffect(() => {
+    if (!frameMenu) return undefined;
+    const close = (event) => { if (!menuRef.current?.contains(event.target)) setFrameMenu(null); };
+    window.addEventListener('pointerdown', close);
+    return () => window.removeEventListener('pointerdown', close);
+  }, [frameMenu]);
+  const isFrameDrag = (event) => Array.from(event.dataTransfer?.types || []).includes('application/x-meme-gif-frame');
+  const isFileDrag = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
+  const handleDrop = async (event, targetIndex = null, placement = 'before') => {
     event.preventDefault();
     event.stopPropagation();
+    const sourceValue = event.dataTransfer?.getData('application/x-meme-gif-frame');
+    if (sourceValue !== undefined && sourceValue !== '') {
+      const sourceIndex = Number(sourceValue);
+      const insertionIndex = targetIndex == null ? frames.length : targetIndex + (placement === 'after' ? 1 : 0);
+      onReorderFrame?.(sourceIndex, insertionIndex);
+      setDragState(null); setDropState(null);
+      return;
+    }
     const files = Array.from(event.dataTransfer?.files || []).filter((file) => file.type.startsWith('image/'));
     const file = files[0];
     if (!file) return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    const ratio = rect.width ? (event.clientX - rect.left + event.currentTarget.scrollLeft) / Math.max(rect.width, event.currentTarget.scrollWidth) : 1;
-    const index = Math.max(0, Math.min(frames.length, Math.round(ratio * frames.length)));
+    let index = targetIndex == null ? frames.length : targetIndex + (placement === 'after' ? 1 : 0);
+    if (targetIndex == null) {
+      const rect = event.currentTarget.getBoundingClientRect();
+      const ratio = rect.width ? (event.clientX - rect.left + event.currentTarget.scrollLeft) / Math.max(rect.width, event.currentTarget.scrollWidth) : 1;
+      index = Math.max(0, Math.min(frames.length, Math.round(ratio * frames.length)));
+    }
     onDropFrame(await fileToDataUrl(file), index);
+    setDropState(null);
   };
   const scrollFrames = (event) => {
     if (!event.deltaX && !event.deltaY) return;
@@ -1399,12 +1423,16 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
   };
   return <div className="gif-timeline">
     <div className="gif-timeline-heading"><div><strong>GIF 时间轴</strong><small>{frames.length ? `${frames.length} 帧` : '正在读取帧'}</small></div><button type="button" className="gif-play-button" disabled={!frames.length} onClick={onTogglePlay}>{playing ? '暂停' : '播放'}</button></div>
-    <div className="gif-frame-strip" onWheel={scrollFrames} onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={handleDrop}>
-      {frames.length ? frames.map((frame, index) => <button type="button" key={`${index}-${frame.dataUrl.slice(-12)}`} className={`gif-frame-cell ${selectedSet.has(index) ? 'selected' : ''} ${index === frameIndex ? 'active' : ''}`} onClick={(event) => { if (event.shiftKey) event.preventDefault(); onSelectFrame(index, event); }} title={`第 ${index + 1} 帧，${Math.max(20, Number(frame.delayMs) || 100)} ms`}><img src={frame.dataUrl} alt={`第 ${index + 1} 帧`}/><span>{index + 1}</span></button>) : <div className="gif-timeline-empty">GIF 帧加载中…</div>}
+    <div className="gif-frame-strip" onWheel={scrollFrames} onDragOver={(event) => { if (isFrameDrag(event) || isFileDrag(event)) { event.preventDefault(); if (isFrameDrag(event) && event.target === event.currentTarget) setDropState({ targetIndex: frames.length, placement: 'before' }); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDropState(null); }} onDrop={(event) => handleDrop(event)}>
+      {frames.length ? frames.map((frame, index) => {
+        const placement = dropState?.targetIndex === index ? dropState.placement : null;
+        return <button type="button" draggable key={`${index}-${frame.dataUrl.slice(-12)}`} className={`gif-frame-cell ${selectedSet.has(index) ? 'selected' : ''} ${index === frameIndex ? 'active' : ''} ${dragState?.sourceIndex === index ? 'dragging' : ''} ${placement ? `drop-${placement}` : ''}`} onClick={(event) => { if (event.shiftKey) event.preventDefault(); onSelectFrame(index, event); }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); if (!selectedSet.has(index)) onSelectFrame(index, {}); setFrameMenu({ index, x: Math.min(event.clientX, window.innerWidth - 160), y: Math.min(event.clientY, window.innerHeight - 84) }); }} onDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-meme-gif-frame', String(index)); setDragState({ sourceIndex: index }); setFrameMenu(null); }} onDragOver={(event) => { if (!isFrameDrag(event) && !isFileDrag(event)) return; event.preventDefault(); event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); const nextPlacement = event.clientX < rect.left + rect.width / 2 ? 'before' : 'after'; setDropState({ targetIndex: index, placement: nextPlacement }); }} onDrop={(event) => handleDrop(event, index, dropState?.targetIndex === index ? dropState.placement : 'before')} onDragEnd={() => { setDragState(null); setDropState(null); }} title={`第 ${index + 1} 帧，${Math.max(20, Number(frame.delayMs) || 100)} ms`}><img src={frame.dataUrl} alt={`第 ${index + 1} 帧`} draggable={false}/><span>{index + 1}</span></button>;
+      }) : <div className="gif-timeline-empty">GIF 帧加载中…</div>}
+      {dropState?.targetIndex === frames.length && dragState && <span className="gif-frame-end-drop" aria-hidden="true"/>}
     </div>
+    {frameMenu && <div ref={menuRef} className="gif-frame-context-menu" style={{ left: frameMenu.x, top: frameMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={() => { const index = frameMenu.index; setFrameMenu(null); onDuplicateFrame?.(index); }}><Copy size={15}/>复制帧</button><button type="button" className="danger" onClick={() => { const index = frameMenu.index; setFrameMenu(null); onDeleteFrame?.(index); }}><Trash2 size={15}/>删除帧</button></div>}
   </div>;
-}
-function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, notify }) {
+}function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, notify }) {
   const draftKey = initial?.id || 'new';
   const initialStateRef = useRef();
   if (!initialStateRef.current) {
@@ -1540,6 +1568,19 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     setGifTimeline((current) => ({ ...current, frames: current.frames.map((frame, frameIndex) => selectedSet.has(frameIndex) ? { ...frame, delayMs: delays[frameIndex] } : frame) }));
   };
 
+  const commitGifFrames = async (nextFrames, nextFrameIndex, nextSelectedIndexes = [nextFrameIndex]) => {
+    if (!timelineGifLayer || !nextFrames.length) return false;
+    try {
+      const encoded = await desktop.encodeGifFrames(nextFrames, null);
+      const safeFrameIndex = Math.max(0, Math.min(nextFrames.length - 1, nextFrameIndex));
+      const safeSelection = [...new Set(nextSelectedIndexes)].filter((index) => index >= 0 && index < nextFrames.length);
+      updateLayer(timelineGifLayer.id, { src: encoded, gifFrameDelays: nextFrames.map((frame) => Math.max(20, Number(frame.delayMs) || 100)), gifFrameCount: nextFrames.length });
+      gifFrameAnchorRef.current = safeFrameIndex;
+      setGifTimeline({ layerId: timelineGifLayer.id, frames: nextFrames, frameIndex: safeFrameIndex, selectedIndexes: safeSelection.length ? safeSelection : [safeFrameIndex], playing: false });
+      return true;
+    } catch (error) { notify(`更新 GIF 帧失败：${error?.message || error}`, 'error'); return false; }
+  };
+
   const insertGifFrame = async (dataUrl, index = gifTimeline.frameIndex + 1) => {
     if (!timelineGifLayer || !dataUrl || !gifTimeline.frames.length) return;
     const safeIndex = Math.round(clamp(index, 0, gifTimeline.frames.length));
@@ -1550,14 +1591,36 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
     canvas.getContext('2d').drawImage(image, crop.x, crop.y, crop.width, crop.height, 0, 0, width, height);
     const normalizedDataUrl = canvas.toDataURL('image/png');
     const nextFrames = [...gifTimeline.frames.slice(0, safeIndex), { dataUrl: normalizedDataUrl, delayMs: 100, width, height }, ...gifTimeline.frames.slice(safeIndex)];
-    try {
-      const encoded = await desktop.encodeGifFrames(nextFrames, null);
-      updateLayer(timelineGifLayer.id, { src: encoded, gifFrameDelays: nextFrames.map((frame) => Math.max(20, Number(frame.delayMs) || 100)) });
-      gifFrameAnchorRef.current = safeIndex;
-      setGifTimeline({ layerId: timelineGifLayer.id, frames: nextFrames, frameIndex: safeIndex, selectedIndexes: [safeIndex], playing: false });
-    } catch (error) { notify(`插入 GIF 帧失败：${error?.message || error}`, 'error'); }
+    await commitGifFrames(nextFrames, safeIndex, [safeIndex]);
   };
-  const activeTextSelection = selected?.type === 'text'
+
+  const duplicateGifFrame = async (index) => {
+    const frame = gifTimeline.frames[index];
+    if (!timelineGifLayer || !frame) return;
+    const insertAt = index + 1;
+    const nextFrames = [...gifTimeline.frames.slice(0, insertAt), { ...frame }, ...gifTimeline.frames.slice(insertAt)];
+    if (await commitGifFrames(nextFrames, insertAt, [insertAt])) notify('GIF 帧已复制');
+  };
+
+  const deleteGifFrame = async (index) => {
+    if (!timelineGifLayer || !gifTimeline.frames[index]) return;
+    if (gifTimeline.frames.length <= 1) return notify('GIF 至少需要保留一帧', 'error');
+    const nextFrames = gifTimeline.frames.filter((_, frameIndex) => frameIndex !== index);
+    const nextIndex = Math.min(index, nextFrames.length - 1);
+    if (await commitGifFrames(nextFrames, nextIndex, [nextIndex])) notify('GIF 帧已删除');
+  };
+
+  const reorderGifFrame = async (sourceIndex, insertionIndex) => {
+    if (!timelineGifLayer || sourceIndex < 0 || sourceIndex >= gifTimeline.frames.length) return;
+    const nextFrames = [...gifTimeline.frames];
+    const [moving] = nextFrames.splice(sourceIndex, 1);
+    let insertAt = Math.max(0, Math.min(gifTimeline.frames.length, insertionIndex));
+    if (sourceIndex < insertAt) insertAt -= 1;
+    insertAt = Math.max(0, Math.min(nextFrames.length, insertAt));
+    if (insertAt === sourceIndex) return;
+    nextFrames.splice(insertAt, 0, moving);
+    await commitGifFrames(nextFrames, insertAt, [insertAt]);
+  };  const activeTextSelection = selected?.type === 'text'
     ? textEditingId === selected.id && textSelection?.id === selected.id
       ? textSelection
       : propertyTextSelection?.id === selected.id ? propertyTextSelection : null
@@ -2603,7 +2666,7 @@ function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, 
           <div className="canvas-size"><button type="button" className={`size-mode-button ${sizeMode === 'image' ? 'active' : ''}`} title={sizeMode === 'canvas' ? '点击切换为修改图像尺寸' : '点击切换为修改画布尺寸'} onClick={() => setSizeMode((mode) => mode === 'canvas' ? 'image' : 'canvas')}>{sizeMode === 'canvas' ? '画布' : '图像'}</button><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeWidth} disabled={sizeMode === 'image' && !imageBounds} onCommit={(width) => commitToolbarSize('width', width)}/><span>×</span><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeHeight} disabled={sizeMode === 'image' && !imageBounds} onCommit={(height) => commitToolbarSize('height', height)}/>{sizeMode === 'image' && <IconButton className={`size-lock-button ${imageSizeLocked ? 'active' : ''}`} label={imageSizeLocked ? '已锁定宽高比' : '锁定宽高比'} onClick={() => setImageSizeLocked((locked) => !locked)}><Link2 size={15}/></IconButton>}{sizeMode === 'canvas' && <button className="auto-canvas-button" onClick={autoSizeCanvas}>自动设置</button>}</div>
           <div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>
         </div>
-        {timelineGifLayer && <GifTimeline frames={gifTimeline.frames} frameIndex={gifTimeline.frameIndex} selectedIndexes={gifTimeline.selectedIndexes} playing={gifTimeline.playing} onTogglePlay={() => setGifTimeline((current) => ({ ...current, playing: !current.playing }))} onSelectFrame={selectGifFrame} onDropFrame={insertGifFrame}/> }
+        {timelineGifLayer && <GifTimeline frames={gifTimeline.frames} frameIndex={gifTimeline.frameIndex} selectedIndexes={gifTimeline.selectedIndexes} playing={gifTimeline.playing} onTogglePlay={() => setGifTimeline((current) => ({ ...current, playing: !current.playing }))} onSelectFrame={selectGifFrame} onDropFrame={insertGifFrame} onDuplicateFrame={duplicateGifFrame} onDeleteFrame={deleteGifFrame} onReorderFrame={reorderGifFrame}/> }
         <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropImageOnEditor} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, altKey: event.altKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { if (activeTool === 'text' && event.button === 0 && !event.target.closest('.canvas-tool-dock')) { event.preventDefault(); event.stopPropagation(); const bounds = stageHostRef.current?.getBoundingClientRect(); const point = bounds ? { x: clamp((event.clientX - bounds.left) / zoom, 0, Math.max(0, draft.width)), y: clamp((event.clientY - bounds.top) / zoom, 0, Math.max(0, draft.height)) } : { x: 0, y: 0 }; addTextLayer(point, textOrientation); return; } if (beginOutsideSelectionDrag(event)) return; const blank = !event.target.closest('.stage-shadow, .canvas-tool-dock'); if (activeTool === 'select' && blank) { clearSelection(); beginPan(event); } else if (activeTool === 'marquee' && event.button === 0 && blank) { event.preventDefault(); setMarqueeStartRequest({ clientX: event.clientX, clientY: event.clientY, key: event.timeStamp }); } }}>
           <div className="canvas-tool-dock"><div className="editor-paint-tools">
             <IconButton label="选择与移动" className={activeTool === 'select' ? 'active' : ''} onClick={() => setActiveTool('select')}><MousePointer2 size={17}/></IconButton>
@@ -3364,7 +3427,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
           onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)} onTransformEnd={false}/>;
       })}
       {groupHitAreas.filter((group) => group.groupId === selectedGroupId).map((group) => renderGroupHitArea(group, true))}
-      {template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
+      {tool === 'select' && !selectedGroupId && selectedIds.map((id) => template.layers.find((layer) => layer.id === id)).filter((layer) => layer && !layer.locked && layer.visible && layer.id !== textEditingId && isLayerVisibleAtFrame(layer, gifFrameIndex)).map((layer) => <Rect key={`selected-hit-${layer.id}`} x={layer.x + layer.width / 2} y={layer.y + layer.height / 2} offsetX={layer.width / 2} offsetY={layer.height / 2} width={layer.width} height={layer.height} rotation={layer.rotation || 0} fill="rgba(0,0,0,0.001)" draggable listening onMouseDown={(event) => { event.cancelBubble = true; startDrag(layer); }} onTouchStart={(event) => { event.cancelBubble = true; startDrag(layer); }} onClick={(event) => { event.cancelBubble = true; selectLayer(layer.id, event.evt); }} onTap={(event) => { event.cancelBubble = true; selectLayer(layer.id, event.evt); }} onContextMenu={(event) => { event.cancelBubble = true; onLayerContextMenu(layer.id, event.evt); }} onDblClick={(event) => { if (layer.type === 'text') { event.cancelBubble = true; onEditText(layer.id); } }} onDblTap={(event) => { if (layer.type === 'text') { event.cancelBubble = true; onEditText(layer.id); } }} onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)}/>) }      {template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
       {tool === 'marquee' && template.layers.filter((layer) => selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`marquee-selected-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
       {guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94b37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }
       <Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} keepRatio={selectedIds.length === 1 && Boolean(template.layers.find((item) => item.id === selectedIds[0])?.aspectRatioLocked)} enabledAnchors={selectedIds.length === 1 && template.layers.find((item) => item.id === selectedIds[0])?.aspectRatioLocked ? ['top-left','top-right','bottom-left','bottom-right'] : ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/>
@@ -3431,6 +3494,8 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
   const disabledReplacement = layer.type === 'slot' && layer.replacementDisabled;
   const colorFilled = layer.type === 'slot' && Boolean(layer.slotFill);
   const bindingActive = layer.type === 'slot' && Boolean(layer.boundLayerId);
+  const bindingCandidates = layers.filter((candidate) => candidate.type === 'slot' && candidate.id !== layer.id && !candidate.boundLayerId && !candidate.replacementDisabled && !candidate.slotFill);
+  const boundLayerName = bindingCandidates.find((candidate) => candidate.id === layer.boundLayerId)?.name || layers.find((candidate) => candidate.id === layer.boundLayerId)?.name || '不绑定';
   const placeholderProps = { fill: layer.slotFill || (disabledReplacement ? 'rgba(0,0,0,0)' : highlight ? 'rgba(233,78,55,.14)' : '#eceae4'), stroke: disabledReplacement ? undefined : highlight ? '#e94e37' : layer.slotFill ? undefined : '#77746d', strokeWidth: disabledReplacement ? 0 : highlight ? 5 : 2, dash: disabledReplacement || (layer.slotFill && !highlight) ? undefined : [12, 8] };
   return <Group {...common} clipFunc={layer.type === 'slot' ? clipFunc : undefined}>
     {image ? <KonvaImage image={image} x={placement?.x || 0} y={placement?.y || 0} width={placement?.width || layer.width} height={placement?.height || layer.height} crop={placement ? undefined : crop} draggable={cropMode} onDragMove={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); onPhotoTransformMove ? onPhotoTransformMove({ event, x, y, placement }) : event.target.position({ x, y }); } : undefined} onDragEnd={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); event.target.position({ x, y }); if (onPhotoTransformEnd) onPhotoTransformEnd({ event, x, y, placement }); else onPhotoTransform?.({ offsetX: x - placement.centeredX, offsetY: y - placement.centeredY }); } : undefined}/> : shapeOf(layer) === 'circle' ? <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={layer.width / 2} radiusY={layer.height / 2} {...placeholderProps}/> : shapeOf(layer) === 'polygon' ? <Line points={polygonPixelPoints(layer)} closed {...placeholderProps}/> : <Rect width={layer.width} height={layer.height} cornerRadius={shapeOf(layer) === 'rounded' ? cornerRadiusOf(layer) : 0} {...placeholderProps}/>}
@@ -3448,7 +3513,7 @@ const ROTATION_PRESETS = [-180, -135, -90, -45, 0, 45, 90, 135, 180];
 const LINE_HEIGHT_PRESETS = [0.8, 1, 1.2, 1.25, 1.5, 2, 3];
 const EFFECT_SIZE_PRESETS = [0, 1, 2, 4, 8, 12, 16, 24, 30, 50];
 
-function NumericInput({ value, onCommit, min, max, step = 1, integer = true, className = '', presets, ...props }) {
+function NumericInput({ value, onCommit, min, max, step = 1, integer = true, className = '', presets, menuActions = [], ...props }) {
   const [draftValue, setDraftValue] = useState(() => String(value ?? ''));
   const [menuOpen, setMenuOpen] = useState(false);
   const rootRef = useRef(null);
@@ -3478,20 +3543,20 @@ function NumericInput({ value, onCommit, min, max, step = 1, integer = true, cla
     if (next !== Number(value)) onCommit(next);
   };
   const showPresets = presets !== false;
+  const showMenu = showPresets || menuActions.length > 0;
   const presetValues = [...new Set((showPresets ? (presets || DEFAULT_NUMBER_PRESETS) : []).map(Number))].filter((item) => Number.isFinite(item) && (!Number.isFinite(min) || item >= min) && (!Number.isFinite(max) || item <= max));
-  return <div ref={rootRef} className={`numeric-input ${showPresets ? '' : 'no-presets'} ${className}`.trim()}>
+  return <div ref={rootRef} className={`numeric-input ${showMenu ? '' : 'no-presets'} ${className}`.trim()}>
     <input {...props} type="text" inputMode={integer ? 'numeric' : 'decimal'} value={draftValue} onFocus={() => { focusedRef.current = true; cancelRef.current = false; }} onChange={(event) => setDraftValue(event.target.value)} onBlur={commit} onKeyDown={(event) => {
       if (event.key === 'Enter') event.currentTarget.blur();
       if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelRef.current = true; setMenuOpen(false); setDraftValue(String(value ?? '')); event.currentTarget.blur(); }
       if (event.key === 'ArrowDown' && event.altKey) { event.preventDefault(); setMenuOpen((open) => !open); }
     }}/>
-    {showPresets && <button type="button" className="numeric-preset-toggle" title="选择预设值" aria-label="选择预设值" aria-expanded={menuOpen} onPointerDown={(event) => event.preventDefault()} onClick={() => setMenuOpen((open) => !open)}><ChevronDown size={14}/></button>}
-    {showPresets && menuOpen && <div className="numeric-preset-menu">{presetValues.map((preset) => <button type="button" key={preset} className={Number(value) === preset ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => { const next = normalize(preset); setMenuOpen(false); setDraftValue(String(next)); if (next !== Number(value)) onCommit(next); }}>{preset}</button>)}</div>}
+    {showMenu && <button type="button" className="numeric-preset-toggle" title="更多选项" aria-label="更多选项" aria-expanded={menuOpen} onPointerDown={(event) => event.preventDefault()} onClick={() => setMenuOpen((open) => !open)}><ChevronDown size={14}/></button>}
+    {showMenu && menuOpen && <div className="numeric-preset-menu">{presetValues.map((preset) => <button type="button" key={preset} className={Number(value) === preset ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => { const next = normalize(preset); setMenuOpen(false); setDraftValue(String(next)); if (next !== Number(value)) onCommit(next); }}>{preset}</button>)}{menuActions.map((action) => <button type="button" key={action.label} className="numeric-menu-action" onPointerDown={(event) => event.preventDefault()} onClick={() => { setMenuOpen(false); action.onSelect?.(); }}>{action.label}</button>)}</div>}
   </div>;
 }
 
-function NumberField({ label, value, onChange, suffix, min, max, step, integer, presets }) { return <div className="number-field"><span>{label}</span><div className="number-field-control"><NumericInput value={value} onCommit={onChange} min={min} max={max} step={step} integer={integer} presets={presets}/>{suffix && <em>{suffix}</em>}</div></div>; }
-
+function NumberField({ label, value, onChange, suffix, min, max, step, integer, presets, menuActions }) { return <div className="number-field"><span>{label}</span><div className="number-field-control"><NumericInput value={value} onCommit={onChange} min={min} max={max} step={step} integer={integer} presets={presets} menuActions={menuActions}/>{suffix && <em>{suffix}</em>}</div></div>; }
 function GroupProperties({ name, layers, onRename, onToggleLock, onToggleVisibility, onMove, onUngroup, onRemove, onOrder }) {
   const allLocked = layers.every((layer) => layer.locked);
   const hasLocked = layers.some((layer) => layer.locked);
@@ -3533,12 +3598,32 @@ function MultiSelectionProperties({ layers, grouped, onGroup, onUngroup, onToggl
 
 function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifFrameDelay, textStyle, textSelection, onBeginTextInteraction, onTextSelectionChange, updateTextStyle, updateText, update, toggleLock, remove, move }) {
   const [frameMenuOpen, setFrameMenuOpen] = useState(false);
+  const [bindingMenuOpen, setBindingMenuOpen] = useState(false);
+  const frameMenuRef = useRef(null);
+  const bindingMenuRef = useRef(null);
   const visibleFrameValues = parseFrameList(layer.visibleFrames);
   useEffect(() => setFrameMenuOpen(false), [layer.id]);
-  const addVisibleFrame = (frame) => update({ visibleFrames: [...new Set([...visibleFrameValues, frame])].sort((a, b) => a - b).join('、') });
+  useEffect(() => {
+    if (!frameMenuOpen) return undefined;
+    const close = (event) => { if (!frameMenuRef.current?.contains(event.target)) setFrameMenuOpen(false); };
+    window.addEventListener('pointerdown', close);
+    return () => window.removeEventListener('pointerdown', close);
+  }, [frameMenuOpen]);
+  useEffect(() => {
+    if (!bindingMenuOpen) return undefined;
+    const close = (event) => { if (!bindingMenuRef.current?.contains(event.target)) setBindingMenuOpen(false); };
+    window.addEventListener('pointerdown', close);
+    return () => window.removeEventListener('pointerdown', close);
+  }, [bindingMenuOpen]);
+  const toggleVisibleFrame = (frame) => {
+    const next = visibleFrameValues.includes(frame) ? visibleFrameValues.filter((item) => item !== frame) : [...visibleFrameValues, frame];
+    update({ visibleFrames: [...new Set(next)].sort((a, b) => a - b).join('.') });
+  };
   const disabledReplacement = layer.type === 'slot' && layer.replacementDisabled;
   const colorFilled = layer.type === 'slot' && Boolean(layer.slotFill);
   const bindingActive = layer.type === 'slot' && Boolean(layer.boundLayerId);
+  const bindingCandidates = layers.filter((candidate) => candidate.type === 'slot' && candidate.id !== layer.id && !candidate.boundLayerId && !candidate.replacementDisabled && !candidate.slotFill);
+  const boundLayerName = bindingCandidates.find((candidate) => candidate.id === layer.boundLayerId)?.name || layers.find((candidate) => candidate.id === layer.boundLayerId)?.name || '不绑定';
   const activeTextStyle = textStyle || baseTextStyle(layer);
   const fontTokens = String(activeTextStyle.fontStyle || '').split(' ').filter((token) => token && token !== 'normal');
   const decorationTokens = String(activeTextStyle.textDecoration || '').split(' ').filter(Boolean);
@@ -3556,8 +3641,8 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
   return <div className="property-content">
     <button className={`layer-lock-button ${layer.locked ? 'active' : ''}`} onClick={toggleLock}>{layer.locked ? <Lock size={16}/> : <Unlock size={16}/>}<span>{layer.locked ? '图层已锁定' : '锁定图层'}</span></button>
     <label className="text-field"><span>图层名称</span><input value={layer.name} onChange={(event) => update({ name: event.target.value })}/></label>
-    {isGifSource(layer.src) && gifTimeline?.frames?.length ? <div className="property-section"><h4>GIF 帧设置</h4><div className="gif-frame-property"><img src={gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl} alt="当前 GIF 帧"/><div><strong>第 {gifTimeline.frameIndex + 1} 帧{gifTimeline.selectedIndexes?.length > 1 ? ` · 已选 ${gifTimeline.selectedIndexes.length} 帧` : ''}</strong><NumberField label="播放时间" suffix="ms" value={Math.max(20, Number(gifTimeline.frames[gifTimeline.frameIndex]?.delayMs) || 100)} min={20} max={60000} presets={false} onChange={(value) => onGifFrameDelay?.(gifTimeline.frameIndex, value)}/><button type="button" className="wide-property-button gif-apply-all-button" onClick={() => onGifFrameDelay?.(gifTimeline.frameIndex, Math.max(20, Number(gifTimeline.frames[gifTimeline.frameIndex]?.delayMs) || 100), true)}>应用到所有帧</button></div></div></div> : null}
-    {gifFrameCount > 0 && !isGifSource(layer.src) ? <div className="property-section"><h4>出现帧</h4><div className="frame-visibility-control"><input value={layer.visibleFrames || ''} placeholder="留空表示所有帧均显示" onChange={(event) => update({ visibleFrames: event.target.value })}/><button type="button" title="选择帧" onClick={() => setFrameMenuOpen((open) => !open)}>+</button>{frameMenuOpen && <div className="frame-visibility-menu">{Array.from({ length: gifFrameCount }, (_, index) => index + 1).map((frame) => <button type="button" key={frame} className={visibleFrameValues.includes(frame) ? 'active' : ''} onClick={() => { addVisibleFrame(frame); setFrameMenuOpen(false); }}>{frame}</button>)}</div>}</div><p className="property-note">留空时默认在 GIF 的所有帧中显示；可输入如 1、4、6。</p></div> : null}
+    {isGifSource(layer.src) && gifTimeline?.frames?.length ? <div className="property-section"><h4>GIF 帧设置</h4><div className="gif-frame-property"><img src={gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl} alt="当前 GIF 帧"/><div><strong>第 {gifTimeline.frameIndex + 1} 帧{gifTimeline.selectedIndexes?.length > 1 ? ` · 已选 ${gifTimeline.selectedIndexes.length} 帧` : ''}</strong><NumberField label="播放时间" suffix="ms" value={Math.max(20, Number(gifTimeline.frames[gifTimeline.frameIndex]?.delayMs) || 100)} min={20} max={60000} presets={false} menuActions={[{ label: '应用到所有帧', onSelect: () => onGifFrameDelay?.(gifTimeline.frameIndex, Math.max(20, Number(gifTimeline.frames[gifTimeline.frameIndex]?.delayMs) || 100), true) }]} onChange={(value) => onGifFrameDelay?.(gifTimeline.frameIndex, value)}/></div></div></div> : null}
+    {gifFrameCount > 0 && !isGifSource(layer.src) ? <div className="property-section"><h4>出现帧</h4><div ref={frameMenuRef} className="frame-visibility-control"><input value={layer.visibleFrames || ''} placeholder="留空表示所有帧均显示" onChange={(event) => update({ visibleFrames: event.target.value })}/><button type="button" title="选择帧" onClick={() => setFrameMenuOpen((open) => !open)}>+</button>{frameMenuOpen && <div className="frame-visibility-menu">{Array.from({ length: gifFrameCount }, (_, index) => index + 1).map((frame) => <button type="button" key={frame} className={visibleFrameValues.includes(frame) ? 'active' : ''} onClick={() => toggleVisibleFrame(frame)}>{frame}</button>)}</div>}</div><p className="property-note">留空时默认在 GIF 的所有帧中显示；可输入如 1.4.6。</p></div> : null}
     {layer.type === 'text' && <>
       <div className="property-section text-content-section"><h4>文字内容</h4><textarea value={layer.text || ''} onPointerDown={onBeginTextInteraction} onFocus={onBeginTextInteraction} onChange={(event) => { onBeginTextInteraction?.(); updateText(event.target.value); onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }); }} onSelect={(event) => onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}/></div>
       <div className="property-section"><h4>字体{textSelection && textSelection.start !== textSelection.end ? ' · 已选 ' + Math.abs(textSelection.end - textSelection.start) + ' 字' : ''}</h4><select className="property-select" value={activeTextStyle.fontFamily} onChange={(event) => updateTextStyle({ fontFamily: event.target.value })}><option value="Microsoft YaHei">微软雅黑</option><option value="SimHei">黑体</option><option value="SimSun">宋体</option><option value="KaiTi">楷体</option><option value="Arial">Arial</option><option value="Segoe UI">Segoe UI</option></select><div className="text-format-row"><div><span>字号</span><NumericInput min={TEXT_SIZE_MIN} max={TEXT_SIZE_MAX} presets={FONT_SIZE_PRESETS} value={activeTextStyle.fontSize} onCommit={(fontSize) => updateTextStyle({ fontSize })}/></div><input className="color-swatch" type="color" title="文字颜色" value={activeTextStyle.fill} onChange={(event) => updateTextStyle({ fill: event.target.value })}/></div><NumberField label="间距" value={activeTextStyle.lineHeight} min={0} max={20} step={0.05} integer={false} presets={LINE_HEIGHT_PRESETS} onChange={(lineHeight) => updateTextStyle({ lineHeight })}/><label className="check-row" title="内容超出文本框时自动缩小字号；关闭后保持设定字号，超出部分可能被裁切。"><input type="checkbox" checked={Boolean(layer.autoFit)} onChange={(event) => update({ autoFit: event.target.checked })}/><span>文字自动适配文本框</span></label><div className="format-buttons"><button title="加粗" className={fontTokens.includes('bold') ? 'active' : ''} onClick={() => toggleFont('bold')}><Bold size={17}/></button><button title="斜体" className={fontTokens.includes('italic') ? 'active' : ''} onClick={() => toggleFont('italic')}><Italic size={17}/></button><button title="下划线" className={decorationTokens.includes('underline') ? 'active' : ''} onClick={() => toggleDecoration('underline')}><Underline size={17}/></button><button title="删除线" className={decorationTokens.includes('line-through') ? 'active' : ''} onClick={() => toggleDecoration('line-through')}><Strikethrough size={17}/></button></div><div className="format-buttons align-buttons"><button title="左对齐" className={layer.align === 'left' ? 'active' : ''} onClick={() => update({ align: 'left' })}><AlignLeft size={17}/></button><button title="居中" className={layer.align === 'center' ? 'active' : ''} onClick={() => update({ align: 'center' })}><AlignCenter size={17}/></button><button title="右对齐" className={layer.align === 'right' ? 'active' : ''} onClick={() => update({ align: 'right' })}><AlignRight size={17}/></button></div></div>
@@ -3571,7 +3656,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
       <div className="property-section"><h4>槽位形状</h4><div className="shape-segmented four"><button className={shapeOf(layer) === 'rect' ? 'active' : ''} onClick={() => update({ shape: 'rect' })}>矩形</button><button className={shapeOf(layer) === 'circle' ? 'active' : ''} onClick={() => update({ shape: 'circle' })}>圆形</button><button className={shapeOf(layer) === 'rounded' ? 'active' : ''} onClick={() => update({ shape: 'rounded', cornerRadius: layer.cornerRadius ?? 36 })}>圆角</button><button className={shapeOf(layer) === 'polygon' ? 'active' : ''} onClick={() => update({ shape: 'polygon', polygonSides: layer.polygonSides || 5, polygonPoints: polygonPointsOf(layer) })}>多边形</button></div>{shapeOf(layer) === 'rounded' && <div className="rounded-radius-control"><NumberField label="圆角半径" value={layer.cornerRadius ?? 36} min={0} max={Math.floor(Math.min(layer.width, layer.height) / 2)} presets={[0, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128]} onChange={(cornerRadius) => update({ cornerRadius })}/></div>}{shapeOf(layer) === 'polygon' && <div className="polygon-controls"><NumberField label="边数" value={layer.polygonSides || 5} min={POLYGON_MIN_SIDES} max={POLYGON_MAX_SIDES} presets={[3, 4, 5, 6, 8, 10, 12, 16]} onChange={(polygonSides) => update({ polygonSides, polygonPoints: regularPolygonPoints(polygonSides) })}/>{polygonPointsOf(layer).map((point, index) => <label key={index} className="polygon-radius"><span>顶点 {index + 1}</span><input type="range" min="10" max="100" value={polygonRadiusPercent(point)} onChange={(event) => update({ polygonPoints: polygonPointsOf(layer).map((item, itemIndex) => itemIndex === index ? polygonPointAtRadius(item, Number(event.target.value)) : item) })}/><output>{polygonRadiusPercent(point)}%</output></label>)}</div>}</div>
       <div className="property-section slot-fill-section"><h4>照片 / 颜色填充</h4>
         <div className="slot-fill-mode" role="group" aria-label="填充类型"><button type="button" className={!colorFilled ? 'active' : ''} onClick={() => update({ slotFill: '' })}><FileImage size={15}/>照片填充</button><button type="button" className={colorFilled ? 'active' : ''} onClick={() => update({ slotFill: layer.slotFill || '#e24b35', replacementDisabled: false, boundLayerId: undefined })}><PaintBucket size={15}/>颜色填充</button></div>
-        <div className={`slot-photo-options ${colorFilled ? 'disabled' : ''}`}><div className="slot-option-heading"><span>照片适配</span>{colorFilled && <small>颜色填充已启用</small>}</div><div className="segmented"><button disabled={disabledReplacement || colorFilled || bindingActive} className={layer.fit === 'cover' ? 'active' : ''} onClick={() => update({ fit: 'cover' })}>裁切铺满</button><button disabled={disabledReplacement || colorFilled || bindingActive} className={layer.fit === 'fill' ? 'active' : ''} onClick={() => update({ fit: 'fill' })}>拉伸填满</button></div><label className="check-row replacement-disable-row" title="禁用后，使用模板时不再要求添加照片；槽位保持透明，但颜色填充和边框仍会显示。"><input type="checkbox" disabled={colorFilled || bindingActive} checked={Boolean(layer.replacementDisabled)} onChange={(event) => update({ replacementDisabled: event.target.checked })}/><span>禁用替换照片</span></label><label className="text-field slot-binding-field"><span>绑定图层</span><select value={layer.boundLayerId || ''} disabled={colorFilled} onChange={(event) => update({ boundLayerId: event.target.value || undefined, replacementDisabled: false })}><option value="">不绑定</option>{layers.filter((candidate) => candidate.type === 'slot' && candidate.id !== layer.id && !candidate.boundLayerId && !candidate.replacementDisabled && !candidate.slotFill).map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>)}</select></label>{bindingActive && <p className="property-note">使用模板时跟随绑定的可替换图层，不会单独显示在可替换图层列表中。</p>}</div>
+        <div className={`slot-photo-options ${colorFilled ? 'disabled' : ''}`}><div className="slot-option-heading"><span>照片适配</span>{colorFilled && <small>颜色填充已启用</small>}</div><div className="segmented"><button disabled={disabledReplacement || colorFilled || bindingActive} className={layer.fit === 'cover' ? 'active' : ''} onClick={() => update({ fit: 'cover' })}>裁切铺满</button><button disabled={disabledReplacement || colorFilled || bindingActive} className={layer.fit === 'fill' ? 'active' : ''} onClick={() => update({ fit: 'fill' })}>拉伸填满</button></div><label className="check-row replacement-disable-row" title="禁用后，使用模板时不再要求添加照片；槽位保持透明，但颜色填充和边框仍会显示。"><input type="checkbox" disabled={colorFilled || bindingActive} checked={Boolean(layer.replacementDisabled)} onChange={(event) => update({ replacementDisabled: event.target.checked })}/><span>禁用替换照片</span></label><div ref={bindingMenuRef} className={`property-dropdown slot-binding-field ${colorFilled ? 'disabled' : ''}`}><span className="property-dropdown-label">绑定图层</span><button type="button" className="property-dropdown-trigger" disabled={colorFilled} aria-expanded={bindingMenuOpen} onClick={() => setBindingMenuOpen((open) => !open)}><span>{boundLayerName}</span><ChevronDown size={14}/></button>{bindingMenuOpen && !colorFilled && <div className="property-dropdown-menu"><button type="button" className={!layer.boundLayerId ? 'active' : ''} onClick={() => { update({ boundLayerId: undefined, replacementDisabled: false }); setBindingMenuOpen(false); }}>不绑定</button>{bindingCandidates.map((candidate) => <button type="button" key={candidate.id} className={layer.boundLayerId === candidate.id ? 'active' : ''} onClick={() => { update({ boundLayerId: candidate.id, replacementDisabled: false }); setBindingMenuOpen(false); }}>{candidate.name}</button>)}</div>}</div>{bindingActive && <p className="property-note">使用模板时跟随绑定的可替换图层，不会单独显示在可替换图层列表中。</p>}</div>
         <div className={`slot-color-options ${colorFilled ? 'active' : ''}`}><label className="slot-color-picker"><span>填充颜色</span><input type="color" disabled={!colorFilled} value={layer.slotFill || '#e24b35'} onChange={(event) => update({ slotFill: event.target.value, replacementDisabled: false, boundLayerId: undefined })}/><code>{layer.slotFill || '#e24b35'}</code></label><button type="button" className={`wide-property-button ${colorFilled ? 'active' : ''}`} onClick={() => update(colorFilled ? { slotFill: '' } : { slotFill: '#e24b35', replacementDisabled: false, boundLayerId: undefined })}>{colorFilled ? '关闭颜色填充' : '启用颜色填充'}</button></div>
       </div>    </>}
     <div className="property-section"><h4>图层顺序</h4><div className="order-buttons"><button disabled={layer.locked} onClick={() => move(1)}><ChevronUp size={17}/>上移</button><button disabled={layer.locked} onClick={() => move(-1)}><ChevronDown size={17}/>下移</button></div></div>
@@ -3772,6 +3857,7 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
   const { composition, slotSources, slotNames, slotTransforms } = session;
   const [result, setResult] = useState('');
   const [copied, setCopied] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
   const { zoom, pan, panning, setZoom, zoomAtPointer, beginPan } = useCanvasViewport(1, .5, 10);
   const [selectedId, setSelectedId] = useState(template.layers.find((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId)?.id || null);
   const [textEditingId, setTextEditingId] = useState(null);
@@ -3973,12 +4059,15 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
     const requestedLayer = composition.layers.find((layer) => layer.id === targetId);
     const slotId = requestedLayer?.type === 'slot' && !requestedLayer.replacementDisabled ? requestedLayer.id : slots.length === 1 ? slots[0].id : null;
     if (!slotId) return notify('多图拖入仅支持模板只有一个可替换照片图层的情况', 'error');
+    setExportBusy(true);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
     try {
       const sources = await Promise.all(files.map((file) => fileToDataUrl(file)));
       const outputs = await Promise.all(sources.map((source) => renderOutput(composition, { ...slotSources, [slotId]: source }, { ...slotTransforms, [slotId]: { zoom: 1, offsetX: 0, offsetY: 0 } }, { scale: exportScale, transparent, mime: outputMime })));
       if (outputs.length === 1) await desktop.copyImage(outputs[0]); else await desktop.copyImages(outputs);
       replaceSlotSource(slotId, sources.at(-1), files.at(-1)?.name || ''); setResult(outputs.at(-1)); setCopied(true); notify(`已生成并复制 ${outputs.length} 张作品`);
     } catch (error) { notify(`批量生成失败：${error?.message || error}`, 'error'); }
+    finally { setExportBusy(false); }
   }, [composition, exportScale, notify, outputMime, renderOutput, replaceSlotSource, slotSources, slotTransforms, slots, transparent]);
 
   const requestSlotImage = useCallback((slotId) => {
@@ -4002,9 +4091,11 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
   }, [composition, exportScale, outputMime, renderOutput, slotSources, slotTransforms, transparent]);
 
   const copyAgain = useCallback(async () => {
-    const dataUrl = await currentResult();
-    if (!dataUrl) return;
+    setExportBusy(true);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
     try {
+      const dataUrl = await currentResult();
+      if (!dataUrl) return;
       const clipboardDataUrl = outputMime === 'image/png'
         ? undefined
         : await renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: 'image/png' });
@@ -4013,6 +4104,7 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
       notify('已复制，可粘贴到聊天窗口或文件夹');
     }
     catch { setCopied(false); notify('剪贴板不可用，请保存 PNG', 'error'); }
+    finally { setExportBusy(false); }
   }, [composition, currentResult, exportScale, notify, outputMime, slotSources, slotTransforms, transparent]);
 
   const resetUse = useCallback(() => {
@@ -4074,11 +4166,14 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
 
   const save = async () => {
     if (!Object.keys(slotSources).length) return;
+    setExportBusy(true);
+    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
     try {
       const dataUrl = await renderOutput(composition, slotSources, slotTransforms, { scale: exportScale, mime: outputMime, transparent });
       const path = await desktop.saveImage(dataUrl, `${template.name}-${Date.now()}.${exportFormat}`);
       if (path) notify(`图片已保存为 ${exportFormat.toUpperCase()}`);
     } catch (error) { notify(`保存失败：${error.message}`, 'error'); }
+    finally { setExportBusy(false); }
   };
 
   const dropOnSlot = (event) => {
@@ -4182,6 +4277,7 @@ function UseTemplate({ template, initialFile, cachedSession, onSaveSession, onBa
       </section>
     </div>
     {contextMenu && <div className="result-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setContextMenu(null); copyAgain(); }}><Copy size={16}/>复制图片</button></div>}
+    {exportBusy && <div className="export-busy-overlay" role="status" aria-live="polite"><div><RefreshCw size={22}/><span>导出中</span></div></div>}
     {slotContextMenu && <div className="result-context-menu" style={{ left: slotContextMenu.x, top: slotContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); pasteClipboardImage(slotId); }}><Clipboard size={16}/>粘贴图片</button><button className="danger" disabled={!slotSources[slotContextMenu.id]} onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); removeSlotSource(slotId); }}><Trash2 size={16}/>删除图片</button></div>}
   </main>;
 }

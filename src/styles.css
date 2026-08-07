@@ -647,3 +647,28 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .slot-color-picker { display: grid; grid-template-columns: 1fr 38px auto; align-items: center; gap: 7px; color: var(--muted); font-size: 9px; }
 .slot-color-picker input[type="color"] { width: 38px; height: 30px; padding: 2px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
 .slot-color-picker code { color: var(--ink); font-family: Consolas, monospace; font-size: 9px; text-transform: uppercase; }
+
+.gif-frame-cell.dragging { opacity: .42; }
+.gif-frame-cell.drop-before { box-shadow: inset 3px 0 0 var(--accent); }
+.gif-frame-cell.drop-after { box-shadow: inset -3px 0 0 var(--accent); }
+.gif-frame-cell.selected.drop-before { box-shadow: inset 3px 0 0 var(--accent); }
+.gif-frame-cell.selected.drop-after { box-shadow: inset -3px 0 0 var(--accent); }
+.gif-frame-end-drop { flex: 0 0 3px; align-self: stretch; min-height: 50px; border-radius: 2px; background: var(--accent); }
+.gif-frame-context-menu { position: fixed; z-index: 190; width: 142px; padding: 5px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); box-shadow: var(--shadow); }
+.gif-frame-context-menu button { width: 100%; height: 34px; padding: 0 9px; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 4px; background: transparent; color: var(--ink); font-size: 11px; font-weight: 600; text-align: left; }
+.gif-frame-context-menu button:hover { background: var(--surface-hover); }
+.gif-frame-context-menu button.danger { color: #c6422e; }
+.numeric-preset-menu .numeric-menu-action { min-width: 132px; text-align: left; font-weight: 650; }
+.property-dropdown { position: relative; display: grid; gap: 6px; }
+.property-dropdown-label { color: var(--muted); font-size: 9px; font-weight: 600; }
+.property-dropdown-trigger { width: 100%; min-width: 0; height: 34px; padding: 0 9px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: 10px; text-align: left; }
+.property-dropdown-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.property-dropdown-trigger:hover, .property-dropdown-trigger[aria-expanded="true"] { border-color: var(--accent); background: var(--surface-hover); }
+.property-dropdown-trigger:disabled { opacity: .5; cursor: not-allowed; }
+.property-dropdown-menu { position: absolute; z-index: 125; left: 0; right: 0; top: calc(100% + 5px); max-height: 190px; overflow-y: auto; padding: 5px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); box-shadow: var(--shadow); }
+.property-dropdown-menu button { width: 100%; min-height: 31px; padding: 5px 9px; border: 0; border-radius: 4px; background: transparent; color: var(--ink); font-size: 10px; text-align: left; }
+.property-dropdown-menu button:hover, .property-dropdown-menu button.active { background: var(--accent-soft); color: var(--accent); }
+.export-busy-overlay { position: fixed; inset: 0; z-index: 220; display: grid; place-items: center; background: rgba(24, 23, 20, .28); backdrop-filter: blur(2px); }
+.export-busy-overlay > div { min-width: 118px; padding: 12px 17px; display: flex; align-items: center; justify-content: center; gap: 9px; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; background: rgba(24, 24, 24, .86); color: #fff; box-shadow: 0 12px 35px rgba(0,0,0,.24); font-size: 13px; font-weight: 700; }
+.export-busy-overlay svg { animation: refresh-spin .8s linear infinite; }
+:root[data-theme="dark"] .export-busy-overlay { background: rgba(0,0,0,.42); }
