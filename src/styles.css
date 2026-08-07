@@ -152,6 +152,9 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .editable-template-name { display: flex; align-items: center; gap: 6px; }
 .editable-template-name input { width: 220px; min-width: 0; padding: 0 0 2px; border: 0; border-bottom: 1px solid transparent; outline: 0; background: transparent; font-weight: 650; font-size: 14px; transition: border-color .15s; }
 .editable-template-name input:focus, .editable-template-name input:focus-visible { border-bottom-color: var(--accent); }
+.editable-template-name input:focus + svg, .editable-template-name input:focus-visible + svg { display: none; }
+:root[data-theme="dark"] .editable-template-name input { border-bottom-color: transparent; }
+:root[data-theme="dark"] .editable-template-name input:focus, :root[data-theme="dark"] .editable-template-name input:focus-visible { border-bottom-color: var(--accent); }
 .editable-template-name svg { flex: none; color: var(--muted); }
 .title-field strong { font-size: 14px; }
 .title-field span { font-size: 10px; color: var(--muted); }
@@ -684,3 +687,10 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .export-busy-overlay > div { min-width: 118px; padding: 12px 17px; display: flex; align-items: center; justify-content: center; gap: 9px; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; background: rgba(24, 24, 24, .86); color: #fff; box-shadow: 0 12px 35px rgba(0,0,0,.24); font-size: 13px; font-weight: 700; }
 .export-busy-overlay svg { animation: refresh-spin .8s linear infinite; }
 :root[data-theme="dark"] .export-busy-overlay { background: rgba(0,0,0,.42); }
+
+.leave-editor-prompt { position: fixed; z-index: 260; width: 260px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); box-shadow: 0 16px 36px rgba(0,0,0,.22); }
+.leave-editor-prompt strong { display: block; margin-bottom: 12px; font-size: 13px; }
+.leave-editor-prompt > div { display: flex; justify-content: flex-end; gap: 7px; }
+.leave-editor-prompt button { min-width: 52px; height: 30px; padding: 0 10px; font-size: 12px; }
+
+.gif-layer-drop-hint { position: absolute; z-index: 20; pointer-events: none; border: 3px solid var(--accent); border-radius: 6px; background: rgba(233,78,55,.14); box-shadow: 0 0 0 2px rgba(255,255,255,.85); }
