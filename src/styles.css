@@ -604,3 +604,26 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
   .search-box { width: 100%; }
   .use-layout { grid-template-columns: 280px 1fr; }
 }
+
+.template-gif-badge { position: absolute; right: 10px; bottom: 10px; z-index: 3; padding: 4px 8px; border: 1px solid rgba(255,255,255,.72); border-radius: 4px; background: rgba(20,20,20,.68); color: #fff; font-size: 10px; font-weight: 800; letter-spacing: .08em; backdrop-filter: blur(4px); }
+.gif-timeline { flex: none; padding: 8px 10px 9px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 96%, transparent); }
+.gif-timeline-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+.gif-timeline-heading > div { display: flex; align-items: baseline; gap: 7px; }
+.gif-timeline-heading strong { font-size: 11px; }
+.gif-timeline-heading small, .gif-timeline-hint { color: var(--muted); font-size: 9px; }
+.gif-play-button { height: 26px; padding: 0 11px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: 10px; }
+.gif-frame-strip { display: flex; gap: 6px; overflow-x: auto; padding: 2px 1px 5px; scrollbar-width: thin; }
+.gif-frame-cell { position: relative; flex: 0 0 58px; height: 50px; padding: 2px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-soft); overflow: hidden; }
+.gif-frame-cell.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.gif-frame-cell img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.gif-frame-cell span { position: absolute; right: 2px; bottom: 2px; min-width: 16px; padding: 1px 3px; border-radius: 3px; background: rgba(0,0,0,.68); color: #fff; font-size: 8px; }
+.gif-frame-property { display: grid; grid-template-columns: 70px minmax(0,1fr); gap: 9px; align-items: start; }
+.gif-frame-property img { width: 70px; height: 58px; object-fit: contain; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-soft); }
+.gif-frame-property > div { min-width: 0; display: grid; gap: 7px; }
+.frame-visibility-control { position: relative; display: grid; grid-template-columns: minmax(0,1fr) 30px; gap: 5px; }
+.frame-visibility-control > input { width: 100%; min-width: 0; }
+.frame-visibility-control > button { border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: 16px; }
+.frame-visibility-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; width: min(210px, 100%); max-height: 170px; overflow-y: auto; padding: 5px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); box-shadow: var(--shadow); display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.frame-visibility-menu button { min-height: 25px; border: 1px solid var(--line); border-radius: 3px; background: var(--surface-soft); color: var(--ink); font-size: 9px; }
+.frame-visibility-menu button.active { color: var(--accent); border-color: var(--accent); background: var(--surface-hover); }
+.slot-color-fill label { min-width: 0; display: grid; gap: 4px; color: var(--muted); font-size: 9px; }
