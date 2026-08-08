@@ -1217,6 +1217,7 @@ fn main() {
     tauri::Builder::default()
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
+                window.set_title(&format!("MemeHelper v{}", env!("CARGO_PKG_VERSION")))?;
                 let config = read_config();
                 let min_width = config_number(&config, "minWidth", 1024.0, 800.0);
                 let min_height = config_number(&config, "minHeight", 680.0, 600.0);

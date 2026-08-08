@@ -3908,8 +3908,21 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
   const frameMenuRef = useRef(null);
   const bindingMenuRef = useRef(null);
   const blendMenuRef = useRef(null);
+  const rotationShiftRef = useRef(false);
   const visibleFrameValues = parseFrameList(layer.visibleFrames);
   useEffect(() => { setFrameMenuOpen(false); setBindingMenuOpen(false); setBlendMenuOpen(false); }, [layer.id]);
+  useEffect(() => {
+    const updateShift = (event) => { if (event.key === 'Shift') rotationShiftRef.current = event.type === 'keydown'; };
+    const releaseShift = () => { rotationShiftRef.current = false; };
+    window.addEventListener('keydown', updateShift);
+    window.addEventListener('keyup', updateShift);
+    window.addEventListener('blur', releaseShift);
+    return () => {
+      window.removeEventListener('keydown', updateShift);
+      window.removeEventListener('keyup', updateShift);
+      window.removeEventListener('blur', releaseShift);
+    };
+  }, []);
   useEffect(() => {
     if (!frameMenuOpen) return undefined;
     const close = (event) => { if (!frameMenuRef.current?.contains(event.target)) setFrameMenuOpen(false); };
@@ -3974,7 +3987,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
     <div className="property-section layer-composite-section">
       <div className="blend-mode-row"><h4>图层混合模式</h4><div ref={blendMenuRef} className="property-dropdown blend-mode-field"><button type="button" className="property-dropdown-trigger" aria-expanded={blendMenuOpen} onClick={() => { setBlendMenuOpen((open) => !open); setBindingMenuOpen(false); setFrameMenuOpen(false); }}><span>{activeBlendMode.label}</span><ChevronDown size={14}/></button>{blendMenuOpen && <div className="property-dropdown-menu blend-mode-menu">{LAYER_BLEND_MODES.map((option) => <button type="button" key={option.value} className={activeBlendMode.value === option.value ? 'active' : ''} onClick={() => { update({ blendMode: option.value }); setBlendMenuOpen(false); }}><span>{option.label}</span></button>)}</div>}</div></div>
     </div>
-    <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} presets={false} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} presets={false} onChange={(y) => update({ y })}/></div><div className="rotation-inline-row"><div className="rotation-inline-control"><h4>旋转</h4><div className="rotation-inline-input"><NumericInput value={Number(layer.rotation) || 0} min={-360} max={360} presets={ROTATION_PRESETS} onCommit={(rotation) => update({ rotation })}/></div></div><input className="range" type="range" min="-180" max="180" value={Number(layer.rotation) || 0} onChange={(event) => update({ rotation: Number(event.target.value) })}/></div></div>
+    <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} presets={false} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} presets={false} onChange={(y) => update({ y })}/></div><div className="rotation-inline-row"><div className="rotation-inline-control"><h4>旋转</h4><div className="rotation-inline-input"><NumericInput value={Number(layer.rotation) || 0} min={-360} max={360} presets={ROTATION_PRESETS} onCommit={(rotation) => update({ rotation })}/></div></div><input className="range" type="range" min="-180" max="180" value={Number(layer.rotation) || 0} onChange={(event) => { const rotation = Number(event.target.value); update({ rotation: rotationShiftRef.current ? Math.round(rotation / 45) * 45 : rotation }); }}/></div></div>
     <div className="property-section"><div className="property-heading-row"><h4>尺寸</h4><button type="button" className={`aspect-lock-button ${aspectRatioLockedOf(layer) ? 'active' : ''}`} title={aspectRatioLockedOf(layer) ? '取消锁定宽高比' : '锁定宽高比'} onClick={() => update({ aspectRatioLocked: !aspectRatioLockedOf(layer) })}>{aspectRatioLockedOf(layer) ? <Lock size={13}/> : <Unlock size={13}/>}<span>宽高比</span></button></div><div className="property-grid"><NumberField label="宽" value={layer.width} min={10} presets={SIZE_PRESETS} onChange={(width) => updateDimension('width', width)}/><NumberField label="高" value={layer.height} min={10} presets={SIZE_PRESETS} onChange={(height) => updateDimension('height', height)}/></div></div>
     <div className="property-section"><h4>边框</h4><div className="border-controls"><label><span>颜色</span><input type="color" value={layer.borderColor || '#000000'} onChange={(event) => update({ borderColor: event.target.value })}/></label><NumberField label="大小" value={layer.borderWidth || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(borderWidth) => update({ borderWidth })}/></div></div>
     {layer.type === 'slot' && <>
