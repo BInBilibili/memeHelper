@@ -105,6 +105,7 @@ const POLYGON_MAX_SIDES = 12;
 const TEXT_STYLE_KEYS = ['fontSize', 'fontFamily', 'fontStyle', 'textDecoration', 'fill', 'stroke', 'strokeWidth', 'lineHeight'];
 const TEXT_SIZE_MIN = 0;
 const TEXT_SIZE_MAX = 1296;
+const TEXT_ITALIC_SHEAR = Math.tan(14 * Math.PI / 180);
 const ROTATION_SNAPS = Array.from({ length: 9 }, (_, index) => index * 45);
 const wheelZoom = (current, deltaY, min, max) => deltaY === 0
   ? current
@@ -241,7 +242,11 @@ function updateTextContent(layer, text) {
 
 function renderedTextFontStyle(style) {
   const tokens = new Set(String(style.fontStyle || '').split(/\s+/).filter(Boolean));
-  return [tokens.has('italic') ? 'oblique 14deg' : '', tokens.has('bold') ? 'bold' : ''].filter(Boolean).join(' ') || 'normal';
+  return tokens.has('bold') ? 'bold' : 'normal';
+}
+
+function isItalicTextStyle(style) {
+  return String(style.fontStyle || '').split(/\s+/).includes('italic');
 }
 
 function textFontString(style) {
@@ -267,16 +272,16 @@ function measureTextLayer(layer) {
       let columnWidth = 0;
       let columnHeight = 0;
       if (!glyphs.length) { const style = baseTextStyle(layer); columnWidth = style.fontSize * style.lineHeight; columnHeight = style.fontSize * style.lineHeight; }
-      glyphs.forEach(({ style }) => { const step = style.fontSize * style.lineHeight; columnWidth = Math.max(columnWidth, step); columnHeight += step; });
+      glyphs.forEach(({ style }) => { const step = style.fontSize * style.lineHeight; const italicOverhang = isItalicTextStyle(style) ? style.fontSize * TEXT_ITALIC_SHEAR : 0; columnWidth = Math.max(columnWidth, step + italicOverhang); columnHeight += step; });
       width += columnWidth;
       height = Math.max(height, columnHeight);
     });
   } else {
     lines.forEach((glyphs) => {
-      let lineWidth = 0; let lineHeight = 0;
+      let lineWidth = 0; let lineHeight = 0; let italicOverhang = 0;
       if (!glyphs.length) { const style = baseTextStyle(layer); lineHeight = style.fontSize * style.lineHeight; }
-      glyphs.forEach(({ character, style }) => { ctx.font = textFontString(style); lineWidth += ctx.measureText(character).width; lineHeight = Math.max(lineHeight, style.fontSize * style.lineHeight); });
-      width = Math.max(width, lineWidth); height += lineHeight;
+      glyphs.forEach(({ character, style }) => { ctx.font = textFontString(style); lineWidth += ctx.measureText(character).width; lineHeight = Math.max(lineHeight, style.fontSize * style.lineHeight); if (isItalicTextStyle(style)) italicOverhang = Math.max(italicOverhang, style.fontSize * TEXT_ITALIC_SHEAR); });
+      width = Math.max(width, lineWidth + italicOverhang); height += lineHeight;
     });
   }
   const maxStroke = Math.max(...Array.from({ length: text.length || 1 }, (_, index) => textStyleAt(layer, Math.min(index, Math.max(0, text.length - 1))).strokeWidth * 2));
@@ -667,7 +672,12 @@ function drawTextLayer(ctx, layer) {
   }
   layoutStyledText(layer).forEach((run) => {
     const style = run.style;
+    const italic = isItalicTextStyle(style);
+    const italicOffset = italic ? style.fontSize * TEXT_ITALIC_SHEAR : 0;
+    ctx.save();
     ctx.font = textFontString(style);
+    if (italic) ctx.transform(1, 0, -TEXT_ITALIC_SHEAR, 1, run.x + italicOffset, run.y);
+    else ctx.translate(run.x, run.y);
     ctx.fillStyle = style.fill;
     if (layer.shadowEnabled) {
       ctx.shadowColor = layer.shadowColor || '#000000';
@@ -679,14 +689,15 @@ function drawTextLayer(ctx, layer) {
       ctx.strokeStyle = style.stroke;
       ctx.lineWidth = style.strokeWidth * 2;
       ctx.lineJoin = 'round';
-      ctx.strokeText(run.text, run.x, run.y);
+      ctx.strokeText(run.text, 0, 0);
     }
-    ctx.fillText(run.text, run.x, run.y);
-    ctx.shadowColor = 'transparent';
+    ctx.fillText(run.text, 0, 0);
+    ctx.restore();
     const decorations = String(style.textDecoration || '').split(' ');
     ctx.strokeStyle = style.fill; ctx.lineWidth = Math.max(1, style.fontSize / 18);
-    if (decorations.includes('underline')) { ctx.beginPath(); ctx.moveTo(run.x, run.y + style.fontSize * 1.05); ctx.lineTo(run.x + run.width, run.y + style.fontSize * 1.05); ctx.stroke(); }
-    if (decorations.includes('line-through')) { ctx.beginPath(); ctx.moveTo(run.x, run.y + style.fontSize * .55); ctx.lineTo(run.x + run.width, run.y + style.fontSize * .55); ctx.stroke(); }
+    const decorationEnd = run.x + run.width + italicOffset;
+    if (decorations.includes('underline')) { ctx.beginPath(); ctx.moveTo(run.x, run.y + style.fontSize * 1.05); ctx.lineTo(decorationEnd, run.y + style.fontSize * 1.05); ctx.stroke(); }
+    if (decorations.includes('line-through')) { ctx.beginPath(); ctx.moveTo(run.x, run.y + style.fontSize * .55); ctx.lineTo(decorationEnd, run.y + style.fontSize * .55); ctx.stroke(); }
   });
 }
 
@@ -3029,7 +3040,7 @@ function RichTextOverlay({ layer, zoom, selectionRange, onChange, onSelectionCha
         fontFamily: segment.style.fontFamily,
         fontSize: `${fontSizePx}px`,
         fontWeight: String(segment.style.fontStyle).includes('bold') ? '700' : '400',
-        fontStyle: String(segment.style.fontStyle).includes('italic') ? 'oblique 14deg' : 'normal',
+        fontStyle: 'normal',
         fontSynthesis: 'style weight',
         textDecoration: segment.style.textDecoration,
         color: segment.style.fill,
@@ -3038,6 +3049,8 @@ function RichTextOverlay({ layer, zoom, selectionRange, onChange, onSelectionCha
         position: 'relative',
         top: `${-leadingOffset + .75}px`,
         verticalAlign: 'top',
+        transform: isItalicTextStyle(segment.style) ? 'skewX(-14deg)' : 'none',
+        transformOrigin: 'left bottom',
         WebkitTextStroke: segment.style.strokeWidth ? `${segment.style.strokeWidth * 2 * zoom}px ${segment.style.stroke}` : '',
         paintOrder: 'stroke fill'
       });
@@ -3375,6 +3388,8 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     onTouchStart={(event) => { if (selectedGroupId === group.groupId) startGroupDrag(group, event); else { event.cancelBubble = true; if (!selectedIds.length) { selectAfterPanRef.current = { kind: 'group', id: group.groupId, x: event.evt.clientX, y: event.evt.clientY }; onPanStart(event); } } }}
     onClick={(event) => { event.cancelBubble = true; const pending = selectAfterPanRef.current; selectAfterPanRef.current = null; if (pending?.kind === 'group' && pending.id === group.groupId && Math.hypot(event.evt.clientX - pending.x, event.evt.clientY - pending.y) > 4) return; selectGroup(group.groupId, event.evt); }}
     onTap={(event) => { event.cancelBubble = true; selectGroup(group.groupId, event.evt); }}
+    onDblClick={handleLayerDoubleClick}
+    onDblTap={handleLayerDoubleClick}
     onContextMenu={(event) => { event.cancelBubble = true; onGroupContextMenu(group.groupId, event.evt); }}
     onDragMove={(event) => moveGroupDrag(group, event)}
     onDragEnd={(event) => finishGroupDrag(group, event)}
@@ -3614,8 +3629,27 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     ? template.layers.find((layer) => layer.id === selectedIds[0] && layer.type === 'slot' && shapeOf(layer) === 'polygon' && !layer.locked)
     : null;
 
+  const handleLayerDoubleClick = (event) => {
+    if (tool !== 'select') return;
+    const stage = event.target?.getStage?.() || stageRef.current;
+    const pointer = stage?.getPointerPosition();
+    if (!pointer) return;
+    event.cancelBubble = true;
+    const point = { x: pointer.x / zoom, y: pointer.y / zoom };
+    const target = [...template.layers].reverse().find((layer) => (
+      layer.visible !== false
+      && isLayerVisibleAtFrame(layer, gifFrameIndex)
+      && pointInLayer(point.x, point.y, layer)
+    ));
+    if (!target) return;
+    selectLayer(target.id, {});
+    if (target.type === 'text' && !target.locked) onEditText(target.id);
+  };
+
   return <><Stage ref={stageRef} width={template.width * zoom} height={template.height * zoom} scaleX={zoom} scaleY={zoom}
     onWheel={(event) => event.target.stopDrag?.()}
+    onDblClick={handleLayerDoubleClick}
+    onDblTap={handleLayerDoubleClick}
     onMouseDown={(event) => {
       if (tool === 'marquee') { beginMarquee(event); return; }
       if (tool !== 'select') { beginPaint(event); return; }
@@ -3641,13 +3675,13 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
           setRef={(node) => nodeRefs.current[layer.id] = node}
           onPointerDown={(event) => { if (!selectedIds.length) { selectAfterPanRef.current = { kind: 'layer', id: layer.id, x: event.evt.clientX, y: event.evt.clientY }; onPanStart(event); return; } if (!selectedIds.includes(layer.id) && !event.evt.ctrlKey && !event.evt.metaKey && !event.evt.shiftKey) selectLayer(layer.id, event.evt); }}
           onSelect={(event) => { const pending = selectAfterPanRef.current; selectAfterPanRef.current = null; if (pending?.kind === 'layer' && pending.id === layer.id && Math.hypot(event.evt.clientX - pending.x, event.evt.clientY - pending.y) > 4) return; selectLayer(layer.id, event.evt); }}
-          onEnterCrop={(event) => { if (layer.type === 'text') { event.cancelBubble = true; onEditText(layer.id); } }}
+          onEnterCrop={handleLayerDoubleClick}
           onContextMenu={(event) => onLayerContextMenu(layer.id, event.evt)}
           onChange={(patch) => updateLayer(layer.id, patch)}
           onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)} onTransformEnd={false}/>;
       })}
       {groupHitAreas.filter((group) => group.groupId === selectedGroupId).map((group) => renderGroupHitArea(group, true))}
-      {tool === 'select' && !selectedGroupId && selectedIds.map((id) => template.layers.find((layer) => layer.id === id)).filter((layer) => layer && !layer.locked && layer.visible && layer.id !== textEditingId && isLayerVisibleAtFrame(layer, gifFrameIndex)).map((layer) => <Rect key={`selected-hit-${layer.id}`} x={layer.x + layer.width / 2} y={layer.y + layer.height / 2} offsetX={layer.width / 2} offsetY={layer.height / 2} width={layer.width} height={layer.height} rotation={layer.rotation || 0} fill="rgba(0,0,0,0.001)" draggable listening onMouseDown={(event) => { event.cancelBubble = true; startDrag(layer); }} onTouchStart={(event) => { event.cancelBubble = true; startDrag(layer); }} onClick={(event) => { event.cancelBubble = true; selectLayer(layer.id, event.evt); }} onTap={(event) => { event.cancelBubble = true; selectLayer(layer.id, event.evt); }} onContextMenu={(event) => { event.cancelBubble = true; onLayerContextMenu(layer.id, event.evt); }} onDblClick={(event) => { if (layer.type === 'text') { event.cancelBubble = true; onEditText(layer.id); } }} onDblTap={(event) => { if (layer.type === 'text') { event.cancelBubble = true; onEditText(layer.id); } }} onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)}/>) }{template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
+      {tool === 'select' && !selectedGroupId && selectedIds.map((id) => template.layers.find((layer) => layer.id === id)).filter((layer) => layer && !layer.locked && layer.visible && layer.id !== textEditingId && isLayerVisibleAtFrame(layer, gifFrameIndex)).map((layer) => <Rect key={`selected-hit-${layer.id}`} x={layer.x + layer.width / 2} y={layer.y + layer.height / 2} offsetX={layer.width / 2} offsetY={layer.height / 2} width={layer.width} height={layer.height} rotation={layer.rotation || 0} fill="rgba(0,0,0,0.001)" draggable listening onMouseDown={(event) => { event.cancelBubble = true; startDrag(layer); }} onTouchStart={(event) => { event.cancelBubble = true; startDrag(layer); }} onClick={(event) => { event.cancelBubble = true; selectLayer(layer.id, event.evt); }} onTap={(event) => { event.cancelBubble = true; selectLayer(layer.id, event.evt); }} onContextMenu={(event) => { event.cancelBubble = true; onLayerContextMenu(layer.id, event.evt); }} onDblClick={handleLayerDoubleClick} onDblTap={handleLayerDoubleClick} onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)}/>) }{template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
       {tool === 'marquee' && template.layers.filter((layer) => selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`marquee-selected-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
       {guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94b37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }
       <Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} keepRatio={selectedIds.length === 1 && aspectRatioLockedOf(template.layers.find((item) => item.id === selectedIds[0]))} enabledAnchors={selectedIds.length === 1 && aspectRatioLockedOf(template.layers.find((item) => item.id === selectedIds[0])) ? ['top-left','top-right','bottom-left','bottom-right'] : ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/>
@@ -3704,7 +3738,7 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
   if (layer.type === 'text') {
     return <Group {...common}>
       <Rect width={layer.width} height={layer.height} fill={layer.background || 'rgba(0,0,0,.001)'}/>
-      {layoutStyledText(layer).map((run, index) => <KonvaText key={`${run.x}-${run.y}-${index}`} x={run.x} y={run.y} text={run.text} fontSize={run.style.fontSize} fontFamily={run.style.fontFamily} fontStyle={renderedTextFontStyle(run.style)} textDecoration={run.style.textDecoration} fill={run.style.fill} stroke={run.style.strokeWidth > 0 ? run.style.stroke : undefined} strokeWidth={run.style.strokeWidth * 2} fillAfterStrokeEnabled lineJoin="round" shadowEnabled={Boolean(layer.shadowEnabled)} shadowColor={layer.shadowColor || '#000000'} shadowBlur={Number(layer.shadowBlur) || 0} shadowOffsetX={Number(layer.shadowOffsetX) || 0} shadowOffsetY={Number(layer.shadowOffsetY) || 0}/>) }
+      {layoutStyledText(layer).map((run, index) => <KonvaText key={`${run.x}-${run.y}-${index}`} x={run.x + (isItalicTextStyle(run.style) ? run.style.fontSize * TEXT_ITALIC_SHEAR : 0)} y={run.y} skewX={isItalicTextStyle(run.style) ? -TEXT_ITALIC_SHEAR : 0} text={run.text} fontSize={run.style.fontSize} fontFamily={run.style.fontFamily} fontStyle={renderedTextFontStyle(run.style)} textDecoration={run.style.textDecoration} fill={run.style.fill} stroke={run.style.strokeWidth > 0 ? run.style.stroke : undefined} strokeWidth={run.style.strokeWidth * 2} fillAfterStrokeEnabled lineJoin="round" shadowEnabled={Boolean(layer.shadowEnabled)} shadowColor={layer.shadowColor || '#000000'} shadowBlur={Number(layer.shadowBlur) || 0} shadowOffsetX={Number(layer.shadowOffsetX) || 0} shadowOffsetY={Number(layer.shadowOffsetY) || 0}/>) }
       {paintImage && <KonvaImage image={paintImage} width={layer.width} height={layer.height} listening={false}/>}
       {mosaicImage && <KonvaImage image={mosaicImage} width={layer.width} height={layer.height} listening={false}/>}
        <LayerBorderShape layer={layer}/>
@@ -3887,8 +3921,6 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
     </>}
     <div className="property-section layer-composite-section">
       <div className="blend-mode-row"><h4>图层混合模式</h4><div ref={blendMenuRef} className="property-dropdown blend-mode-field"><button type="button" className="property-dropdown-trigger" aria-expanded={blendMenuOpen} onClick={() => { setBlendMenuOpen((open) => !open); setBindingMenuOpen(false); setFrameMenuOpen(false); }}><span>{activeBlendMode.label}</span><ChevronDown size={14}/></button>{blendMenuOpen && <div className="property-dropdown-menu blend-mode-menu">{LAYER_BLEND_MODES.map((option) => <button type="button" key={option.value} className={activeBlendMode.value === option.value ? 'active' : ''} onClick={() => { update({ blendMode: option.value }); setBlendMenuOpen(false); }}><span>{option.label}</span></button>)}</div>}</div></div>
-      <div className="opacity-inline-row"><h4>透明度</h4><div className="opacity-inline-control"><NumericInput value={Math.round(layerOpacityOf(layer) * 100)} min={0} max={100} presets={OPACITY_PRESETS} onCommit={(opacity) => update({ opacity: clamp(opacity / 100, 0, 1) })}/><em>%</em></div></div>
-      <div className="layer-order-inline-row"><h4>图层顺序</h4><div className="order-buttons"><button disabled={layer.locked} onClick={() => move(1)}><ChevronUp size={17}/>上移</button><button disabled={layer.locked} onClick={() => move(-1)}><ChevronDown size={17}/>下移</button></div></div>
     </div>
     <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} presets={false} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} presets={false} onChange={(y) => update({ y })}/></div><div className="rotation-inline-row"><div className="rotation-inline-control"><h4>旋转</h4><div className="rotation-inline-input"><NumericInput value={Number(layer.rotation) || 0} min={-360} max={360} presets={ROTATION_PRESETS} onCommit={(rotation) => update({ rotation })}/></div></div><input className="range" type="range" min="-180" max="180" value={Number(layer.rotation) || 0} onChange={(event) => update({ rotation: Number(event.target.value) })}/></div></div>
     <div className="property-section"><div className="property-heading-row"><h4>尺寸</h4><button type="button" className={`aspect-lock-button ${aspectRatioLockedOf(layer) ? 'active' : ''}`} title={aspectRatioLockedOf(layer) ? '取消锁定宽高比' : '锁定宽高比'} onClick={() => update({ aspectRatioLocked: !aspectRatioLockedOf(layer) })}>{aspectRatioLockedOf(layer) ? <Lock size={13}/> : <Unlock size={13}/>}<span>宽高比</span></button></div><div className="property-grid"><NumberField label="宽" value={layer.width} min={10} presets={SIZE_PRESETS} onChange={(width) => updateDimension('width', width)}/><NumberField label="高" value={layer.height} min={10} presets={SIZE_PRESETS} onChange={(height) => updateDimension('height', height)}/></div></div>
@@ -3901,15 +3933,18 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
         <div className={`slot-color-options ${colorFilled ? 'active' : ''}`}><label className="slot-color-picker"><span>填充颜色</span><input type="color" disabled={!colorFilled} value={layer.slotFill || '#e24b35'} onChange={(event) => update({ slotFill: event.target.value, replacementDisabled: false, boundLayerId: undefined })}/><code>{layer.slotFill || '#e24b35'}</code></label><button type="button" className={`wide-property-button ${colorFilled ? 'active' : ''}`} onClick={() => update(colorFilled ? { slotFill: '' } : { slotFill: '#e24b35', replacementDisabled: false, boundLayerId: undefined })}>{colorFilled ? '关闭颜色填充' : '启用颜色填充'}</button></div>
       </div>    </>}
 
+    <div className="property-section opacity-inline-row"><h4>透明度</h4><div className="opacity-inline-control"><NumericInput value={Math.round(layerOpacityOf(layer) * 100)} min={0} max={100} presets={OPACITY_PRESETS} onCommit={(opacity) => update({ opacity: clamp(opacity / 100, 0, 1) })}/><em>%</em></div></div>
+    <div className="property-section layer-order-inline-row"><h4>图层顺序</h4><div className="order-buttons"><button disabled={layer.locked} onClick={() => move(1)}><ChevronUp size={17}/>上移</button><button disabled={layer.locked} onClick={() => move(-1)}><ChevronDown size={17}/>下移</button></div></div>
     <button className="delete-button" disabled={layer.locked} onClick={remove}><Trash2 size={17}/>删除图层</button>
   </div>;
 }
 
 function pointInLayer(x, y, layer) {
   const radians = -(layer.rotation || 0) * Math.PI / 180;
-  const dx = x - layer.x; const dy = y - layer.y;
-  const localX = dx * Math.cos(radians) - dy * Math.sin(radians);
-  const localY = dx * Math.sin(radians) + dy * Math.cos(radians);
+  const centerX = layer.x + layer.width / 2; const centerY = layer.y + layer.height / 2;
+  const dx = x - centerX; const dy = y - centerY;
+  const localX = dx * Math.cos(radians) - dy * Math.sin(radians) + layer.width / 2;
+  const localY = dx * Math.sin(radians) + dy * Math.cos(radians) + layer.height / 2;
   if (localX < 0 || localY < 0 || localX > layer.width || localY > layer.height) return false;
   if (shapeOf(layer) === 'polygon') {
     const points = polygonPointsOf(layer).map((point) => ({ x: point.x * layer.width, y: point.y * layer.height }));
