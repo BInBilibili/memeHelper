@@ -481,6 +481,22 @@ function isImageFileLike(file) {
   return Boolean(file && (file.type?.startsWith('image/') || IMAGE_FILE_EXTENSIONS.has(extension)));
 }
 
+function dataUrlToFile(dataUrl, name = '图片.png') {
+  const separator = String(dataUrl || '').indexOf(',');
+  if (separator < 0) throw new Error('GIF 帧数据无效');
+  const header = String(dataUrl).slice(0, separator);
+  const payload = String(dataUrl).slice(separator + 1);
+  const mime = header.match(/^data:([^;,]+)/i)?.[1] || 'image/png';
+  let bytes;
+  if (/;base64/i.test(header)) {
+    const binary = atob(payload);
+    bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+  } else {
+    bytes = new TextEncoder().encode(decodeURIComponent(payload));
+  }
+  return new File([bytes], name, { type: mime });
+}
+
 async function fileToDataUrl(file) {
   const extension = String(file?.name || '').split('.').pop()?.toLowerCase();
   if (!isImageFileLike(file)) {
@@ -2266,8 +2282,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
       targetGroupId = null;
     }
     try {
-      const blob = await (await fetch(frame.dataUrl)).blob();
-      const file = new File([blob], `GIF 帧 ${sourceIndex + 1}.png`, { type: 'image/png' });
+      const file = dataUrlToFile(frame.dataUrl, `GIF 帧 ${sourceIndex + 1}.png`);
       await addImage(file, null, { insertIndex, groupId: targetGroupId });
     } catch (error) { notify(`添加 GIF 帧失败：${error?.message || error}`, 'error'); }
   };
@@ -2906,9 +2921,9 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
   };
 
   return <main className="editor-page">
-    <header className="editor-topbar"><div className="editor-left"><IconButton label="返回模板库" onClick={tryBack}><ArrowLeft size={21}/></IconButton><div className="title-field"><div className="editable-template-name" title="点击编辑模板名称"><input aria-label="模板名称" style={{ width: `${Math.max(8, Math.min(52, Array.from(String(draft.name || '')).reduce((total, character) => total + (/[^\x00-\xff]/.test(character) ? 2 : 1), 0) + 2))}ch` }} value={draft.name} onChange={(e) => updateDraft({ ...draft, name: e.target.value })}/><Pencil size={13} aria-hidden="true"/></div><span>{draft.width} x {draft.height}px</span></div></div><div className="editor-center"><span className="status-dot"></span>{autosaveState === 'saving' ? '正在自动保存' : autosaveState === 'error' ? '自动保存失败' : initialStateRef.current.restored ? '已恢复草稿' : dirty ? '已自动保存' : '已保存'}</div><div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undoDraft} disabled={!canUndo}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redoDraft} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={tryBack}>取消</button><button className="primary-button" onClick={save}><Save size={17}/>保存模板</button></div></header>
+    <header className="editor-topbar"><div className="editor-left"><IconButton label="返回模板库" onClick={tryBack}><ArrowLeft size={21}/></IconButton><div className="title-field"><div className="editable-template-name" title="点击编辑模板名称"><input aria-label="模板名称" style={{ width: `${Math.max(8, Math.min(52, Array.from(String(draft.name || '')).reduce((total, character) => total + (/[^\x00-\xff]/.test(character) ? 2 : 1), 0) + 2))}ch` }} value={draft.name} onChange={(e) => updateDraft({ ...draft, name: e.target.value })}/><Pencil size={13} aria-hidden="true"/></div><span>{draft.width} x {draft.height}px</span></div></div><div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undoDraft} disabled={!canUndo}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redoDraft} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={tryBack}>取消</button><button className="primary-button" onClick={save}><Save size={17}/>保存模板</button></div></header>
     <div className="editor-body">
-      <aside className="layers-panel" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu}>
+      <aside className="layers-panel" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu} onDragOver={handleGifFrameLayerDragOver} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setGifFrameLayerDrop(null); }} onDrop={handleGifFrameLayerDrop}>
         <div className="panel-title"><div><span>{templateHasGif ? 'GIF' : '图层'}</span><small>{draft.layers.length}</small></div></div>
         <div className="layer-add-row">
           <div className="fixed-layer-add-wrap">
@@ -4348,9 +4363,15 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   }, [cropModeId, slotSources]);
 
   useEffect(() => {
+    setCopied(false);
+    // 中间画布本身会实时显示文字和图层变化。GIF 模板编辑时不在每次
+    // 状态变化后自动编码全部帧，只在复制或保存时执行完整 GIF 编码。
+    if (templateHasGif) {
+      setResult('gif-ready');
+      return undefined;
+    }
     const request = ++renderRequest.current;
     let cancelled = false;
-    setCopied(false);
     renderOutput(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: outputMime }).then((dataUrl) => {
       if (cancelled || request !== renderRequest.current) return;
       setResult(dataUrl);
@@ -4358,7 +4379,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       if (!cancelled) notify(`生成失败：${error.message}`, 'error');
     });
     return () => { cancelled = true; };
-  }, [composition, exportScale, outputMime, renderOutput, slotSources, slotTransforms, transparent, notify]);
+  }, [composition, exportScale, outputMime, renderOutput, slotSources, slotTransforms, templateHasGif, transparent, notify]);
 
   const acceptFile = useCallback(async (file, targetId) => {
     try {

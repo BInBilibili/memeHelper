@@ -158,8 +158,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .editable-template-name svg { flex: none; color: var(--muted); }
 .title-field strong { font-size: 14px; }
 .title-field span { font-size: 10px; color: var(--muted); }
-.editor-center { color: var(--muted); font-size: 11px; display: flex; align-items: center; gap: 7px; }
-.status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--yellow); }
 .editor-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 250px minmax(0, 1fr) 280px; }
 .layers-panel, .properties-panel { background: #fff; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .layers-panel { border-right: 1px solid var(--line); }
