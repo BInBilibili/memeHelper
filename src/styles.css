@@ -150,7 +150,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .editor-topbar { height: 64px; padding: 0 20px; flex: none; }
 .title-field { position: relative; display: flex; flex-direction: column; gap: 3px; }
 .editable-template-name { display: flex; align-items: center; gap: 6px; }
-.editable-template-name input { width: 220px; min-width: 0; padding: 0 0 2px; border: 0; border-bottom: 1px solid transparent; outline: 0; background: transparent; font-weight: 650; font-size: 14px; transition: border-color .15s; }
+.editable-template-name input { width: auto; min-width: 8ch; max-width: min(52ch, 46vw); padding: 0 0 2px; border: 0; border-bottom: 1px solid transparent; outline: 0; background: transparent; font-weight: 650; font-size: 14px; transition: border-color .15s; }
 .editable-template-name input:focus, .editable-template-name input:focus-visible { border-bottom-color: var(--accent); }
 .editable-template-name input:focus + svg, .editable-template-name input:focus-visible + svg { display: none; }
 :root[data-theme="dark"] .editable-template-name input { border-bottom-color: transparent; }
@@ -277,6 +277,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .pan-viewport.tool-brush, .pan-viewport.tool-fill, .pan-viewport.tool-eraser, .pan-viewport.tool-picker, .pan-viewport.tool-mosaic,
 .pan-viewport.tool-brush canvas, .pan-viewport.tool-fill canvas, .pan-viewport.tool-eraser canvas, .pan-viewport.tool-picker canvas, .pan-viewport.tool-mosaic canvas { cursor: none; }
 .tool-cursor { position: absolute; z-index: 12; width: 24px; height: 24px; transform: translate(-3px, -21px); display: grid; place-items: center; color: #171716; background: transparent; filter: drop-shadow(0 1px 1px rgba(255,255,255,.9)) drop-shadow(0 1px 2px rgba(0,0,0,.32)); pointer-events: none; }
+.tool-cursor.text-tool-cursor { width: auto; height: auto; transform: translate(4px, -22px); place-items: initial; color: var(--ink); filter: none; font-size: 19px; font-weight: 700; line-height: 1; text-shadow: 0 1px 1px var(--surface); }
 .tool-cursor.brush-preview { box-sizing: border-box; border: 1px solid #171716; border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 0 0 0 1px rgba(255,255,255,.9); filter: none; }
 .tool-cursor svg { display: block; background: transparent; }
 .pan-viewport.tool-text { cursor: text; }
@@ -317,7 +318,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .rotation-inline-input, .opacity-inline-control { position: relative; min-width: 0; }
 .rotation-inline-input .numeric-input > input, .opacity-inline-control .numeric-input > input { width: 100%; height: 34px; border: 1px solid var(--line); border-radius: 4px; padding: 0 30px 0 8px; font-size: 11px; }
 .rotation-inline-row .range { width: 100%; min-width: 0; margin: 0; }
-.opacity-inline-control em { position: absolute; z-index: 3; right: 28px; top: 9px; color: var(--muted); font-size: 10px; font-style: normal; pointer-events: none; }
 .layer-order-inline-row .order-buttons { min-width: 0; }
 .property-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .number-field-control { position: relative; }
@@ -408,6 +408,12 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .crop-zoom-field { display: grid; grid-template-columns: 32px 1fr 38px; align-items: center; gap: 8px; margin: 13px 0; color: var(--muted); font-size: 10px; }
 .crop-zoom-field input { width: 100%; accent-color: var(--accent); }
 .crop-zoom-field output { text-align: right; color: var(--ink); font-size: 10px; }
+.use-text-layers { margin-top: 18px; padding-top: 13px; border-top: 1px solid var(--line); }
+.use-text-layer-list { display: flex; flex-direction: column; gap: 9px; }
+.use-text-layer-field { display: block; }
+.use-text-layer-field > span { display: block; margin-bottom: 5px; color: var(--muted); font-size: 9px; font-weight: 600; }
+.use-text-layer-field textarea { width: 100%; min-height: 58px; resize: vertical; padding: 8px 9px; border: 1px solid var(--line); border-radius: 5px; outline: 0; background: var(--surface); color: var(--ink); font: inherit; font-size: 11px; line-height: 1.45; }
+.use-text-layer-field textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 .export-settings { margin-top: 18px; padding-top: 13px; border-top: 1px solid var(--line); }
 .export-setting-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .export-setting-row label span { display: block; margin-bottom: 5px; color: var(--muted); font-size: 9px; font-weight: 600; }
@@ -708,5 +714,3 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .leave-editor-prompt strong { display: block; margin-bottom: 12px; font-size: 13px; }
 .leave-editor-prompt > div { display: flex; justify-content: flex-end; gap: 7px; }
 .leave-editor-prompt button { min-width: 52px; height: 30px; padding: 0 10px; font-size: 12px; }
-
-.gif-layer-drop-hint { position: absolute; z-index: 20; pointer-events: none; border: 3px solid var(--accent); border-radius: 6px; background: rgba(233,78,55,.14); box-shadow: 0 0 0 2px rgba(255,255,255,.85); }

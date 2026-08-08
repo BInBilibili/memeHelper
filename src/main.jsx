@@ -1449,11 +1449,17 @@ function TemplateCard({ template, onUse, onEdit, onRename, onCopy, onDelete, onT
     window.addEventListener('pointerdown', closeMenu);
     return () => window.removeEventListener('pointerdown', closeMenu);
   }, [menu, pasteMenu]);
+  const renderQuickOutput = useCallback((source) => {
+    const replacements = { [slots[0].id]: source };
+    return hasGif
+      ? renderAnimatedTemplate(template, replacements, {}, { scale: 1, mime: 'image/gif' })
+      : renderTemplate(template, replacements);
+  }, [hasGif, slots, template]);
   const quickReplace = useCallback(async (source) => {
     if (!canQuickReplace || quickWorking) return;
     setQuickWorking(true);
     try {
-      const dataUrl = await renderTemplate(template, { [slots[0].id]: source });
+      const dataUrl = await renderQuickOutput(source);
       await desktop.copyImage(dataUrl);
       notify('作品已生成并复制到剪贴板');
     } catch (error) {
@@ -1461,12 +1467,12 @@ function TemplateCard({ template, onUse, onEdit, onRename, onCopy, onDelete, onT
     } finally {
       setQuickWorking(false);
     }
-  }, [canQuickReplace, notify, quickWorking, slots, template]);
+  }, [canQuickReplace, notify, quickWorking, renderQuickOutput]);
   const quickReplaceBatch = useCallback(async (sources) => {
     if (!canQuickReplace || quickWorking || !sources.length) return;
     setQuickWorking(true);
     try {
-      const outputs = await Promise.all(sources.map((source) => renderTemplate(template, { [slots[0].id]: source })));
+      const outputs = await Promise.all(sources.map((source) => renderQuickOutput(source)));
       if (outputs.length === 1) await desktop.copyImage(outputs[0]);
       else await desktop.copyImages(outputs);
       notify(`已生成并复制 ${outputs.length} 张作品`);
@@ -1475,7 +1481,7 @@ function TemplateCard({ template, onUse, onEdit, onRename, onCopy, onDelete, onT
     } finally {
       setQuickWorking(false);
     }
-  }, [canQuickReplace, notify, quickWorking, slots, template]);
+  }, [canQuickReplace, notify, quickWorking, renderQuickOutput]);
   const pasteImage = useCallback(async () => {
     setPasteMenu(null);
     try {
@@ -1581,7 +1587,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
     <div className="gif-frame-strip" onWheel={scrollFrames} onDragOver={(event) => { if (isFrameDrag(event) || isFileDrag(event)) { event.preventDefault(); event.stopPropagation(); const resolved = resolveInsertion(event); setDropState(resolved); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDropState(null); }} onDrop={(event) => handleDrop(event, dropState?.targetIndex ?? null, dropState?.placement || 'before')}>
       {frames.length ? frames.map((frame, index) => {
         const placement = dropState?.targetIndex === index ? dropState.placement : null;
-        return <button type="button" draggable key={`${index}-${frame.dataUrl.slice(-12)}`} className={`gif-frame-cell ${selectedSet.has(index) ? 'selected' : ''} ${index === frameIndex ? 'active' : ''} ${dragState?.sourceIndex === index ? 'dragging' : ''} ${placement ? `drop-${placement}` : ''}`} onClick={(event) => { if (event.shiftKey) event.preventDefault(); onSelectFrame(index, event); }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); if (!selectedSet.has(index)) onSelectFrame(index, {}); setFrameMenu({ index, x: Math.min(event.clientX, window.innerWidth - 160), y: Math.min(event.clientY, window.innerHeight - 84) }); }} onDragStart={(event) => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('application/x-meme-gif-frame', String(index)); setDragState({ sourceIndex: index }); setFrameMenu(null); }} onDragOver={(event) => { if (!isFrameDrag(event) && !isFileDrag(event)) return; event.preventDefault(); event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); const nextPlacement = event.clientX < rect.left + rect.width / 2 ? 'before' : 'after'; setDropState({ targetIndex: index, placement: nextPlacement }); }} onDrop={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const placement = event.clientX < rect.left + rect.width / 2 ? 'before' : 'after'; handleDrop(event, index, placement); }} onDragEnd={() => { setDragState(null); setDropState(null); }} title={`第 ${index + 1} 帧，${Math.max(20, Number(frame.delayMs) || 100)} ms`}><img src={frame.dataUrl} alt={`第 ${index + 1} 帧`} draggable={false}/><span>{index + 1}</span></button>;
+        return <button type="button" draggable key={`${index}-${frame.dataUrl.slice(-12)}`} className={`gif-frame-cell ${selectedSet.has(index) ? 'selected' : ''} ${index === frameIndex ? 'active' : ''} ${dragState?.sourceIndex === index ? 'dragging' : ''} ${placement ? `drop-${placement}` : ''}`} onClick={(event) => { if (event.shiftKey) event.preventDefault(); onSelectFrame(index, event); }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); if (!selectedSet.has(index)) onSelectFrame(index, {}); setFrameMenu({ index, x: Math.min(event.clientX, window.innerWidth - 160), y: Math.min(event.clientY, window.innerHeight - 84) }); }} onDragStart={(event) => { event.dataTransfer.effectAllowed = 'copyMove'; event.dataTransfer.setData('application/x-meme-gif-frame', String(index)); setDragState({ sourceIndex: index }); setFrameMenu(null); }} onDragOver={(event) => { if (!isFrameDrag(event) && !isFileDrag(event)) return; event.preventDefault(); event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); const nextPlacement = event.clientX < rect.left + rect.width / 2 ? 'before' : 'after'; setDropState({ targetIndex: index, placement: nextPlacement }); }} onDrop={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const placement = event.clientX < rect.left + rect.width / 2 ? 'before' : 'after'; handleDrop(event, index, placement); }} onDragEnd={() => { setDragState(null); setDropState(null); }} title={`第 ${index + 1} 帧，${Math.max(20, Number(frame.delayMs) || 100)} ms`}><img src={frame.dataUrl} alt={`第 ${index + 1} 帧`} draggable={false}/><span>{index + 1}</span></button>;
       }) : <div className="gif-timeline-empty">GIF 帧加载中…</div>}
       {dropState?.targetIndex === frames.length && dragState && <span className="gif-frame-end-drop" aria-hidden="true"/>}
     </div>
@@ -1621,7 +1627,6 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
   const lastPointerRef = useRef({ x: 420, y: 120 });
   const [shapeMenu, setShapeMenu] = useState(false);
   const [layerMenu, setLayerMenu] = useState(null);
-  const [gifLayerDrop, setGifLayerDrop] = useState(null);
   const [marqueeStartRequest, setMarqueeStartRequest] = useState(null);
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set(
     Object.entries(draft.groupMeta || {})
@@ -2186,7 +2191,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
     });
   }, [draft.layers, selectedGroupId]);
 
-  const addImage = async (file, dropPoint = null, { asGif = false } = {}) => {
+  const addImage = async (file, dropPoint = null, { asGif = false, insertIndex = null, groupId = null } = {}) => {
     try {
       let src = await fileToDataUrl(file);
       const image = await loadImage(src);
@@ -2201,8 +2206,13 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
       const width = Math.round(image.width * scale); const height = Math.round(image.height * scale);
       const x = initializeCanvas ? 0 : Math.round((dropPoint?.x ?? draft.width / 2) - width / 2);
       const y = initializeCanvas ? 0 : Math.round((dropPoint?.y ?? draft.height / 2) - height / 2);
-      const layer = { id: uid(), name: file.name.replace(/\.[^.]+$/, ''), type: 'static', src, x, y, width, height, rotation: 0, opacity: 1, blendMode: 'source-over', aspectRatioLocked: true, visible: true, fit: 'fill', ...(createdSingleFrameGif ? { gifFrameCount: 1, gifFrameDelays: [100] } : {}) };
-      updateDraft((prev) => ({ ...prev, width: initializeCanvas ? width : prev.width, height: initializeCanvas ? height : prev.height, layers: [...prev.layers, layer] }));
+      const layer = { id: uid(), name: file.name.replace(/\.[^.]+$/, ''), type: 'static', src, x, y, width, height, rotation: 0, opacity: 1, blendMode: 'source-over', aspectRatioLocked: true, visible: true, fit: 'fill', ...(groupId ? { groupId } : {}), ...(createdSingleFrameGif ? { gifFrameCount: 1, gifFrameDelays: [100] } : {}) };
+      updateDraft((prev) => {
+        const layers = [...prev.layers];
+        const resolvedIndex = Number.isInteger(insertIndex) ? clamp(insertIndex, 0, layers.length) : layers.length;
+        layers.splice(resolvedIndex, 0, layer);
+        return { ...prev, width: initializeCanvas ? width : prev.width, height: initializeCanvas ? height : prev.height, layers };
+      });
       setSelectedIds([layer.id]); setSelectedGroupId(null); setActiveTool('select');
     } catch (error) { notify(error.message, 'error'); }
   };
@@ -2216,29 +2226,50 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
     await addImage(file, dropPoint);
   };
 
-  const handleGifLayerDragOver = (event) => {
-    if (!Array.from(event.dataTransfer?.types || []).includes('application/x-meme-gif-frame')) return;
-    event.preventDefault(); event.stopPropagation();
-    const bounds = stageHostRef.current?.getBoundingClientRect();
-    if (!bounds) return;
-    const point = { x: (event.clientX - bounds.left) / zoom, y: (event.clientY - bounds.top) / zoom };
-    const target = [...draft.layers].reverse().find((layer) => layer.visible !== false && pointInLayer(point.x, point.y, layer));
-    setGifLayerDrop(target ? { id: target.id } : null);
+  const isGifFrameDrag = (event) => Array.from(event.dataTransfer?.types || []).includes('application/x-meme-gif-frame');
+  const resolveGifFrameLayerDrop = (event) => {
+    const list = event.currentTarget;
+    const rows = [...list.querySelectorAll('[data-layer-id]')];
+    if (!rows.length) return { id: null, placement: 'before', groupId: null, parentGroupId: null };
+    let row = event.target instanceof Element ? event.target.closest('[data-layer-id]') : null;
+    if (!row || !list.contains(row)) {
+      row = rows.find((candidate) => event.clientY < candidate.getBoundingClientRect().top + candidate.getBoundingClientRect().height / 2) || rows.at(-1);
+    }
+    const rect = row.getBoundingClientRect();
+    return {
+      id: row.dataset.layerId || null,
+      placement: event.clientY < rect.top + rect.height / 2 ? 'before' : 'after',
+      groupId: row.dataset.groupId || null,
+      parentGroupId: row.dataset.parentGroupId || null
+    };
   };
-  const handleGifLayerDrop = async (event) => {
-    if (!Array.from(event.dataTransfer?.types || []).includes('application/x-meme-gif-frame')) return;
+  const handleGifFrameLayerDragOver = (event) => {
+    if (!isGifFrameDrag(event)) return;
     event.preventDefault(); event.stopPropagation();
+    event.dataTransfer.dropEffect = 'copy';
+    setGifFrameLayerDrop(resolveGifFrameLayerDrop(event));
+  };
+  const handleGifFrameLayerDrop = async (event) => {
+    if (!isGifFrameDrag(event)) return;
+    event.preventDefault(); event.stopPropagation();
+    const drop = resolveGifFrameLayerDrop(event);
     const sourceIndex = Number(event.dataTransfer.getData('application/x-meme-gif-frame'));
     const frame = gifTimeline.frames[sourceIndex];
-    const bounds = stageHostRef.current?.getBoundingClientRect();
-    setGifLayerDrop(null);
-    if (!frame || !bounds) return;
-    const point = { x: clamp((event.clientX - bounds.left) / zoom, 0, Math.max(0, draft.width)), y: clamp((event.clientY - bounds.top) / zoom, 0, Math.max(0, draft.height)) };
+    setGifFrameLayerDrop(null);
+    if (!frame) return;
+    const targetIndex = drop.id ? draft.layers.findIndex((layer) => layer.id === drop.id) : draft.layers.length;
+    let insertIndex = targetIndex < 0 ? draft.layers.length : drop.placement === 'before' ? targetIndex + 1 : targetIndex;
+    let targetGroupId = drop.parentGroupId || null;
+    if (drop.groupId) {
+      const groupIndexes = draft.layers.map((layer, index) => layer.groupId === drop.groupId ? index : -1).filter((index) => index >= 0);
+      if (groupIndexes.length) insertIndex = drop.placement === 'before' ? Math.max(...groupIndexes) + 1 : Math.min(...groupIndexes);
+      targetGroupId = null;
+    }
     try {
       const blob = await (await fetch(frame.dataUrl)).blob();
-      const file = new File([blob], `GIF帧 ${sourceIndex + 1}.png`, { type: 'image/png' });
-      await addImage(file, point);
-    } catch (error) { notify(`复制 GIF 帧失败：${error?.message || error}`, 'error'); }
+      const file = new File([blob], `GIF 帧 ${sourceIndex + 1}.png`, { type: 'image/png' });
+      await addImage(file, null, { insertIndex, groupId: targetGroupId });
+    } catch (error) { notify(`添加 GIF 帧失败：${error?.message || error}`, 'error'); }
   };
   const addEmptySlot = (shape) => {
     const initializeCanvas = !draft.layers.length && draft.width === 0 && draft.height === 0;
@@ -2741,7 +2772,10 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
   };
 
   const renderLayerRow = (layer, child = false) => {
-    const dropClass = layerDrop?.id === layer.id ? `drop-${layerDrop.placement}` : '';
+    const dropClass = layerDrop?.id === layer.id
+      ? `drop-${layerDrop.placement}`
+      : gifFrameLayerDrop?.id === layer.id
+        ? `drop-${gifFrameLayerDrop.placement}` : '';
     return <div
       key={layer.id}
       data-layer-id={layer.id}
@@ -2767,7 +2801,10 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
     const collapsed = collapsedGroups.has(layer.groupId);
      const groupContainsSelectedLayer = collapsed && members.some((member) => selectedIds.includes(member.id));
      const groupSelected = selectedGroupIds.includes(layer.groupId) || selectedGroupId === layer.groupId || groupContainsSelectedLayer;
-     const dropClass = layerDrop?.id === members[0].id ? `drop-${layerDrop.placement}` : '';
+     const dropClass = layerDrop?.id === members[0].id
+       ? `drop-${layerDrop.placement}`
+       : gifFrameLayerDrop?.id === members[0].id
+         ? `drop-${gifFrameLayerDrop.placement}` : '';
     const groupName = draft.groupMeta?.[layer.groupId]?.name || `图层组 ${groupNumber}`;
     layerListRows.push(<div
       key={`group-${layer.groupId}`}
@@ -2869,7 +2906,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
   };
 
   return <main className="editor-page">
-    <header className="editor-topbar"><div className="editor-left"><IconButton label="返回模板库" onClick={tryBack}><ArrowLeft size={21}/></IconButton><div className="title-field"><div className="editable-template-name" title="点击编辑模板名称"><input aria-label="模板名称" style={{ width: `${Math.max(4, Math.min(30, String(draft.name || '').length + 1))}ch` }} value={draft.name} onChange={(e) => updateDraft({ ...draft, name: e.target.value })}/><Pencil size={13} aria-hidden="true"/></div><span>{draft.width} x {draft.height}px</span></div></div><div className="editor-center"><span className="status-dot"></span>{autosaveState === 'saving' ? '正在自动保存' : autosaveState === 'error' ? '自动保存失败' : initialStateRef.current.restored ? '已恢复草稿' : dirty ? '已自动保存' : '已保存'}</div><div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undoDraft} disabled={!canUndo}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redoDraft} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={tryBack}>取消</button><button className="primary-button" onClick={save}><Save size={17}/>保存模板</button></div></header>
+    <header className="editor-topbar"><div className="editor-left"><IconButton label="返回模板库" onClick={tryBack}><ArrowLeft size={21}/></IconButton><div className="title-field"><div className="editable-template-name" title="点击编辑模板名称"><input aria-label="模板名称" style={{ width: `${Math.max(8, Math.min(52, Array.from(String(draft.name || '')).reduce((total, character) => total + (/[^\x00-\xff]/.test(character) ? 2 : 1), 0) + 2))}ch` }} value={draft.name} onChange={(e) => updateDraft({ ...draft, name: e.target.value })}/><Pencil size={13} aria-hidden="true"/></div><span>{draft.width} x {draft.height}px</span></div></div><div className="editor-center"><span className="status-dot"></span>{autosaveState === 'saving' ? '正在自动保存' : autosaveState === 'error' ? '自动保存失败' : initialStateRef.current.restored ? '已恢复草稿' : dirty ? '已自动保存' : '已保存'}</div><div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undoDraft} disabled={!canUndo}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redoDraft} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={tryBack}>取消</button><button className="primary-button" onClick={save}><Save size={17}/>保存模板</button></div></header>
     <div className="editor-body">
       <aside className="layers-panel" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu}>
         <div className="panel-title"><div><span>{templateHasGif ? 'GIF' : '图层'}</span><small>{draft.layers.length}</small></div></div>
@@ -2884,7 +2921,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
         <label className="template-tags-field"><span>模板标签</span><input value={tagsText} onChange={(event) => { const value = event.target.value; setTagsText(value); updateDraft({ ...draft, tags: value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 10) }); }} placeholder="反应、工作、猫"/></label>
         <input ref={memeInput} hidden type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) addImage(file); }}/>
         <input ref={gifLayerInput} hidden type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) addImage(file, null, { asGif: true }); }}/>
-        <div className="layers-list" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu}>{layerListRows}</div>
+        <div className="layers-list" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu} onDragOver={handleGifFrameLayerDragOver} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setGifFrameLayerDrop(null); }} onDrop={handleGifFrameLayerDrop}>{layerListRows}</div>
         {!draft.layers.length && <div className="layers-empty" onClick={clearSelection} onContextMenu={openLayersBlankMenu}><Layers3 size={28}/><p>添加第一个图层后，画布会自动匹配图层大小。</p></div>}
       </aside>
       <section className="canvas-workspace">
@@ -2905,8 +2942,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
             <input className="paint-color" type="color" aria-label="绘画颜色" title="绘画颜色" value={paintColor} onChange={(event) => setPaintColor(event.target.value)}/>
             <label className="brush-size" title="画笔和橡皮擦大小"><NumericInput aria-label="画笔大小" min={1} max={160} presets={[1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 160]} value={brushSize} onCommit={setBrushSize}/><input type="range" min="1" max="160" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))}/></label>
           </div></div>
-          <div className="canvas-scroll-surface" style={{ width: `max(100%, ${Math.max(0, draft.width * zoom) + 160}px)`, height: `max(100%, ${Math.max(0, draft.height * zoom) + 160}px)` }}><div ref={stageHostRef} className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }} onDragOver={handleGifLayerDragOver} onDragLeave={() => setGifLayerDrop(null)} onDrop={handleGifLayerDrop}>
-            {gifLayerDrop && draft.layers.find((layer) => layer.id === gifLayerDrop.id) && <div className="gif-layer-drop-hint" style={(() => { const target = draft.layers.find((layer) => layer.id === gifLayerDrop.id); return { left: target.x * zoom, top: target.y * zoom, width: target.width * zoom, height: target.height * zoom, transform: `rotate(${target.rotation || 0}deg)` }; })()} />}
+          <div className="canvas-scroll-surface" style={{ width: `max(100%, ${Math.max(0, draft.width * zoom) + 160}px)`, height: `max(100%, ${Math.max(0, draft.height * zoom) + 160}px)` }}><div ref={stageHostRef} className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}>
             <EditorStage gifFrameIndex={timelineGifLayer ? gifTimeline.frameIndex + 1 : null} gifFrameLayerId={timelineGifLayer?.id || null} gifFrameSource={timelineGifLayer?.id === gifTimeline.layerId ? gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl : null} template={draft} selectedIds={selectedIds} selectedGroupId={selectedGroupId} selectLayer={selectLayer} selectGroup={selectGroup} clearSelection={clearSelection} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onGroupContextMenu={openGroupMenu} onMarqueeContextMenu={openMarqueeMenu} marqueeStartRequest={marqueeStartRequest} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} eraserMode={eraserMode} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, patch) => updateLayer(id, patch)} onPickColor={setPaintColor} zoom={zoom}/>
             {selectedOutsideLayers.map((layer) => { const preview = outsideDragPreview?.ids.includes(layer.id) ? outsideDragPreview : null; return <div key={`outside-outline-${layer.id}`} className="outside-layer-outline" style={{ left: (layer.x + (preview?.dx || 0)) * zoom, top: (layer.y + (preview?.dy || 0)) * zoom, width: layer.width * zoom, height: layer.height * zoom, transform: `rotate(${layer.rotation || 0}deg)` }}/>; }) }
             {textEditingId && draft.layers.find((layer) => layer.id === textEditingId && layer.type === 'text') && <RichTextOverlay
@@ -2921,7 +2957,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
           {toolPointer && !['select', 'marquee'].includes(activeTool) && !panning && (
             ['brush', 'mosaic', 'eraser'].includes(activeTool) && !(activeTool === 'brush' && toolPointer.altKey)
               ? <div className="tool-cursor brush-preview" style={{ left: toolPointer.x, top: toolPointer.y, width: Math.max(3, brushSize * zoom), height: Math.max(3, brushSize * zoom) }}/>
-              : <div className="tool-cursor" style={{ left: toolPointer.x, top: toolPointer.y }}>{activeTool === 'text' ? <Type size={19}/> : activeTool === 'picker' || (activeTool === 'brush' && toolPointer.altKey) ? <Pipette size={19}/> : <PaintBucket size={19}/>}</div>
+              : <div className={`tool-cursor ${activeTool === 'text' ? 'text-tool-cursor' : ''}`} style={{ left: toolPointer.x, top: toolPointer.y }}>{activeTool === 'text' ? <span aria-hidden="true">T</span> : activeTool === 'picker' || (activeTool === 'brush' && toolPointer.altKey) ? <Pipette size={19}/> : <PaintBucket size={19}/>}</div>
           )}
         </div>
       </section>
@@ -3933,7 +3969,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
         <div className={`slot-color-options ${colorFilled ? 'active' : ''}`}><label className="slot-color-picker"><span>填充颜色</span><input type="color" disabled={!colorFilled} value={layer.slotFill || '#e24b35'} onChange={(event) => update({ slotFill: event.target.value, replacementDisabled: false, boundLayerId: undefined })}/><code>{layer.slotFill || '#e24b35'}</code></label><button type="button" className={`wide-property-button ${colorFilled ? 'active' : ''}`} onClick={() => update(colorFilled ? { slotFill: '' } : { slotFill: '#e24b35', replacementDisabled: false, boundLayerId: undefined })}>{colorFilled ? '关闭颜色填充' : '启用颜色填充'}</button></div>
       </div>    </>}
 
-    <div className="property-section opacity-inline-row"><h4>透明度</h4><div className="opacity-inline-control"><NumericInput value={Math.round(layerOpacityOf(layer) * 100)} min={0} max={100} presets={OPACITY_PRESETS} onCommit={(opacity) => update({ opacity: clamp(opacity / 100, 0, 1) })}/><em>%</em></div></div>
+    <div className="property-section opacity-inline-row"><h4>透明度</h4><div className="opacity-inline-control"><NumericInput value={Math.round(layerOpacityOf(layer) * 100)} min={0} max={100} presets={OPACITY_PRESETS} onCommit={(opacity) => update({ opacity: clamp(opacity / 100, 0, 1) })}/></div></div>
     <div className="property-section layer-order-inline-row"><h4>图层顺序</h4><div className="order-buttons"><button disabled={layer.locked} onClick={() => move(1)}><ChevronUp size={17}/>上移</button><button disabled={layer.locked} onClick={() => move(-1)}><ChevronDown size={17}/>下移</button></div></div>
     <button className="delete-button" disabled={layer.locked} onClick={remove}><Trash2 size={17}/>删除图层</button>
   </div>;
@@ -4143,7 +4179,8 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   const [contextMenu, setContextMenu] = useState(null);
   const [slotContextMenu, setSlotContextMenu] = useState(null);
   const [topMenu, setTopMenu] = useState(false);
-  const [exportFormat, setExportFormat] = useState('png');
+  const templateHasGif = template.layers.some((layer) => isGifSource(layer.src));
+  const [exportFormat, setExportFormat] = useState(() => templateHasGif ? 'gif' : 'png');
   const [exportScale, setExportScale] = useState(1);
   const [transparent, setTransparent] = useState(false);
   const [lockAspectRatio, setLockAspectRatio] = useState(true);
@@ -4153,6 +4190,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   const renderRequest = useRef(0);
   const topMenuRef = useRef();
   const slots = composition.layers.filter((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId);
+  const textLayers = composition.layers.filter((layer) => layer.type === 'text');
   const cropLayer = composition.layers.find((layer) => layer.id === cropModeId && layer.type === 'slot');
   const cropTransform = cropLayer ? (slotTransforms[cropLayer.id] || { zoom: 1, offsetX: 0, offsetY: 0 }) : null;
   const outputMime = exportFormat === 'jpg' ? 'image/jpeg' : `image/${exportFormat}`;
@@ -4171,18 +4209,20 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     setTextEditingId(id);
     setTextSelection({ id, start: 0, end: String(layer.text || '').length });
   }, [composition.layers]);
-  const updateTextLayer = useCallback((text) => {
-    if (!textEditingId) return;
+  const updateTextLayerById = useCallback((id, text) => {
     commitSession((previous) => ({
       ...previous,
       composition: {
         ...previous.composition,
-        layers: previous.composition.layers.map((layer) => layer.id === textEditingId
+        layers: previous.composition.layers.map((layer) => layer.id === id
           ? fitTextLayerToContent({ ...layer, ...updateTextContent(layer, text) })
           : layer)
       }
     }));
-  }, [commitSession, textEditingId]);
+  }, [commitSession]);
+  const updateTextLayer = useCallback((text) => {
+    if (textEditingId) updateTextLayerById(textEditingId, text);
+  }, [textEditingId, updateTextLayerById]);
   const finishTextEditing = useCallback(() => {
     setTextEditingId(null);
     setTextSelection(null);
@@ -4544,7 +4584,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
 
   const clearSidebarSelection = (event) => {
     const target = event.target instanceof Element ? event.target : null;
-    if (target?.closest('button, input, select, label')) return;
+    if (target?.closest('button, input, textarea, select, label')) return;
     setSelectedId(null);
     setCropModeId(null);
   };
@@ -4572,16 +4612,17 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
         <label className="check-row"><input type="checkbox" checked={lockAspectRatio} onChange={(event) => setLockAspectRatio(event.target.checked)}/><span>锁定照片宽高比</span></label>
         {cropLayer && slotSources[cropLayer.id] && <div className="crop-controls"><div className="crop-controls-heading"><strong><Crop size={16}/>裁切照片</strong><IconButton label="完成裁切" onClick={() => setCropModeId(null)}><Check size={16}/></IconButton></div><label className="crop-zoom-field"><span>缩放</span><input type="range" min="1" max="5" step="0.05" value={cropTransform.zoom} onChange={(event) => updatePhotoTransform(cropLayer.id, { zoom: Number(event.target.value) })}/><output>{Math.round(cropTransform.zoom * 100)}%</output></label><button className="wide-property-button" onClick={resetCrop}><RotateCcw size={16}/>重置裁切</button></div>}
         <input ref={input} hidden type="file" accept="image/*" onChange={(event) => { if (event.target.files[0]) acceptFile(event.target.files[0], pendingSlot.current); event.target.value = ''; pendingSlot.current = null; }}/>
+        {textLayers.length > 0 && <div className="use-text-layers"><div className="slot-list-heading"><strong>文字图层</strong><span>{textLayers.length}</span></div><div className="use-text-layer-list">{textLayers.map((layer) => <label key={layer.id} className="use-text-layer-field"><span>{layer.name}</span><textarea value={layer.text || ''} rows={Math.max(2, String(layer.text || '').split('\n').length)} onFocus={() => { finishTextEditing(); setSelectedId(layer.id); setCropModeId(null); }} onChange={(event) => updateTextLayerById(layer.id, event.target.value)}/></label>)}</div></div>}
         <div className="export-settings"><div className="slot-list-heading"><strong>导出设置</strong></div><div className="export-setting-row"><label><span>格式</span><select value={exportFormat} onChange={(event) => { const value = event.target.value; setExportFormat(value); if (value === 'jpg') setTransparent(false); }}><option value="png">PNG</option><option value="jpg">JPEG</option><option value="webp">WebP</option><option value="gif">GIF 动图</option></select></label><label title={exportScaleHint}><span title={exportScaleHint}>倍率</span><select title={exportScaleHint} value={exportScale} onChange={(event) => setExportScale(Number(event.target.value))}><option value="1" title={exportScaleHint}>1x</option><option value="2" title={exportScaleHint}>2x</option><option value="3" title={exportScaleHint}>3x</option></select></label></div><label className="check-row"><input type="checkbox" disabled={exportFormat === 'jpg'} checked={transparent} onChange={(event) => setTransparent(event.target.checked)}/><span>透明画布背景</span></label></div>
       </section>
       <section className="result-area">
-        <div className="result-heading"><div><p className="eyebrow">第 2 步</p><h2>生成结果</h2></div><div className="result-heading-actions"><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>{result && <div className="result-actions"><button className="secondary-button" onClick={save}><Download size={17}/>保存 {exportFormat.toUpperCase()}</button><button className="primary-button" onClick={copyAgain}>{copied ? <Check size={17}/> : <Copy size={17}/>}复制图片</button></div>}</div></div>
+        <div className="result-heading"><div><p className="eyebrow">第 2 步</p><h2>生成结果</h2></div><div className="result-heading-actions"><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>{result && <div className="result-actions"><button className="secondary-button" onClick={save}><Download size={17}/>保存 {exportFormat.toUpperCase()}</button><button className="primary-button" onClick={copyAgain}>{copied ? <Check size={17}/> : <Copy size={17}/>}{exportFormat === 'gif' ? '复制 GIF' : '复制图片'}</button></div>}</div></div>
         <div className="result-stage has-result" onWheel={handleResultWheel} onContextMenu={openContextMenu} onDragStart={(event) => event.preventDefault()} onDragOver={(event) => { if (Array.from(event.dataTransfer.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropOnSlot}>
           <UseStage composition={composition} slotSources={slotSources} slotTransforms={slotTransforms} selectedId={selectedId} setSelectedId={setSelectedId} updateLayer={updateLayer} cropModeId={cropModeId} setCropModeId={setCropModeId} updatePhotoTransform={updatePhotoTransform} onRequestSlot={requestSlotImage} zoom={zoom} pan={pan} panning={panning} onPanStart={beginPan} transparent={transparent} lockAspectRatio={lockAspectRatio} textEditingId={textEditingId} textSelection={textSelection} onEditText={editTextLayer} onTextChange={updateTextLayer} onTextSelectionChange={setTextSelection} onTextDone={finishTextEditing}/>
         </div>
       </section>
     </div>
-    {contextMenu && <div className="result-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setContextMenu(null); copyAgain(); }}><Copy size={16}/>复制图片</button></div>}
+    {contextMenu && <div className="result-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setContextMenu(null); copyAgain(); }}><Copy size={16}/>{exportFormat === 'gif' ? '复制 GIF' : '复制图片'}</button></div>}
     {exportBusy && <div className="export-busy-overlay" role="status" aria-live="polite"><div><RefreshCw size={22}/><span>导出中</span></div></div>}
     {slotContextMenu && <div className="result-context-menu" style={{ left: slotContextMenu.x, top: slotContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); pasteClipboardImage(slotId); }}><Clipboard size={16}/>粘贴图片</button><button className="danger" disabled={!slotSources[slotContextMenu.id]} onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); removeSlotSource(slotId); }}><Trash2 size={16}/>删除图片</button></div>}
   </main>;
