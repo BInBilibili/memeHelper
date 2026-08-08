@@ -650,6 +650,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .gif-play-button:disabled { opacity: .45; cursor: not-allowed; }
 .gif-frame-strip { display: flex; gap: 6px; min-height: 55px; overflow-x: auto; padding: 2px 1px 5px; scrollbar-width: thin; overscroll-behavior-inline: contain; }
 .gif-frame-cell { position: relative; flex: 0 0 58px; height: 50px; padding: 2px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-soft); overflow: hidden; outline: none; }
+.gif-frame-cell:focus-visible { outline: none; }
 .gif-frame-cell.selected { border-color: var(--accent); box-shadow: none; background: var(--accent-soft); }
 .gif-frame-cell.active::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: 0; height: 2px; border-radius: 2px 2px 0 0; background: var(--accent); }
 .gif-frame-cell img { width: 100%; height: 100%; object-fit: contain; display: block; }

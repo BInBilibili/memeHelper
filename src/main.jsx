@@ -3596,7 +3596,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   };
 
   const beginPaint = async (event) => {
-    if (tool === 'select') return false;
+    if (!['brush', 'mosaic', 'fill', 'eraser', 'picker'].includes(tool)) return false;
     event.evt.preventDefault();
     const stage = stageRef.current;
     const pointer = stage?.getPointerPosition();
@@ -3703,12 +3703,13 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     onDblTap={handleLayerDoubleClick}
     onMouseDown={(event) => {
       if (tool === 'marquee') { beginMarquee(event); return; }
+      if (tool === 'text') return;
       if (tool !== 'select') { beginPaint(event); return; }
       trRef.current?.rotationSnaps(event.evt.shiftKey || shiftPressed ? ROTATION_SNAPS : []);
       if (event.target === event.target.getStage() || event.target.name() === 'editor-background') { clearSelection(); onPanStart(event); }
     }}
-    onMouseMove={!['select', 'marquee'].includes(tool) ? movePaint : undefined}
-    onMouseUp={!['select', 'marquee'].includes(tool) ? finishPaint : undefined}
+    onMouseMove={['brush', 'mosaic', 'fill', 'eraser', 'picker'].includes(tool) ? movePaint : undefined}
+    onMouseUp={['brush', 'mosaic', 'fill', 'eraser', 'picker'].includes(tool) ? finishPaint : undefined}
     onContextMenu={(event) => { if (tool === 'marquee') openMarqueeContextMenu(event); }}
   >
     <Layer>
