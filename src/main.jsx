@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
+import * as XLSX from 'xlsx';
 import { Stage, Layer, Group, Ellipse, Image as KonvaImage, Line, Rect, Text as KonvaText, Transformer, Circle as KonvaCircle } from 'react-konva';
 import {
   AlignCenter, AlignHorizontalDistributeCenter, AlignHorizontalJustifyCenter, AlignHorizontalJustifyEnd,
@@ -57,7 +58,8 @@ const browserDesktop = {
   saveImage: async (dataUrl, name) => {
     const a = document.createElement('a'); a.href = dataUrl; a.download = name; a.click(); return name;
   },
-  openTemplateFolder: async () => false
+  openTemplateFolder: async () => false,
+  downloadGroupFaces: async () => { throw new Error('群名单头像下载仅支持桌面版'); }
 };
 
 const desktop = window.__TAURI_INTERNALS__ ? {
@@ -76,7 +78,8 @@ const desktop = window.__TAURI_INTERNALS__ ? {
   copyImage: (dataUrl, clipboardDataUrl) => invoke('copy_image', { dataUrl, clipboardDataUrl }),
   readClipboardImage: () => invoke('read_clipboard_image'),
   saveImage: (dataUrl, suggestedName) => invoke('save_image', { dataUrl, suggestedName }),
-  openTemplateFolder: (templateId) => invoke('open_template_folder', { templateId })
+  openTemplateFolder: (templateId) => invoke('open_template_folder', { templateId }),
+  downloadGroupFaces: (workerIds) => invoke('download_group_faces', { workerIds })
 } : (window.memeDesktop || browserDesktop);
 
 function applyTheme(preference = 'system') {
@@ -869,6 +872,8 @@ async function renderIsolatedLayer(layer, source, photoTransform, paintSource, e
 }
 
 async function renderTemplate(template, replacements, photoTransforms = {}, options = {}) {
+  const signal = typeof options === 'object' ? options.signal : null;
+  if (signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
   const scale = typeof options === 'number' ? options : clamp(options.scale || 1, 1, 4);
   const mime = typeof options === 'object' ? options.mime || 'image/png' : 'image/png';
   const transparent = typeof options === 'object' && options.transparent && mime !== 'image/jpeg';
@@ -883,6 +888,7 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
   }
   const frameIndex = Number.isInteger(options.frameIndex) ? options.frameIndex : null;
   for (const layer of template.layers) {
+    if (signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
     if (!layer.visible || !isLayerVisibleAtFrame(layer, frameIndex)) continue;
     ctx.save();
     ctx.globalAlpha = layerOpacityOf(layer);
@@ -940,6 +946,7 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
     drawLayerBorder(ctx, layer);
     ctx.restore();
   }
+  if (signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
   return canvas.toDataURL(mime, mime === 'image/jpeg' ? .92 : undefined);
 }
 
@@ -976,10 +983,13 @@ function animationFrameAtTime(animation, time) {
 }
 
 async function renderAnimatedTemplate(template, replacements = {}, photoTransforms = {}, options = {}) {
+  const signal = typeof options === 'object' ? options.signal : null;
+  if (signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
   const scale = typeof options === 'number' ? options : clamp(options.scale || 1, 1, 10);
   const transparent = typeof options === 'object' && Boolean(options.transparent);
   const animations = [];
   for (const layer of template.layers || []) {
+    if (signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
     const source = sourceForLayer(template, layer, replacements);
     if (!isGifSource(source)) continue;
     const decoded = await desktop.decodeGifFrames(source);
@@ -989,7 +999,7 @@ async function renderAnimatedTemplate(template, replacements = {}, photoTransfor
     animations.push({ layer, source, ...decoded, frames });
   }
   if (!animations.length) {
-    const png = await renderTemplate(template, replacements, photoTransforms, { scale, transparent, mime: 'image/png' });
+    const png = await renderTemplate(template, replacements, photoTransforms, { scale, transparent, mime: 'image/png', signal });
     return desktop.encodeGifFrames([{ dataUrl: png, delayMs: 100 }], null);
   }
   const durationOf = (animation) => animation.frames.reduce((sum, frame) => sum + Math.max(20, Number(frame.delayMs) || 100), 0);
@@ -1012,6 +1022,7 @@ async function renderAnimatedTemplate(template, replacements = {}, photoTransfor
   }
   const outputFrames = [];
   for (let index = 0; index < points.length - 1; index += 1) {
+    if (signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
     const start = points[index];
     const end = points[index + 1];
     const frameReplacements = { ...replacements };
@@ -1030,7 +1041,33 @@ async function renderAnimatedTemplate(template, replacements = {}, photoTransfor
     };
     const dataUrl = await renderTemplate(frameTemplate, frameReplacements, photoTransforms, { scale, transparent, mime: 'image/png', frameIndex: index + 1 });
     outputFrames.push({ dataUrl, delayMs: Math.max(20, Math.round(end - start)) });
+    options.onFrameProgress?.((index + 1) / Math.max(1, points.length - 1));
   }
+  if (signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
+  return desktop.encodeGifFrames(outputFrames, null);
+}
+
+async function renderAnimatedBatchTemplate(template, slotId, sources = [], replacements = {}, photoTransforms = {}, options = {}) {
+  const usableSources = sources.filter(Boolean);
+  if (!slotId || !usableSources.length) {
+    return renderAnimatedTemplate(template, replacements, photoTransforms, options);
+  }
+  const outputFrames = [];
+  for (let index = 0; index < usableSources.length; index += 1) {
+    if (options.signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
+    const source = usableSources[index];
+    const dataUrl = await renderAnimatedTemplate(
+      template,
+      { ...replacements, [slotId]: source },
+      { ...photoTransforms, [slotId]: photoTransforms[slotId] || { zoom: 1, offsetX: 0, offsetY: 0 } },
+      options
+    );
+    if (options.signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
+    const decoded = await desktop.decodeGifFrames(dataUrl);
+    if (decoded?.frames?.length) outputFrames.push(...decoded.frames);
+    options.onBatchProgress?.((index + 1) / usableSources.length);
+  }
+  if (!outputFrames.length) throw new Error('没有可导出的 GIF 帧');
   return desktop.encodeGifFrames(outputFrames, null);
 }
 
@@ -1378,6 +1415,71 @@ function Brand() {
   return <div className="brand"><div className="brand-mark"><Sparkles size={20}/></div><span>MemeHelper</span></div>;
 }
 
+function useExportProgress(notify) {
+  const activeJobRef = useRef(null);
+  const sequenceRef = useRef(0);
+  const [progress, setProgress] = useState(null);
+
+  const begin = useCallback((label = '导出中') => {
+    if (activeJobRef.current) {
+      activeJobRef.current.cancelled = true;
+      activeJobRef.current.controller?.abort();
+    }
+    const job = { id: ++sequenceRef.current, cancelled: false, controller: new AbortController() };
+    activeJobRef.current = job;
+    setProgress({ id: job.id, label, value: 0 });
+    return job;
+  }, []);
+
+  const update = useCallback((job, value, label) => {
+    if (!job || job.cancelled || activeJobRef.current !== job) return false;
+    setProgress((current) => current?.id === job.id
+      ? { ...current, value: clamp(Number(value) || 0, 0, 100), ...(label ? { label } : {}) }
+      : current);
+    return true;
+  }, []);
+
+  const isCancelled = useCallback((job) => !job || job.cancelled || activeJobRef.current !== job, []);
+
+  const finish = useCallback((job) => {
+    if (activeJobRef.current !== job) return;
+    activeJobRef.current = null;
+    setProgress(null);
+  }, []);
+
+  const cancel = useCallback(() => {
+    const job = activeJobRef.current;
+    if (!job) return;
+    job.cancelled = true;
+    job.controller?.abort();
+    activeJobRef.current = null;
+    setProgress(null);
+    notify?.('已取消导出');
+  }, [notify]);
+
+  useEffect(() => () => {
+    if (activeJobRef.current) {
+      activeJobRef.current.cancelled = true;
+      activeJobRef.current.controller?.abort();
+    }
+    activeJobRef.current = null;
+  }, []);
+
+  return { progress, begin, update, isCancelled, finish, cancel };
+}
+
+function ExportProgressOverlay({ progress, onCancel }) {
+  if (!progress) return null;
+  const value = clamp(Math.round(progress.value || 0), 0, 100);
+  return <div className="export-busy-overlay" role="status" aria-live="polite">
+    <div className="export-progress-card">
+      <div className="export-progress-heading"><RefreshCw size={21}/><span>{progress.label || '导出中'}</span><strong>{value}%</strong></div>
+      <div className="export-progress-track" aria-label="导出进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow={value} role="progressbar"><span style={{ width: `${value}%` }}/></div>
+      <button type="button" className="export-cancel-button" onClick={onCancel}><X size={15}/>取消导出</button>
+    </div>
+  </div>;
+}
+
 function SettingsDialog({ config, onChange, onClose }) { const options = [{ value: 'light', label: '浅色', description: '使用明亮的浅色界面。', icon: Sun }, { value: 'dark', label: '深色', description: '使用深色界面，适合夜间使用。', icon: Monitor }, { value: 'system', label: '跟随 Windows 系统', description: '跟随系统的浅色或深色设置。', icon: Settings }]; return <div className="settings-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="settings-dialog" role="dialog" aria-modal="true"><div className="settings-dialog-heading"><div><p className="eyebrow">全局设置</p><h2>界面主题</h2></div><IconButton label="关闭" onClick={onClose}><X size={18}/></IconButton></div><div className="settings-options">{options.map(({ value, label, description, icon: Icon }) => <button type="button" key={value} className={`settings-option ${config.theme === value ? 'active' : ''}`} onClick={() => onChange({ theme: value })}><span className="settings-option-icon"><Icon size={18}/></span><span><strong>{label}</strong><small>{description}</small></span><span className="settings-option-check">{config.theme === value ? '✓' : ''}</span></button>)}</div><p className="settings-note">选择后立即生效，并保存到程序目录的 config.json。</p></div></div>; }
 
 function Library({ templates, query, setQuery, onRefresh, onCreate, onOpenSettings, onEdit, onRename, onUse, onDelete, onCopy, onToggleFavorite, notify }) {
@@ -1445,7 +1547,15 @@ function TemplateCard({ template, onUse, onEdit, onRename, onCopy, onDelete, onT
   const [renaming, setRenaming] = useState(false);
   const [pasteMenu, setPasteMenu] = useState(null);
   const hasGif = template.layers.some((layer) => isGifSource(layer.src));
-  const [quickWorking, setQuickWorking] = useState(false);
+  const {
+    progress: quickExportProgress,
+    begin: beginQuickExport,
+    update: updateQuickExport,
+    isCancelled: isQuickExportCancelled,
+    finish: finishQuickExport,
+    cancel: cancelQuickExport
+  } = useExportProgress(notify);
+  const quickWorking = Boolean(quickExportProgress);
   const menuRef = useRef();
   const pasteMenuRef = useRef();
   const slots = useMemo(() => template.layers.filter((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId), [template.layers]);
@@ -1465,39 +1575,73 @@ function TemplateCard({ template, onUse, onEdit, onRename, onCopy, onDelete, onT
     window.addEventListener('pointerdown', closeMenu);
     return () => window.removeEventListener('pointerdown', closeMenu);
   }, [menu, pasteMenu]);
-  const renderQuickOutput = useCallback((source) => {
+  const renderQuickOutput = useCallback((source, exportOptions = {}) => {
     const replacements = { [slots[0].id]: source };
     return hasGif
-      ? renderAnimatedTemplate(template, replacements, {}, { scale: 1, mime: 'image/gif' })
-      : renderTemplate(template, replacements);
+      ? renderAnimatedTemplate(template, replacements, {}, { scale: 1, mime: 'image/gif', ...exportOptions })
+      : renderTemplate(template, replacements, {}, exportOptions);
   }, [hasGif, slots, template]);
   const quickReplace = useCallback(async (source) => {
     if (!canQuickReplace || quickWorking) return;
-    setQuickWorking(true);
+    const job = beginQuickExport('正在生成作品');
+    updateQuickExport(job, 8);
     try {
-      const dataUrl = await renderQuickOutput(source);
+      const dataUrl = await renderQuickOutput(source, {
+        signal: job.controller.signal,
+        onFrameProgress: (value) => updateQuickExport(job, 8 + value * 68, `正在生成 GIF（${Math.round(value * 100)}%）`)
+      });
+      if (isQuickExportCancelled(job)) return;
+      updateQuickExport(job, 78, '正在复制到剪贴板');
       await desktop.copyImage(dataUrl);
+      if (isQuickExportCancelled(job)) return;
+      updateQuickExport(job, 100, '导出完成');
       notify('作品已生成并复制到剪贴板');
     } catch (error) {
-      notify(`生成或复制失败：${error?.message || error}`, 'error');
+      if (!isQuickExportCancelled(job)) notify(`生成或复制失败：${error?.message || error}`, 'error');
     } finally {
-      setQuickWorking(false);
+      finishQuickExport(job);
     }
-  }, [canQuickReplace, notify, quickWorking, renderQuickOutput]);
+  }, [beginQuickExport, canQuickReplace, finishQuickExport, isQuickExportCancelled, notify, quickWorking, renderQuickOutput, updateQuickExport]);
   const quickReplaceBatch = useCallback(async (sources) => {
     if (!canQuickReplace || quickWorking || !sources.length) return;
-    setQuickWorking(true);
+    const job = beginQuickExport(hasGif ? '正在合成 GIF' : '正在批量生成作品');
+    updateQuickExport(job, 5);
     try {
-      const outputs = await Promise.all(sources.map((source) => renderQuickOutput(source)));
-      if (outputs.length === 1) await desktop.copyImage(outputs[0]);
-      else await desktop.copyImages(outputs);
-      notify(`已生成并复制 ${outputs.length} 张作品`);
+      if (hasGif) {
+        const output = await renderAnimatedBatchTemplate(template, slots[0].id, sources, {}, {}, {
+          scale: 1,
+          mime: 'image/gif',
+          signal: job.controller.signal,
+          onBatchProgress: (value) => updateQuickExport(job, 5 + value * 76, `正在合成 GIF（${Math.round(value * 100)}%）`)
+        });
+        if (isQuickExportCancelled(job)) return;
+        updateQuickExport(job, 86, '正在复制 GIF 到剪贴板');
+        await desktop.copyImage(output);
+        if (isQuickExportCancelled(job)) return;
+        updateQuickExport(job, 100, '导出完成');
+        notify(`已将 ${sources.length} 张图片合成为 1 个 GIF 并复制`);
+      } else {
+        const outputs = [];
+        for (let index = 0; index < sources.length; index += 1) {
+          if (isQuickExportCancelled(job)) return;
+          outputs.push(await renderQuickOutput(sources[index], { signal: job.controller.signal }));
+          if (isQuickExportCancelled(job)) return;
+          updateQuickExport(job, 5 + (index + 1) / sources.length * 73, `正在生成第 ${index + 1}/${sources.length} 张作品`);
+        }
+        if (isQuickExportCancelled(job)) return;
+        updateQuickExport(job, 86, '正在复制到剪贴板');
+        if (outputs.length === 1) await desktop.copyImage(outputs[0]);
+        else await desktop.copyImages(outputs);
+        if (isQuickExportCancelled(job)) return;
+        updateQuickExport(job, 100, '导出完成');
+        notify(`已生成并复制 ${outputs.length} 张作品`);
+      }
     } catch (error) {
-      notify(`批量生成或复制失败：${error?.message || error}`, 'error');
+      if (!isQuickExportCancelled(job)) notify(`批量生成或复制失败：${error?.message || error}`, 'error');
     } finally {
-      setQuickWorking(false);
+      finishQuickExport(job);
     }
-  }, [canQuickReplace, notify, quickWorking, renderQuickOutput]);
+  }, [beginQuickExport, canQuickReplace, finishQuickExport, hasGif, isQuickExportCancelled, notify, quickWorking, renderQuickOutput, slots, template, updateQuickExport]);
   const pasteImage = useCallback(async () => {
     setPasteMenu(null);
     try {
@@ -1544,7 +1688,7 @@ function TemplateCard({ template, onUse, onEdit, onRename, onCopy, onDelete, onT
     <div className="template-preview" onClick={() => onUse(template)}>{hasGif && <span className="template-gif-badge">GIF</span>}<span className="slot-count-badge" title={slotCountHint} aria-label={slotCountHint}>{slots.length}</span>{preview && <img src={preview} alt="" draggable={false}/>}<div className="drop-hint"><Upload size={28}/><strong>{canQuickReplace ? '松开并复制作品' : '松开即可生成'}</strong></div></div>
     <div className="template-meta"><div><h3 title="双击编辑名称" onDoubleClick={(event) => { event.stopPropagation(); setRenaming(true); }}>{template.name}</h3><span>{template.width} x {template.height}</span>{Boolean(template.tags?.length) && <span className="template-tags">{template.tags.slice(0, 3).map((tag) => <small key={tag}>{tag}</small>)}</span>}</div><div className="template-card-tools"><IconButton label={template.favorite ? '取消收藏' : '收藏模板'} className={template.favorite ? 'favorite-active' : ''} onClick={() => onToggleFavorite(template.id)}><Star size={17} fill={template.favorite ? 'currentColor' : 'none'}/></IconButton><div ref={menuRef} className="card-menu-wrap"><IconButton label="模板操作" onClick={() => setMenu((current) => !current)}><MoreHorizontal size={19}/></IconButton>{menu && <div className="context-menu"><button onClick={() => { setMenu(false); setRenaming(true); }}><Type size={16}/>编辑名称</button><button onClick={() => { setMenu(false); onCopy?.(template); }}><Copy size={16}/>复制模板</button><button onClick={openTemplateFolder}><FolderOpen size={16}/>打开模板文件夹</button><button className="danger" onClick={() => { setMenu(false); onDelete(template.id); }}><Trash2 size={16}/>删除模板</button></div>}</div></div></div>
     <div className="card-actions"><button className="secondary-button" onClick={() => onEdit(template)}><Pencil size={16}/>编辑</button><button className="primary-button grow" onClick={() => onUse(template)}><Sparkles size={17}/>使用模板</button></div>
-  </article>{pasteMenu && <div ref={pasteMenuRef} className="library-paste-menu" style={{ left: pasteMenu.x, top: pasteMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={pasteImage} disabled={quickWorking}><Clipboard size={16}/>粘贴图片并复制作品</button></div>}{renaming && <RenameTemplateDialog template={template} onCancel={() => setRenaming(false)} onSave={onRename}/>}</>;
+  </article>{pasteMenu && <div ref={pasteMenuRef} className="library-paste-menu" style={{ left: pasteMenu.x, top: pasteMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={pasteImage} disabled={quickWorking}><Clipboard size={16}/>粘贴图片并复制作品</button></div>}{renaming && <RenameTemplateDialog template={template} onCancel={() => setRenaming(false)} onSave={onRename}/>}<ExportProgressOverlay progress={quickExportProgress} onCancel={cancelQuickExport}/></>;
 }
 
 function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, onTogglePlay, onSelectFrame, onDropFrame, onDuplicateFrame, onDeleteFrame, onReorderFrame }) {
@@ -3980,7 +4124,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
     {isGifSource(layer.src) && gifTimeline?.frames?.length ? <div className="property-section"><h4>GIF 帧设置</h4><div className="gif-frame-property"><img src={gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl} alt="当前 GIF 帧"/><div><strong>第 {gifTimeline.frameIndex + 1} 帧{gifTimeline.selectedIndexes?.length > 1 ? ` · 已选 ${gifTimeline.selectedIndexes.length} 帧` : ''}</strong><NumberField label="播放时间" suffix="ms" value={Math.max(20, Number(gifTimeline.frames[gifTimeline.frameIndex]?.delayMs) || 100)} min={20} max={60000} presets={false} menuActions={[{ label: '应用到所有帧', onSelect: () => onGifFrameDelay?.(gifTimeline.frameIndex, Math.max(20, Number(gifTimeline.frames[gifTimeline.frameIndex]?.delayMs) || 100), true) }]} onChange={(value) => onGifFrameDelay?.(gifTimeline.frameIndex, value)}/></div></div></div> : null}
     {gifFrameCount > 0 && !isGifSource(layer.src) ? <div className="property-section"><h4>出现帧</h4><div ref={frameMenuRef} className="frame-visibility-control"><input value={layer.visibleFrames || ''} placeholder="留空表示所有帧均显示" onChange={(event) => update({ visibleFrames: event.target.value })}/><button type="button" title="选择帧" onClick={() => setFrameMenuOpen((open) => !open)}>+</button>{frameMenuOpen && <div className="frame-visibility-menu">{Array.from({ length: gifFrameCount }, (_, index) => index + 1).map((frame) => <button type="button" key={frame} className={visibleFrameValues.includes(frame) ? 'active' : ''} onClick={() => toggleVisibleFrame(frame)}>{frame}</button>)}</div>}</div></div> : null}
     {layer.type === 'text' && <>
-      <div className="property-section text-content-section"><h4>文字内容</h4><textarea value={layer.text || ''} onPointerDown={onBeginTextInteraction} onFocus={onBeginTextInteraction} onChange={(event) => { onBeginTextInteraction?.(); updateText(event.target.value); onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }); }} onSelect={(event) => onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}/></div>
+      <div className="property-section text-content-section"><h4>文字内容</h4><textarea value={layer.text || ''} onPointerDown={onBeginTextInteraction} onFocus={onBeginTextInteraction} onChange={(event) => { onBeginTextInteraction?.(); updateText(event.target.value); onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }); }} onSelect={(event) => onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}/><label className="check-row text-lock-row"><input type="checkbox" checked={Boolean(layer.textLocked)} onChange={(event) => update({ textLocked: event.target.checked })}/><span>锁定文本</span></label></div>
       <div className="property-section"><h4>字体{textSelection && textSelection.start !== textSelection.end ? ' · 已选 ' + Math.abs(textSelection.end - textSelection.start) + ' 字' : ''}</h4><select className="property-select" value={activeTextStyle.fontFamily} onChange={(event) => updateTextStyle({ fontFamily: event.target.value })}><option value="Microsoft YaHei">微软雅黑</option><option value="SimHei">黑体</option><option value="SimSun">宋体</option><option value="KaiTi">楷体</option><option value="Arial">Arial</option><option value="Segoe UI">Segoe UI</option></select><div className="text-format-row"><div><span>字号</span><NumericInput min={TEXT_SIZE_MIN} max={TEXT_SIZE_MAX} presets={FONT_SIZE_PRESETS} value={activeTextStyle.fontSize} onCommit={(fontSize) => updateTextStyle({ fontSize })}/></div><input className="color-swatch" type="color" title="文字颜色" value={activeTextStyle.fill} onChange={(event) => updateTextStyle({ fill: event.target.value })}/></div><NumberField label="间距" value={activeTextStyle.lineHeight} min={0} max={20} step={0.05} integer={false} presets={LINE_HEIGHT_PRESETS} onChange={(lineHeight) => updateTextStyle({ lineHeight })}/><label className="check-row" title="内容超出文本框时自动缩小字号；关闭后保持设定字号，超出部分可能被裁切。"><input type="checkbox" checked={Boolean(layer.autoFit)} onChange={(event) => update({ autoFit: event.target.checked })}/><span>文字自动适配文本框</span></label><div className="format-buttons"><button type="button" title="加粗" className={fontTokenSet.has('bold') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleFont('bold')}><Bold size={17}/></button><button type="button" title="斜体" className={fontTokenSet.has('italic') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleFont('italic')}><Italic size={17}/></button><button type="button" title="下划线" className={decorationTokenSet.has('underline') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleDecoration('underline')}><Underline size={17}/></button><button type="button" title="删除线" className={decorationTokenSet.has('line-through') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleDecoration('line-through')}><Strikethrough size={17}/></button></div><div className="format-buttons align-buttons"><button title="左对齐" className={layer.align === 'left' ? 'active' : ''} onClick={() => update({ align: 'left' })}><AlignLeft size={17}/></button><button title="居中" className={layer.align === 'center' ? 'active' : ''} onClick={() => update({ align: 'center' })}><AlignCenter size={17}/></button><button title="右对齐" className={layer.align === 'right' ? 'active' : ''} onClick={() => update({ align: 'right' })}><AlignRight size={17}/></button></div></div>
       <div className="property-section"><h4>文字效果</h4><div className="effect-grid"><label><span>外描边</span><input type="color" value={activeTextStyle.stroke} onChange={(event) => updateTextStyle({ stroke: event.target.value })}/></label><NumberField label="外描边宽度" value={activeTextStyle.strokeWidth} min={0} max={30} presets={EFFECT_SIZE_PRESETS} onChange={(strokeWidth) => updateTextStyle({ strokeWidth })}/><label><span>背景</span><input type="color" value={layer.background || '#ffffff'} onChange={(event) => update({ background: event.target.value })}/></label><NumberField label="背景内边距" value={layer.backgroundPadding || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(backgroundPadding) => update({ backgroundPadding })}/></div><button className="wide-property-button subtle" onClick={() => update({ background: layer.background ? '' : '#ffffff' })}>{layer.background ? '移除文字背景' : '启用文字背景'}</button><label className="check-row"><input type="checkbox" checked={Boolean(layer.shadowEnabled)} onChange={(event) => update({ shadowEnabled: event.target.checked })}/><span>启用文字阴影</span></label>{layer.shadowEnabled && <div className="effect-grid"><label><span>阴影颜色</span><input type="color" value={layer.shadowColor || '#000000'} onChange={(event) => update({ shadowColor: event.target.value })}/></label><NumberField label="模糊" value={layer.shadowBlur || 0} min={0} max={50} presets={EFFECT_SIZE_PRESETS} onChange={(shadowBlur) => update({ shadowBlur })}/><NumberField label="水平偏移" value={layer.shadowOffsetX || 0} onChange={(shadowOffsetX) => update({ shadowOffsetX })}/><NumberField label="垂直偏移" value={layer.shadowOffsetY || 0} onChange={(shadowOffsetY) => update({ shadowOffsetY })}/></div>}</div>
     </>}
@@ -4130,6 +4274,7 @@ function UseStage({ composition, slotSources, slotTransforms, selectedId, setSel
              onEnterCrop={(event) => {
                event.cancelBubble = true;
                if (layer.type === 'text') {
+                 if (layer.textLocked) return;
                  onEditText(layer.id);
                  return;
                }
@@ -4163,7 +4308,7 @@ function UseStage({ composition, slotSources, slotTransforms, selectedId, setSel
           />
         </Layer>
       </Stage>
-      {textEditingId && composition.layers.find((layer) => layer.id === textEditingId && layer.type === 'text') && <RichTextOverlay
+      {textEditingId && composition.layers.find((layer) => layer.id === textEditingId && layer.type === 'text' && !layer.textLocked) && <RichTextOverlay
         layer={composition.layers.find((layer) => layer.id === textEditingId)}
         zoom={scale}
         selectionRange={textSelection?.id === textEditingId ? textSelection : null}
@@ -4180,6 +4325,8 @@ function createUseSession(template) {
     composition: structuredClone(template),
     slotSources: {},
     slotNames: {},
+    slotSourceLists: {},
+    slotNameLists: {},
     slotTransforms: {}
   };
 }
@@ -4196,9 +4343,18 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   }
   const [session, commitSession, undo, canUndo, redo, canRedo] = useUndoState(() => initialSessionRef.current);
   const { composition, slotSources, slotNames, slotTransforms } = session;
+  const slotSourceLists = session.slotSourceLists || {};
+  const slotNameLists = session.slotNameLists || {};
   const [result, setResult] = useState('');
   const [copied, setCopied] = useState(false);
-  const [exportBusy, setExportBusy] = useState(false);
+  const {
+    progress: exportProgress,
+    begin: beginExport,
+    update: updateExport,
+    isCancelled: isExportCancelled,
+    finish: finishExport,
+    cancel: cancelExport
+  } = useExportProgress(notify);
   const { zoom, pan, panning, setZoom, zoomAtPointer, beginPan } = useCanvasViewport(1, .5, 10);
   const [selectedId, setSelectedId] = useState(template.layers.find((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId)?.id || null);
   const [textEditingId, setTextEditingId] = useState(null);
@@ -4207,7 +4363,10 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   const [slotDropId, setSlotDropId] = useState(null);
   const [contextMenu, setContextMenu] = useState(null);
   const [slotContextMenu, setSlotContextMenu] = useState(null);
+  const [slotGalleryId, setSlotGalleryId] = useState(null);
   const [topMenu, setTopMenu] = useState(false);
+  const [groupRosterChoice, setGroupRosterChoice] = useState(null);
+  const [groupRosterBusy, setGroupRosterBusy] = useState(false);
   const templateHasGif = template.layers.some((layer) => isGifSource(layer.src));
   const [exportFormat, setExportFormat] = useState(() => templateHasGif ? 'gif' : 'png');
   const [exportScale, setExportScale] = useState(1);
@@ -4215,11 +4374,19 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   const [lockAspectRatio, setLockAspectRatio] = useState(true);
   const input = useRef();
   const pendingSlot = useRef(null);
+  const pendingAppend = useRef(false);
   const initialHandled = useRef(false);
   const renderRequest = useRef(0);
   const topMenuRef = useRef();
+  const groupRosterInput = useRef();
   const slots = composition.layers.filter((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId);
-  const textLayers = composition.layers.filter((layer) => layer.type === 'text');
+  const textLayers = composition.layers.filter((layer) => layer.type === 'text' && !layer.textLocked);
+  const editableTextLayers = textLayers;
+  const batchSlot = slots.length === 1 ? slots[0] : null;
+  const batchSources = batchSlot ? (slotSourceLists[batchSlot.id] || (slotSources[batchSlot.id] ? [slotSources[batchSlot.id]] : [])) : [];
+  const batchNames = batchSlot ? (slotNameLists[batchSlot.id] || (slotNames[batchSlot.id] ? [slotNames[batchSlot.id]] : [])) : [];
+  const gallerySources = slotGalleryId ? (slotSourceLists[slotGalleryId] || (slotSources[slotGalleryId] ? [slotSources[slotGalleryId]] : [])) : [];
+  const galleryNames = slotGalleryId ? (slotNameLists[slotGalleryId] || (slotNames[slotGalleryId] ? [slotNames[slotGalleryId]] : [])) : [];
   const cropLayer = composition.layers.find((layer) => layer.id === cropModeId && layer.type === 'slot');
   const cropTransform = cropLayer ? (slotTransforms[cropLayer.id] || { zoom: 1, offsetX: 0, offsetY: 0 }) : null;
   const outputMime = exportFormat === 'jpg' ? 'image/jpeg' : `image/${exportFormat}`;
@@ -4232,7 +4399,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
 
   const editTextLayer = useCallback((id) => {
     const layer = composition.layers.find((item) => item.id === id && item.type === 'text');
-    if (!layer) return;
+    if (!layer || layer.textLocked) return;
     setSelectedId(id);
     setCropModeId(null);
     setTextEditingId(id);
@@ -4293,30 +4460,76 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     return () => clearTimeout(timer);
   }, [persistSession]);
 
-  const replaceSlotSource = useCallback((slotId, dataUrl, name) => {
-    commitSession((previous) => ({
-      ...previous,
-      slotSources: { ...previous.slotSources, [slotId]: dataUrl },
-      slotNames: { ...previous.slotNames, [slotId]: name },
-      slotTransforms: { ...previous.slotTransforms, [slotId]: { zoom: 1, offsetX: 0, offsetY: 0 } }
-    }));
+  const replaceSlotSources = useCallback((slotId, dataUrls, names = [], append = false) => {
+    const incomingSources = dataUrls.filter(Boolean);
+    if (!incomingSources.length) return;
+    commitSession((previous) => {
+      const previousSources = append ? (previous.slotSourceLists?.[slotId] || (previous.slotSources[slotId] ? [previous.slotSources[slotId]] : [])) : [];
+      const previousNames = append ? (previous.slotNameLists?.[slotId] || (previous.slotNames[slotId] ? [previous.slotNames[slotId]] : [])) : [];
+      const nextSources = [...previousSources, ...incomingSources];
+      const nextNames = [...previousNames, ...incomingSources.map((_, index) => names[index] || '')];
+      return {
+        ...previous,
+        slotSources: { ...previous.slotSources, [slotId]: nextSources[0] },
+        slotNames: { ...previous.slotNames, [slotId]: nextNames[0] || '' },
+        slotSourceLists: { ...(previous.slotSourceLists || {}), [slotId]: nextSources },
+        slotNameLists: { ...(previous.slotNameLists || {}), [slotId]: nextNames },
+        slotTransforms: { ...previous.slotTransforms, [slotId]: append && previous.slotTransforms[slotId] ? previous.slotTransforms[slotId] : { zoom: 1, offsetX: 0, offsetY: 0 } }
+      };
+    });
     setSelectedId(slotId);
   }, [commitSession]);
 
+  const replaceSlotSource = useCallback((slotId, dataUrl, name) => {
+    replaceSlotSources(slotId, [dataUrl], [name], false);
+  }, [replaceSlotSources]);
 
   const removeSlotSource = useCallback((slotId) => {
     commitSession((previous) => {
       if (!previous.slotSources[slotId]) return previous;
       const slotSources = { ...previous.slotSources };
       const slotNames = { ...previous.slotNames };
+      const slotSourceLists = { ...(previous.slotSourceLists || {}) };
+      const slotNameLists = { ...(previous.slotNameLists || {}) };
       const slotTransforms = { ...previous.slotTransforms };
       delete slotSources[slotId];
       delete slotNames[slotId];
+      delete slotSourceLists[slotId];
+      delete slotNameLists[slotId];
       delete slotTransforms[slotId];
-      return { ...previous, slotSources, slotNames, slotTransforms };
+      return { ...previous, slotSources, slotNames, slotSourceLists, slotNameLists, slotTransforms };
     });
     setSelectedId(slotId);
     setCropModeId((current) => current === slotId ? null : current);
+    setSlotGalleryId((current) => current === slotId ? null : current);
+  }, [commitSession]);
+
+  const removeSlotSourceAt = useCallback((slotId, index) => {
+    commitSession((previous) => {
+      const currentSources = previous.slotSourceLists?.[slotId] || (previous.slotSources[slotId] ? [previous.slotSources[slotId]] : []);
+      const currentNames = previous.slotNameLists?.[slotId] || (previous.slotNames[slotId] ? [previous.slotNames[slotId]] : []);
+      const nextSources = currentSources.filter((_, itemIndex) => itemIndex !== index);
+      const nextNames = currentNames.filter((_, itemIndex) => itemIndex !== index);
+      const next = {
+        ...previous,
+        slotSources: { ...previous.slotSources },
+        slotNames: { ...previous.slotNames },
+        slotSourceLists: { ...(previous.slotSourceLists || {}) },
+        slotNameLists: { ...(previous.slotNameLists || {}) }
+      };
+      if (nextSources.length) {
+        next.slotSources[slotId] = nextSources[0];
+        next.slotNames[slotId] = nextNames[0] || '';
+        next.slotSourceLists[slotId] = nextSources;
+        next.slotNameLists[slotId] = nextNames;
+      } else {
+        delete next.slotSources[slotId];
+        delete next.slotNames[slotId];
+        delete next.slotSourceLists[slotId];
+        delete next.slotNameLists[slotId];
+      }
+      return next;
+    });
   }, [commitSession]);
 
   const pasteClipboardImage = useCallback(async (targetId) => {
@@ -4407,54 +4620,161 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     } catch (error) { notify(error.message, 'error'); }
   }, [composition.layers, notify, replaceSlotSource, selectedId]);
 
-  const acceptInitialFiles = useCallback(async (files) => {
+  const acceptInitialFiles = useCallback(async (files, targetId = null, append = false) => {
     const incoming = Array.from(files || []).filter((file) => isImageFileLike(file));
     if (!incoming.length) return;
-    const targetSlots = composition.layers
-      .filter((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId)
-      .slice(0, incoming.length);
+    const targetSlots = composition.layers.filter((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId);
     if (!targetSlots.length) return;
     try {
-      const sources = await Promise.all(targetSlots.map((slot, index) => fileToDataUrl(incoming[index])));
-      const sourceEntries = Object.fromEntries(targetSlots.map((slot, index) => [slot.id, sources[index]]));
-      const nameEntries = Object.fromEntries(targetSlots.map((slot, index) => [slot.id, incoming[index]?.name || '']));
-      const transformEntries = Object.fromEntries(targetSlots.map((slot) => [slot.id, { zoom: 1, offsetX: 0, offsetY: 0 }]));
+      if (targetSlots.length === 1 || targetId) {
+        const slotId = targetId || targetSlots[0].id;
+        const sources = await Promise.all(incoming.map((file) => fileToDataUrl(file)));
+        replaceSlotSources(slotId, sources, incoming.map((file) => file.name || ''), append);
+        return;
+      }
+      const distributedSlots = targetSlots.slice(0, incoming.length);
+      const sources = await Promise.all(distributedSlots.map((slot, index) => fileToDataUrl(incoming[index])));
+      const sourceEntries = Object.fromEntries(distributedSlots.map((slot, index) => [slot.id, sources[index]]));
+      const nameEntries = Object.fromEntries(distributedSlots.map((slot, index) => [slot.id, incoming[index]?.name || '']));
+      const sourceListEntries = Object.fromEntries(distributedSlots.map((slot, index) => [slot.id, [sources[index]]]));
+      const nameListEntries = Object.fromEntries(distributedSlots.map((slot, index) => [slot.id, [incoming[index]?.name || '']]));
+      const transformEntries = Object.fromEntries(distributedSlots.map((slot) => [slot.id, { zoom: 1, offsetX: 0, offsetY: 0 }]));
       commitSession((previous) => ({
         ...previous,
         slotSources: { ...previous.slotSources, ...sourceEntries },
         slotNames: { ...previous.slotNames, ...nameEntries },
+        slotSourceLists: { ...(previous.slotSourceLists || {}), ...sourceListEntries },
+        slotNameLists: { ...(previous.slotNameLists || {}), ...nameListEntries },
         slotTransforms: { ...previous.slotTransforms, ...transformEntries }
       }));
-      setSelectedId(targetSlots.at(-1)?.id || null);
+      setSelectedId(distributedSlots.at(-1)?.id || null);
     } catch (error) {
       notify(`读取图片失败：${error?.message || error}`, 'error');
     }
-  }, [commitSession, composition.layers, notify]);
+  }, [commitSession, composition.layers, notify, replaceSlotSources]);
 
-  const generateBatch = useCallback(async (files, targetId) => {
+  const importGroupRosterRows = useCallback(async (rows, textField = 'none') => {
+    if (!rows.length || groupRosterBusy) return;
+    setGroupRosterChoice(null);
+    setGroupRosterBusy(true);
+    try {
+      const downloads = await desktop.downloadGroupFaces(rows.map((row) => row.workerId));
+      const imported = downloads
+        .map((download, index) => ({ download, row: rows[index] }))
+        .filter(({ download }) => Boolean(download?.dataUrl));
+
+      if (imported.length) {
+        if (slots.length === 1) {
+          replaceSlotSources(
+            slots[0].id,
+            imported.map(({ download }) => download.dataUrl),
+            imported.map(({ row }) => `${row.workerId}.jpg`),
+            false
+          );
+        } else {
+          const distributed = imported.slice(0, slots.length);
+          commitSession((previous) => {
+            const next = {
+              ...previous,
+              slotSources: { ...previous.slotSources },
+              slotNames: { ...previous.slotNames },
+              slotSourceLists: { ...(previous.slotSourceLists || {}) },
+              slotNameLists: { ...(previous.slotNameLists || {}) },
+              slotTransforms: { ...previous.slotTransforms }
+            };
+            distributed.forEach(({ download, row }, index) => {
+              const slotId = slots[index].id;
+              next.slotSources[slotId] = download.dataUrl;
+              next.slotNames[slotId] = `${row.workerId}.jpg`;
+              next.slotSourceLists[slotId] = [download.dataUrl];
+              next.slotNameLists[slotId] = [`${row.workerId}.jpg`];
+              next.slotTransforms[slotId] = { zoom: 1, offsetX: 0, offsetY: 0 };
+            });
+            return next;
+          });
+          setSelectedId(distributed.length ? slots[distributed.length - 1].id : null);
+        }
+      }
+
+      if (textField !== 'none' && editableTextLayers.length) {
+        commitSession((previous) => ({
+          ...previous,
+          composition: {
+            ...previous.composition,
+            layers: previous.composition.layers.map((layer) => {
+              const textIndex = editableTextLayers.findIndex((candidate) => candidate.id === layer.id);
+              if (textIndex < 0 || textIndex >= rows.length) return layer;
+              return fitTextLayerToContent({
+                ...layer,
+                ...updateTextContent(layer, String(rows[textIndex][textField] ?? ''))
+              });
+            })
+          }
+        }));
+      }
+
+      const failed = downloads.filter((download) => !download?.dataUrl);
+      if (!imported.length) {
+        const detail = failed[0]?.error ? `：${failed[0].error}` : '';
+        notify(`群名单中的头像均下载失败${detail}`, 'error');
+      } else if (failed.length) {
+        notify(`已导入 ${imported.length} 张头像，另有 ${failed.length} 张下载失败`, 'error');
+      } else {
+        notify(`已从群名单导入 ${imported.length} 张头像`);
+      }
+    } catch (error) {
+      notify(`导入群名单失败：${error?.message || error}`, 'error');
+    } finally {
+      setGroupRosterBusy(false);
+    }
+  }, [commitSession, editableTextLayers, groupRosterBusy, notify, replaceSlotSources, slots]);
+
+  const chooseGroupRosterFile = useCallback(async (file) => {
+    if (!file) return;
+    try {
+      const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      if (!sheet) throw new Error('工作簿中没有可读取的工作表');
+      const table = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+      if (!table.length) throw new Error('表格中没有数据');
+      const headers = table[0].map((value) => String(value ?? '').trim());
+      const column = (name) => headers.indexOf(name);
+      const workerIdColumn = column('工号');
+      if (workerIdColumn < 0) throw new Error('第一行中未找到“工号”表头');
+      const rows = table.slice(1).map((values) => ({
+        workerId: String(values[workerIdColumn] ?? '').trim(),
+        chineseName: column('中文名') >= 0 ? String(values[column('中文名')] ?? '') : '',
+        englishName: column('英文名') >= 0 ? String(values[column('英文名')] ?? '') : '',
+        nickname: column('昵称') >= 0 ? String(values[column('昵称')] ?? '') : ''
+      })).filter((row) => row.workerId);
+      if (!rows.length) throw new Error('“工号”列中没有可导入的数据');
+      if (editableTextLayers.length) {
+        setGroupRosterChoice({ rows, fileName: file.name });
+      } else {
+        await importGroupRosterRows(rows, 'none');
+      }
+    } catch (error) {
+      notify(`读取群名单失败：${error?.message || error}`, 'error');
+    }
+  }, [editableTextLayers.length, importGroupRosterRows, notify]);
+
+  const generateBatch = useCallback(async (files, targetId, append = false) => {
     const requestedLayer = composition.layers.find((layer) => layer.id === targetId);
     const slotId = requestedLayer?.type === 'slot' && !requestedLayer.replacementDisabled ? requestedLayer.id : slots.length === 1 ? slots[0].id : null;
-    if (!slotId) return notify('多图拖入仅支持模板只有一个可替换照片图层的情况', 'error');
-    setExportBusy(true);
-    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
-    try {
-      const sources = await Promise.all(files.map((file) => fileToDataUrl(file)));
-      const outputs = await Promise.all(sources.map((source) => renderOutput(composition, { ...slotSources, [slotId]: source }, { ...slotTransforms, [slotId]: { zoom: 1, offsetX: 0, offsetY: 0 } }, { scale: exportScale, transparent, mime: outputMime })));
-      if (outputs.length === 1) await desktop.copyImage(outputs[0]); else await desktop.copyImages(outputs);
-      replaceSlotSource(slotId, sources.at(-1), files.at(-1)?.name || ''); setResult(outputs.at(-1)); setCopied(true); notify(`已生成并复制 ${outputs.length} 张作品`);
-    } catch (error) { notify(`批量生成失败：${error?.message || error}`, 'error'); }
-    finally { setExportBusy(false); }
-  }, [composition, exportScale, notify, outputMime, renderOutput, replaceSlotSource, slotSources, slotTransforms, slots, transparent]);
+    if (!slotId) return notify('多图仅支持模板只有一个可替换照片图层的情况', 'error');
+    await acceptInitialFiles(files, slotId, append);
+  }, [acceptInitialFiles, composition.layers, notify, slots]);
 
-  const requestSlotImage = useCallback((slotId) => {
+  const requestSlotImage = useCallback((slotId, append = false) => {
     const layer = composition.layers.find((item) => item.id === slotId);
     if (!layer || layer.type !== 'slot' || layer.replacementDisabled) return;
     pendingSlot.current = slotId;
+    pendingAppend.current = append;
     input.current?.click();
   }, [composition.layers]);
 
   useEffect(() => {
-    const incomingFiles = Array.isArray(initialFiles) ? initialFiles : [];
+    const incomingFiles = Array.isArray(initialFiles) ? initialFiles : (initialFiles ? [initialFiles] : []);
     if (!incomingFiles.length || initialHandled.current) return;
     initialHandled.current = true;
     if (incomingFiles.length > 1) {
@@ -4464,34 +4784,81 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     }
   }, [acceptFile, acceptInitialFiles, composition.layers, initialFiles]);
 
-  const currentResult = useCallback(async () => {
-    const dataUrl = await renderOutput(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: outputMime });
+  const currentResult = useCallback(async (job = null) => {
+    const dataUrl = outputMime === 'image/gif' && batchSlot && batchSources.length > 1
+      ? await renderAnimatedBatchTemplate(composition, batchSlot.id, batchSources, slotSources, slotTransforms, {
+        scale: exportScale,
+        transparent,
+        mime: outputMime,
+         signal: job?.controller.signal,
+         onFrameProgress: job ? (value) => updateExport(job, 8 + value * 58, `正在生成 GIF（${Math.round(value * 100)}%）`) : undefined,
+         onBatchProgress: job ? (value) => updateExport(job, 8 + value * 58, `正在合成 GIF（${Math.round(value * 100)}%）`) : undefined
+      })
+      : await renderOutput(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: outputMime, signal: job?.controller.signal });
+    if (job && isExportCancelled(job)) return '';
+    if (job) updateExport(job, 68, '正在准备复制');
     setResult(dataUrl);
     return dataUrl;
-  }, [composition, exportScale, outputMime, renderOutput, slotSources, slotTransforms, transparent]);
+  }, [batchSlot, batchSources, composition, exportScale, isExportCancelled, outputMime, renderOutput, slotSources, slotTransforms, transparent, updateExport]);
 
   const copyAgain = useCallback(async () => {
-    setExportBusy(true);
+    const job = beginExport(outputMime === 'image/gif' ? '正在导出 GIF' : '正在导出图片');
+    updateExport(job, 5);
     await new Promise((resolve) => requestAnimationFrame(() => resolve()));
     try {
-      const dataUrl = await currentResult();
-      if (!dataUrl) return;
+      if (batchSlot && batchSources.length > 1 && outputMime !== 'image/gif') {
+        const outputs = [];
+        for (let index = 0; index < batchSources.length; index += 1) {
+          if (isExportCancelled(job)) return;
+          outputs.push(await renderOutput(
+            composition,
+            { ...slotSources, [batchSlot.id]: batchSources[index] },
+            slotTransforms,
+            { scale: exportScale, transparent, mime: outputMime, signal: job.controller.signal }
+          ));
+          if (isExportCancelled(job)) return;
+          updateExport(job, 8 + (index + 1) / batchSources.length * 70, `正在生成第 ${index + 1}/${batchSources.length} 张作品`);
+        }
+        if (isExportCancelled(job)) return;
+        updateExport(job, 88, '正在复制到剪贴板');
+        await desktop.copyImages(outputs);
+        if (isExportCancelled(job)) return;
+        setResult(outputs[0] || 'batch-ready');
+        setCopied(true);
+        updateExport(job, 100, '导出完成');
+        notify(`已生成并复制 ${outputs.length} 张作品`);
+        return;
+      }
+      const dataUrl = await currentResult(job);
+      if (!dataUrl || isExportCancelled(job)) return;
       const clipboardDataUrl = outputMime === 'image/png'
         ? undefined
-        : await renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: 'image/png' });
+        : await renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: 'image/png', signal: job.controller.signal });
+      if (isExportCancelled(job)) return;
+      updateExport(job, 88, '正在复制到剪贴板');
       await desktop.copyImage(dataUrl, clipboardDataUrl);
+      if (isExportCancelled(job)) return;
       setCopied(true);
-      notify('已复制，可粘贴到聊天窗口或文件夹');
+      updateExport(job, 100, '导出完成');
+      notify(outputMime === 'image/gif' && batchSources.length > 1
+        ? `已将 ${batchSources.length} 张图片合成为 1 个 GIF 并复制`
+        : '已复制，可粘贴到聊天窗口或文件夹');
+    } catch (error) {
+      if (!isExportCancelled(job)) {
+        setCopied(false);
+        notify(`复制失败：${error?.message || error}`, 'error');
+      }
+    } finally {
+      finishExport(job);
     }
-    catch { setCopied(false); notify('剪贴板不可用，请保存 PNG', 'error'); }
-    finally { setExportBusy(false); }
-  }, [composition, currentResult, exportScale, notify, outputMime, slotSources, slotTransforms, transparent]);
+  }, [batchSlot, batchSources, beginExport, composition, currentResult, exportScale, finishExport, isExportCancelled, notify, outputMime, renderOutput, slotSources, slotTransforms, transparent, updateExport]);
 
   const resetUse = useCallback(() => {
     commitSession(createUseSession(template));
     setSelectedId(null);
     setCropModeId(null);
     setSlotDropId(null);
+    setSlotGalleryId(null);
     setContextMenu(null);
     setSlotContextMenu(null);
     setCopied(false);
@@ -4543,18 +4910,6 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   }, [copyAgain, nudgeSelectedPhoto, pasteClipboardImage, redo, selectedId, tryBack, undo]);
 
   const resetCrop = () => { if (cropModeId) updatePhotoTransform(cropModeId, { zoom: 1, offsetX: 0, offsetY: 0 }); };
-
-  const save = async () => {
-    if (!Object.keys(slotSources).length) return;
-    setExportBusy(true);
-    await new Promise((resolve) => requestAnimationFrame(() => resolve()));
-    try {
-      const dataUrl = await renderOutput(composition, slotSources, slotTransforms, { scale: exportScale, mime: outputMime, transparent });
-      const path = await desktop.saveImage(dataUrl, `${template.name}-${Date.now()}.${exportFormat}`);
-      if (path) notify(`图片已保存为 ${exportFormat.toUpperCase()}`);
-    } catch (error) { notify(`保存失败：${error.message}`, 'error'); }
-    finally { setExportBusy(false); }
-  };
 
   const dropOnSlot = (event) => {
     const files = Array.from(event.dataTransfer.files || []).filter((item) => isImageFileLike(item));
@@ -4637,28 +4992,51 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
           {slots.map((layer) => {
             const source = slotSources[layer.id];
             const name = slotNames[layer.id];
+            const sources = slotSourceLists[layer.id] || (source ? [source] : []);
+            const extraCount = Math.max(0, sources.length - 1);
             return <div key={layer.id} className={`slot-item-row ${slotDropId === layer.id ? 'dragging' : ''}`} onContextMenu={(event) => openSlotContextMenu(event, layer.id)} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setSlotDropId(layer.id); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setSlotDropId((current) => current === layer.id ? null : current); }} onDrop={(event) => dropOnSlotList(event, layer.id)}><button type="button" className={`slot-item ${selectedId === layer.id ? 'selected' : ''}`} onClick={() => setSelectedId(layer.id)} onDoubleClick={() => { setSelectedId(layer.id); requestSlotImage(layer.id); }}>
-              <span className={`slot-item-thumb ${source ? 'has-image' : ''}`}>{source ? <img src={source} alt=""/> : <LayerThumb layer={layer}/>}</span>
-              <span className="slot-item-copy"><strong>{layer.name}</strong><small>{name || '双击选择图片'}</small></span>
+              <span className={`slot-item-thumb ${source ? 'has-image' : ''}`} onClick={(event) => { if (!source) return; event.stopPropagation(); setSelectedId(layer.id); setSlotGalleryId(layer.id); }}>{source ? <><img src={source} alt=""/>{extraCount > 0 && <b className="slot-thumb-count">+{extraCount}</b>}</> : <LayerThumb layer={layer}/>}</span>
+              <span className="slot-item-copy"><strong>{layer.name}</strong><small>{name || (slots.length === 1 ? '双击选择照片（支持多张）' : '双击选择照片')}</small></span>
               {source ? <RotateCcw size={16}/> : <ImagePlus size={16}/>}
             </button>{source && <IconButton label={cropModeId === layer.id ? '退出裁切' : '裁切照片'} className={cropModeId === layer.id ? 'active slot-crop-button' : 'slot-crop-button'} onClick={() => { setSelectedId(layer.id); setCropModeId((current) => current === layer.id ? null : layer.id); }}><Crop size={16}/></IconButton>}</div>;
           })}
         </div>
+        <button type="button" className="secondary-button group-roster-import-button" disabled={groupRosterBusy} onClick={() => groupRosterInput.current?.click()}><Upload size={16}/>{groupRosterBusy ? '正在导入群名单' : '导入群名单'}</button>
+        <input ref={groupRosterInput} className="hidden-input" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) chooseGroupRosterFile(file); }}/>
         <label className="check-row"><input type="checkbox" checked={lockAspectRatio} onChange={(event) => setLockAspectRatio(event.target.checked)}/><span>锁定照片宽高比</span></label>
         {cropLayer && slotSources[cropLayer.id] && <div className="crop-controls"><div className="crop-controls-heading"><strong><Crop size={16}/>裁切照片</strong><IconButton label="完成裁切" onClick={() => setCropModeId(null)}><Check size={16}/></IconButton></div><label className="crop-zoom-field"><span>缩放</span><input type="range" min="1" max="5" step="0.05" value={cropTransform.zoom} onChange={(event) => updatePhotoTransform(cropLayer.id, { zoom: Number(event.target.value) })}/><output>{Math.round(cropTransform.zoom * 100)}%</output></label><button className="wide-property-button" onClick={resetCrop}><RotateCcw size={16}/>重置裁切</button></div>}
-        <input ref={input} hidden type="file" accept="image/*" onChange={(event) => { if (event.target.files[0]) acceptFile(event.target.files[0], pendingSlot.current); event.target.value = ''; pendingSlot.current = null; }}/>
+        <input ref={input} hidden type="file" accept="image/*" multiple={slots.length === 1} onChange={(event) => { const files = Array.from(event.target.files || []); if (files.length) { if (files.length > 1 || pendingAppend.current) acceptInitialFiles(files, pendingSlot.current, pendingAppend.current); else acceptFile(files[0], pendingSlot.current); } event.target.value = ''; pendingSlot.current = null; pendingAppend.current = false; }}/>
         {textLayers.length > 0 && <div className="use-text-layers"><div className="slot-list-heading"><strong>文字图层</strong><span>{textLayers.length}</span></div><div className="use-text-layer-list">{textLayers.map((layer) => <label key={layer.id} className="use-text-layer-field"><span>{layer.name}</span><textarea value={layer.text || ''} rows={Math.max(2, String(layer.text || '').split('\n').length)} onFocus={() => { finishTextEditing(); setSelectedId(layer.id); setCropModeId(null); }} onChange={(event) => updateTextLayerById(layer.id, event.target.value)}/></label>)}</div></div>}
         <div className="export-settings"><div className="slot-list-heading"><strong>导出设置</strong></div><div className="export-setting-row"><label><span>格式</span><select value={exportFormat} onChange={(event) => { const value = event.target.value; setExportFormat(value); if (value === 'jpg') setTransparent(false); }}><option value="png">PNG</option><option value="jpg">JPEG</option><option value="webp">WebP</option><option value="gif">GIF 动图</option></select></label><label title={exportScaleHint}><span title={exportScaleHint}>倍率</span><select title={exportScaleHint} value={exportScale} onChange={(event) => setExportScale(Number(event.target.value))}><option value="1" title={exportScaleHint}>1x</option><option value="2" title={exportScaleHint}>2x</option><option value="3" title={exportScaleHint}>3x</option></select></label></div><label className="check-row"><input type="checkbox" disabled={exportFormat === 'jpg'} checked={transparent} onChange={(event) => setTransparent(event.target.checked)}/><span>透明画布背景</span></label></div>
       </section>
       <section className="result-area">
-        <div className="result-heading"><div><p className="eyebrow">第 2 步</p><h2>生成结果</h2></div><div className="result-heading-actions"><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>{result && <div className="result-actions"><button className="secondary-button" onClick={save}><Download size={17}/>保存 {exportFormat.toUpperCase()}</button><button className="primary-button" onClick={copyAgain}>{copied ? <Check size={17}/> : <Copy size={17}/>}{exportFormat === 'gif' ? '复制 GIF' : '复制图片'}</button></div>}</div></div>
+        <div className="result-heading"><div><p className="eyebrow">第 2 步</p><h2>生成结果</h2></div><div className="result-heading-actions"><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>{result && <div className="result-actions"><button className="primary-button" onClick={copyAgain}>{copied ? <Check size={17}/> : <Copy size={17}/>}{exportFormat === 'gif' ? '复制 GIF' : '复制图片'}</button></div>}</div></div>
         <div className="result-stage has-result" onWheel={handleResultWheel} onContextMenu={openContextMenu} onDragStart={(event) => event.preventDefault()} onDragOver={(event) => { if (Array.from(event.dataTransfer.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropOnSlot}>
           <UseStage composition={composition} slotSources={slotSources} slotTransforms={slotTransforms} selectedId={selectedId} setSelectedId={setSelectedId} updateLayer={updateLayer} cropModeId={cropModeId} setCropModeId={setCropModeId} updatePhotoTransform={updatePhotoTransform} onRequestSlot={requestSlotImage} zoom={zoom} pan={pan} panning={panning} onPanStart={beginPan} transparent={transparent} lockAspectRatio={lockAspectRatio} textEditingId={textEditingId} textSelection={textSelection} onEditText={editTextLayer} onTextChange={updateTextLayer} onTextSelectionChange={setTextSelection} onTextDone={finishTextEditing}/>
         </div>
       </section>
     </div>
+    {slotGalleryId && <div className="slot-gallery-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) setSlotGalleryId(null); }}>
+      <div className="slot-gallery-dialog" role="dialog" aria-modal="true" aria-label="已选择的照片">
+        <div className="slot-gallery-heading"><div><strong>已选择的照片</strong><span>{gallerySources.length} 张</span></div><IconButton label="关闭" onClick={() => setSlotGalleryId(null)}><X size={17}/></IconButton></div>
+        <div className="slot-gallery-grid">
+          {gallerySources.map((source, index) => <div className="slot-gallery-item" key={`${source.slice(-32)}-${index}`} title={galleryNames[index] || `第 ${index + 1} 张`}><img src={source} alt={galleryNames[index] || ''}/><button type="button" aria-label={`移除第 ${index + 1} 张图片`} onClick={() => removeSlotSourceAt(slotGalleryId, index)}><X size={13}/></button></div>)}
+          <button type="button" className="slot-gallery-add" title="追加图片" onClick={() => requestSlotImage(slotGalleryId, true)}><Plus size={22}/></button>
+        </div>
+      </div>
+    </div>}
+    {groupRosterChoice && <div className="group-roster-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) setGroupRosterChoice(null); }}>
+      <div className="group-roster-dialog" role="dialog" aria-modal="true" aria-labelledby="group-roster-title">
+        <div className="group-roster-heading"><div><strong id="group-roster-title">是否替换文本？</strong><span>{groupRosterChoice.fileName}</span></div><IconButton label="取消" onClick={() => setGroupRosterChoice(null)}><X size={17}/></IconButton></div>
+        <p>选择 Excel 第一行中的字段，将按从上到下的顺序替换可编辑文字图层。锁定文本的图层不会被修改。</p>
+        <div className="group-roster-options">
+           {[['workerId', '工号'], ['chineseName', '中文名'], ['englishName', '英文名'], ['nickname', '昵称'], ['none', '否']].map(([value, label]) => <button type="button" key={value} className={value === 'none' ? 'secondary-button' : 'primary-button'} onClick={() => importGroupRosterRows(groupRosterChoice.rows, value)}>{label}</button>)}
+        </div>
+      </div>
+    </div>}
+    {groupRosterBusy && <div className="group-roster-busy" role="status" aria-live="polite"><div><RefreshCw size={20}/><strong>正在导入群名单</strong><span>正在下载成员头像，请稍候…</span></div></div>}
     {contextMenu && <div className="result-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setContextMenu(null); copyAgain(); }}><Copy size={16}/>{exportFormat === 'gif' ? '复制 GIF' : '复制图片'}</button></div>}
-    {exportBusy && <div className="export-busy-overlay" role="status" aria-live="polite"><div><RefreshCw size={22}/><span>导出中</span></div></div>}
+    <ExportProgressOverlay progress={exportProgress} onCancel={cancelExport}/>
     {slotContextMenu && <div className="result-context-menu" style={{ left: slotContextMenu.x, top: slotContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); pasteClipboardImage(slotId); }}><Clipboard size={16}/>粘贴图片</button><button className="danger" disabled={!slotSources[slotContextMenu.id]} onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); removeSlotSource(slotId); }}><Trash2 size={16}/>删除图片</button></div>}
   </main>;
 }

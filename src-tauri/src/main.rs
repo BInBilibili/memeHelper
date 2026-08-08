@@ -11,6 +11,7 @@ use std::{
     env, fs,
     io::Cursor,
     path::{Component, Path, PathBuf},
+    time::Duration,
 };
 use tauri::{LogicalSize, Manager, Size};
 
@@ -528,6 +529,90 @@ fn decode_image_data_url(data_url: &str) -> Result<(&str, Vec<u8>), String> {
 
 fn is_gif_signature(bytes: &[u8]) -> bool {
     bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupFaceDownload {
+    worker_id: String,
+    url: String,
+    data_url: Option<String>,
+    error: Option<String>,
+}
+
+fn face_mime_type(content_type: Option<&str>, bytes: &[u8]) -> &'static str {
+    let normalized = content_type.unwrap_or_default().to_ascii_lowercase();
+    if normalized.contains("image/png") || bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        "image/png"
+    } else if normalized.contains("image/gif") || is_gif_signature(bytes) {
+        "image/gif"
+    } else if normalized.contains("image/webp")
+        || (bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP")
+    {
+        "image/webp"
+    } else {
+        "image/jpeg"
+    }
+}
+
+#[tauri::command]
+async fn download_group_faces(worker_ids: Vec<String>) -> Result<Vec<GroupFaceDownload>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let client = reqwest::blocking::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .connect_timeout(Duration::from_secs(12))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .map_err(|error| format!("无法创建群名单下载客户端：{error}"))?;
+
+        let mut results = Vec::with_capacity(worker_ids.len());
+        for raw_worker_id in worker_ids {
+            let worker_id = raw_worker_id.trim().to_string();
+            let url = format!("https://w3.huawei.com/w3lab/rest/yellowpage/face/{worker_id}/120");
+            if worker_id.is_empty()
+                || !worker_id.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+                })
+            {
+                results.push(GroupFaceDownload {
+                    worker_id,
+                    url,
+                    data_url: None,
+                    error: Some("工号为空或包含不受支持的字符".to_string()),
+                });
+                continue;
+            }
+
+            let download = (|| -> Result<String, String> {
+                let response = client.get(&url).send().map_err(|error| error.to_string())?;
+                let status = response.status();
+                if !status.is_success() {
+                    return Err(format!("HTTP {}", status.as_u16()));
+                }
+                let content_type = response
+                    .headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
+                let bytes = response.bytes().map_err(|error| error.to_string())?;
+                if bytes.is_empty() {
+                    return Err("服务器返回了空图片".to_string());
+                }
+                let mime = face_mime_type(content_type.as_deref(), &bytes);
+                Ok(format!("data:{mime};base64,{}", STANDARD.encode(&bytes)))
+            })();
+
+            results.push(GroupFaceDownload {
+                worker_id,
+                url,
+                data_url: download.as_ref().ok().cloned(),
+                error: download.err(),
+            });
+        }
+        Ok(results)
+    })
+    .await
+    .map_err(|error| format!("群名单图片下载任务失败：{error}"))?
 }
 
 #[tauri::command]
@@ -1245,6 +1330,7 @@ fn main() {
             read_clipboard_image,
             decode_gif_frames,
             encode_gif_frames,
+            download_group_faces,
             save_image
         ])
         .run(tauri::generate_context!())

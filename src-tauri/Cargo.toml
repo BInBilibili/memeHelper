@@ -1,6 +1,6 @@
 [package]
 name = "meme-helper-tauri"
-version = "2.4.15"
+version = "2.5.1"
 description = "Offline meme template editor and generator"
 authors = ["Meme Helper"]
 edition = "2021"
@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 arboard = "3.6"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "gif"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
