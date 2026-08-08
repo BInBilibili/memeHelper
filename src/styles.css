@@ -385,7 +385,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .slot-list-heading strong { font-size: 11px; }
 .slot-list-heading span { min-width: 22px; height: 18px; padding: 0 6px; border-radius: 9px; background: #eeeae2; color: var(--muted); display: grid; place-items: center; font-size: 9px; }
 .slot-list { display: flex; flex-direction: column; gap: 7px; margin-bottom: 16px; }
-.slot-item-row { display: grid; grid-template-columns: minmax(0, 1fr) 34px; gap: 6px; align-items: stretch; }
+.slot-item-row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) 34px; gap: 6px; align-items: stretch; }
 .slot-item-row.dragging .slot-item, .slot-item-row.dragging .slot-crop-button { border-color: var(--accent); background: #fff4f1; box-shadow: 0 0 0 2px rgba(233,78,55,.12); }
 .slot-item { width: 100%; min-height: 58px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); display: flex; align-items: center; gap: 9px; text-align: left; cursor: pointer; }
 .slot-item:hover { border-color: #d7a092; background: #fff9f7; }
@@ -396,12 +396,13 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .slot-item-thumb.has-image { position: relative; overflow: visible; cursor: zoom-in; }
 .slot-item-thumb.has-image img { border-radius: 3px; overflow: hidden; }
 .slot-thumb-count { position: absolute; top: -6px; right: -7px; min-width: 20px; height: 18px; padding: 0 5px; border: 2px solid var(--surface); border-radius: 10px; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 9px; line-height: 1; box-shadow: 0 2px 7px rgba(0,0,0,.2); }
-.slot-gallery-backdrop { position: fixed; inset: 0; z-index: 1300; display: grid; place-items: center; padding: 24px; background: rgba(24,24,24,.38); backdrop-filter: blur(2px); }
-.slot-gallery-dialog { width: min(430px, calc(100vw - 48px)); max-height: min(520px, calc(100vh - 48px)); overflow: auto; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); box-shadow: 0 18px 50px rgba(0,0,0,.3); }
+.slot-reset-control { width: 28px; height: 28px; flex: none; border-radius: 5px; color: var(--accent); display: grid; place-items: center; cursor: pointer; }
+.slot-reset-control:hover, .slot-reset-control:focus-visible { outline: 0; background: var(--accent-soft); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent); }
+.slot-gallery-popover { grid-column: 1 / -1; width: 100%; max-height: 310px; overflow-y: auto; margin-top: -2px; padding: 10px; border: 1px solid var(--line); border-top-color: color-mix(in srgb, var(--accent) 45%, var(--line)); border-radius: 4px 4px 8px 8px; background: var(--surface); color: var(--ink); box-shadow: 0 10px 24px rgba(34,32,28,.14); }
 .slot-gallery-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .slot-gallery-heading > div { display: flex; align-items: baseline; gap: 8px; }
-.slot-gallery-heading strong { font-size: 13px; }
-.slot-gallery-heading span { color: var(--muted); font-size: 10px; }
+.slot-gallery-heading strong { font-size: 11px; }
+.slot-gallery-heading span { color: var(--muted); font-size: 9px; }
 .slot-gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, 64px); gap: 10px; align-items: start; }
 .slot-gallery-item, .slot-gallery-add { position: relative; width: 64px; height: 64px; border-radius: 5px; }
 .slot-gallery-item { border: 1px solid var(--line); background: var(--surface-soft); }

@@ -4378,6 +4378,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   const initialHandled = useRef(false);
   const renderRequest = useRef(0);
   const topMenuRef = useRef();
+  const slotGalleryRef = useRef();
   const groupRosterInput = useRef();
   const slots = composition.layers.filter((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId);
   const textLayers = composition.layers.filter((layer) => layer.type === 'text' && !layer.textLocked);
@@ -4503,6 +4504,38 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     setCropModeId((current) => current === slotId ? null : current);
     setSlotGalleryId((current) => current === slotId ? null : current);
   }, [commitSession]);
+
+  const resetSlotLayer = useCallback((slotId) => {
+    const originalLayer = template.layers.find((layer) => layer.id === slotId && layer.type === 'slot');
+    if (!originalLayer) return;
+    commitSession((previous) => {
+      const slotSources = { ...previous.slotSources };
+      const slotNames = { ...previous.slotNames };
+      const slotSourceLists = { ...(previous.slotSourceLists || {}) };
+      const slotNameLists = { ...(previous.slotNameLists || {}) };
+      const slotTransforms = { ...previous.slotTransforms };
+      delete slotSources[slotId];
+      delete slotNames[slotId];
+      delete slotSourceLists[slotId];
+      delete slotNameLists[slotId];
+      delete slotTransforms[slotId];
+      return {
+        ...previous,
+        composition: {
+          ...previous.composition,
+          layers: previous.composition.layers.map((layer) => layer.id === slotId ? structuredClone(originalLayer) : layer)
+        },
+        slotSources,
+        slotNames,
+        slotSourceLists,
+        slotNameLists,
+        slotTransforms
+      };
+    });
+    setSelectedId(slotId);
+    setCropModeId((current) => current === slotId ? null : current);
+    setSlotGalleryId((current) => current === slotId ? null : current);
+  }, [commitSession, template.layers]);
 
   const removeSlotSourceAt = useCallback((slotId, index) => {
     commitSession((previous) => {
@@ -4898,6 +4931,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       setContextMenu(null);
       setSlotContextMenu(null);
       if (!topMenuRef.current?.contains(event.target)) setTopMenu(false);
+      if (!slotGalleryRef.current?.contains(event.target)) setSlotGalleryId(null);
     };
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('copy', handleCopy);
@@ -4994,20 +5028,33 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
             const name = slotNames[layer.id];
             const sources = slotSourceLists[layer.id] || (source ? [source] : []);
             const extraCount = Math.max(0, sources.length - 1);
-            return <div key={layer.id} className={`slot-item-row ${slotDropId === layer.id ? 'dragging' : ''}`} onContextMenu={(event) => openSlotContextMenu(event, layer.id)} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setSlotDropId(layer.id); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setSlotDropId((current) => current === layer.id ? null : current); }} onDrop={(event) => dropOnSlotList(event, layer.id)}><button type="button" className={`slot-item ${selectedId === layer.id ? 'selected' : ''}`} onClick={() => setSelectedId(layer.id)} onDoubleClick={() => { setSelectedId(layer.id); requestSlotImage(layer.id); }}>
-              <span className={`slot-item-thumb ${source ? 'has-image' : ''}`} onClick={(event) => { if (!source) return; event.stopPropagation(); setSelectedId(layer.id); setSlotGalleryId(layer.id); }}>{source ? <><img src={source} alt=""/>{extraCount > 0 && <b className="slot-thumb-count">+{extraCount}</b>}</> : <LayerThumb layer={layer}/>}</span>
-              <span className="slot-item-copy"><strong>{layer.name}</strong><small>{name || (slots.length === 1 ? '双击选择照片（支持多张）' : '双击选择照片')}</small></span>
-              {source ? <RotateCcw size={16}/> : <ImagePlus size={16}/>}
-            </button>{source && <IconButton label={cropModeId === layer.id ? '退出裁切' : '裁切照片'} className={cropModeId === layer.id ? 'active slot-crop-button' : 'slot-crop-button'} onClick={() => { setSelectedId(layer.id); setCropModeId((current) => current === layer.id ? null : layer.id); }}><Crop size={16}/></IconButton>}</div>;
+            const galleryOpen = slotGalleryId === layer.id;
+            return <div key={layer.id} className={`slot-item-row ${slotDropId === layer.id ? 'dragging' : ''} ${galleryOpen ? 'gallery-open' : ''}`} onContextMenu={(event) => openSlotContextMenu(event, layer.id)} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setSlotDropId(layer.id); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setSlotDropId((current) => current === layer.id ? null : current); }} onDrop={(event) => dropOnSlotList(event, layer.id)}>
+              <button type="button" className={`slot-item ${selectedId === layer.id ? 'selected' : ''}`} onClick={() => setSelectedId(layer.id)} onDoubleClick={() => { setSelectedId(layer.id); requestSlotImage(layer.id); }}>
+                <span className={`slot-item-thumb ${source ? 'has-image' : ''}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (!source) return; event.stopPropagation(); setSelectedId(layer.id); setSlotGalleryId((current) => current === layer.id ? null : layer.id); }}>{source ? <><img src={source} alt=""/>{extraCount > 0 && <b className="slot-thumb-count">+{extraCount}</b>}</> : <LayerThumb layer={layer}/>}</span>
+                <span className="slot-item-copy"><strong>{layer.name}</strong><small>{name || (slots.length === 1 ? '双击选择照片（支持多张）' : '双击选择照片')}</small></span>
+                {source
+                  ? <span className="slot-reset-control" role="button" tabIndex={0} title="重置此可替换图层" aria-label="重置此可替换图层" onClick={(event) => { event.stopPropagation(); resetSlotLayer(layer.id); }} onDoubleClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); resetSlotLayer(layer.id); } }}><RotateCcw size={16}/></span>
+                  : <ImagePlus size={16}/>}
+              </button>
+              {source && <IconButton label={cropModeId === layer.id ? '退出裁切' : '裁切照片'} className={cropModeId === layer.id ? 'active slot-crop-button' : 'slot-crop-button'} onClick={() => { setSelectedId(layer.id); setCropModeId((current) => current === layer.id ? null : layer.id); }}><Crop size={16}/></IconButton>}
+              {galleryOpen && <div ref={slotGalleryRef} className="slot-gallery-popover" role="dialog" aria-label={`${layer.name} 已选择的照片`} onPointerDown={(event) => event.stopPropagation()}>
+                <div className="slot-gallery-heading"><div><strong>已选择的照片</strong><span>{gallerySources.length} 张</span></div><IconButton label="收起" onClick={() => setSlotGalleryId(null)}><ChevronUp size={17}/></IconButton></div>
+                <div className="slot-gallery-grid">
+                  {gallerySources.map((gallerySource, index) => <div className="slot-gallery-item" key={`${gallerySource.slice(-32)}-${index}`} title={galleryNames[index] || `第 ${index + 1} 张`}><img src={gallerySource} alt={galleryNames[index] || ''}/><button type="button" aria-label={`移除第 ${index + 1} 张图片`} onClick={() => removeSlotSourceAt(layer.id, index)}><X size={13}/></button></div>)}
+                  <button type="button" className="slot-gallery-add" title="追加图片" onClick={() => requestSlotImage(layer.id, true)}><Plus size={22}/></button>
+                </div>
+              </div>}
+            </div>;
           })}
         </div>
-        <button type="button" className="secondary-button group-roster-import-button" disabled={groupRosterBusy} onClick={() => groupRosterInput.current?.click()}><Upload size={16}/>{groupRosterBusy ? '正在导入群名单' : '导入群名单'}</button>
-        <input ref={groupRosterInput} className="hidden-input" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) chooseGroupRosterFile(file); }}/>
-        <label className="check-row"><input type="checkbox" checked={lockAspectRatio} onChange={(event) => setLockAspectRatio(event.target.checked)}/><span>锁定照片宽高比</span></label>
+        <label className="check-row" title="开启后，拖动照片图层的边角会按原始宽高比例缩放，避免图片被横向或纵向拉伸变形；关闭后可自由改变宽度和高度。"><input type="checkbox" checked={lockAspectRatio} onChange={(event) => setLockAspectRatio(event.target.checked)}/><span>锁定照片宽高比</span></label>
         {cropLayer && slotSources[cropLayer.id] && <div className="crop-controls"><div className="crop-controls-heading"><strong><Crop size={16}/>裁切照片</strong><IconButton label="完成裁切" onClick={() => setCropModeId(null)}><Check size={16}/></IconButton></div><label className="crop-zoom-field"><span>缩放</span><input type="range" min="1" max="5" step="0.05" value={cropTransform.zoom} onChange={(event) => updatePhotoTransform(cropLayer.id, { zoom: Number(event.target.value) })}/><output>{Math.round(cropTransform.zoom * 100)}%</output></label><button className="wide-property-button" onClick={resetCrop}><RotateCcw size={16}/>重置裁切</button></div>}
         <input ref={input} hidden type="file" accept="image/*" multiple={slots.length === 1} onChange={(event) => { const files = Array.from(event.target.files || []); if (files.length) { if (files.length > 1 || pendingAppend.current) acceptInitialFiles(files, pendingSlot.current, pendingAppend.current); else acceptFile(files[0], pendingSlot.current); } event.target.value = ''; pendingSlot.current = null; pendingAppend.current = false; }}/>
         {textLayers.length > 0 && <div className="use-text-layers"><div className="slot-list-heading"><strong>文字图层</strong><span>{textLayers.length}</span></div><div className="use-text-layer-list">{textLayers.map((layer) => <label key={layer.id} className="use-text-layer-field"><span>{layer.name}</span><textarea value={layer.text || ''} rows={Math.max(2, String(layer.text || '').split('\n').length)} onFocus={() => { finishTextEditing(); setSelectedId(layer.id); setCropModeId(null); }} onChange={(event) => updateTextLayerById(layer.id, event.target.value)}/></label>)}</div></div>}
         <div className="export-settings"><div className="slot-list-heading"><strong>导出设置</strong></div><div className="export-setting-row"><label><span>格式</span><select value={exportFormat} onChange={(event) => { const value = event.target.value; setExportFormat(value); if (value === 'jpg') setTransparent(false); }}><option value="png">PNG</option><option value="jpg">JPEG</option><option value="webp">WebP</option><option value="gif">GIF 动图</option></select></label><label title={exportScaleHint}><span title={exportScaleHint}>倍率</span><select title={exportScaleHint} value={exportScale} onChange={(event) => setExportScale(Number(event.target.value))}><option value="1" title={exportScaleHint}>1x</option><option value="2" title={exportScaleHint}>2x</option><option value="3" title={exportScaleHint}>3x</option></select></label></div><label className="check-row"><input type="checkbox" disabled={exportFormat === 'jpg'} checked={transparent} onChange={(event) => setTransparent(event.target.checked)}/><span>透明画布背景</span></label></div>
+        <button type="button" className="secondary-button group-roster-import-button" title="选择 xlsx 群名单，按“工号”列下载成员头像，并可按工号、中文名、英文名或昵称依次替换文字图层。" disabled={groupRosterBusy} onClick={() => groupRosterInput.current?.click()}><Upload size={16}/>{groupRosterBusy ? '正在导入群名单（xlsx）' : '导入群名单（xlsx）'}</button>
+        <input ref={groupRosterInput} className="hidden-input" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) chooseGroupRosterFile(file); }}/>
       </section>
       <section className="result-area">
         <div className="result-heading"><div><p className="eyebrow">第 2 步</p><h2>生成结果</h2></div><div className="result-heading-actions"><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>{result && <div className="result-actions"><button className="primary-button" onClick={copyAgain}>{copied ? <Check size={17}/> : <Copy size={17}/>}{exportFormat === 'gif' ? '复制 GIF' : '复制图片'}</button></div>}</div></div>
@@ -5016,15 +5063,6 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
         </div>
       </section>
     </div>
-    {slotGalleryId && <div className="slot-gallery-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) setSlotGalleryId(null); }}>
-      <div className="slot-gallery-dialog" role="dialog" aria-modal="true" aria-label="已选择的照片">
-        <div className="slot-gallery-heading"><div><strong>已选择的照片</strong><span>{gallerySources.length} 张</span></div><IconButton label="关闭" onClick={() => setSlotGalleryId(null)}><X size={17}/></IconButton></div>
-        <div className="slot-gallery-grid">
-          {gallerySources.map((source, index) => <div className="slot-gallery-item" key={`${source.slice(-32)}-${index}`} title={galleryNames[index] || `第 ${index + 1} 张`}><img src={source} alt={galleryNames[index] || ''}/><button type="button" aria-label={`移除第 ${index + 1} 张图片`} onClick={() => removeSlotSourceAt(slotGalleryId, index)}><X size={13}/></button></div>)}
-          <button type="button" className="slot-gallery-add" title="追加图片" onClick={() => requestSlotImage(slotGalleryId, true)}><Plus size={22}/></button>
-        </div>
-      </div>
-    </div>}
     {groupRosterChoice && <div className="group-roster-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) setGroupRosterChoice(null); }}>
       <div className="group-roster-dialog" role="dialog" aria-modal="true" aria-labelledby="group-roster-title">
         <div className="group-roster-heading"><div><strong id="group-roster-title">是否替换文本？</strong><span>{groupRosterChoice.fileName}</span></div><IconButton label="取消" onClick={() => setGroupRosterChoice(null)}><X size={17}/></IconButton></div>
