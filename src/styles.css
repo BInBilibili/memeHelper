@@ -399,6 +399,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .slot-reset-control { width: 28px; height: 28px; flex: none; border-radius: 5px; color: var(--accent); display: grid; place-items: center; cursor: pointer; }
 .slot-reset-control:hover, .slot-reset-control:focus-visible { outline: 0; background: var(--accent-soft); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent); }
 .slot-gallery-popover { grid-column: 1 / -1; width: 100%; max-height: 310px; overflow-y: auto; margin-top: -2px; padding: 10px; border: 1px solid var(--line); border-top-color: color-mix(in srgb, var(--accent) 45%, var(--line)); border-radius: 4px 4px 8px 8px; background: var(--surface); color: var(--ink); box-shadow: 0 10px 24px rgba(34,32,28,.14); }
+.slot-gallery-popover:focus { outline: 0; }
 .slot-gallery-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
 .slot-gallery-heading > div { display: flex; align-items: baseline; gap: 8px; }
 .slot-gallery-heading strong { font-size: 11px; }
@@ -410,7 +411,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .slot-gallery-item button { position: absolute; top: -6px; right: -6px; width: 20px; height: 20px; padding: 0; border: 1px solid var(--surface); border-radius: 50%; background: var(--danger, #d84232); color: #fff; display: none; place-items: center; box-shadow: 0 2px 6px rgba(0,0,0,.24); }
 .slot-gallery-item:hover button, .slot-gallery-item:focus-within button { display: grid; }
 .slot-gallery-add { border: 1px dashed var(--accent); background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; }
-.slot-gallery-add:hover { background: var(--surface); box-shadow: 0 0 0 2px var(--accent-soft); }
+.slot-gallery-add:hover { border-style: solid; background: var(--surface); box-shadow: 0 0 0 2px var(--accent-soft); }
 .text-lock-row { margin-top: 9px; }
 .slot-item-thumb .shape-thumb { display: block; width: 22px; height: 22px; }
 .slot-item-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 4px; }

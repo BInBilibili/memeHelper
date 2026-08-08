@@ -15,6 +15,28 @@ use std::{
 };
 use tauri::{LogicalSize, Manager, Size};
 
+#[cfg(target_os = "windows")]
+#[link(name = "shell32")]
+extern "system" {
+    fn SetCurrentProcessExplicitAppUserModelID(app_id: *const u16) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+fn configure_windows_app_identity() {
+    use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
+
+    let app_id: Vec<u16> = OsStr::new("com.memehelper.desktop")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        let _ = SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr());
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn configure_windows_app_identity() {}
+
 fn default_config() -> Value {
     json!({
         "theme": "system",
@@ -1299,9 +1321,13 @@ mod tests {
 }
 
 fn main() {
+    configure_windows_app_identity();
     tauri::Builder::default()
         .setup(|app| {
             if let Some(window) = app.get_webview_window("main") {
+                if let Some(icon) = app.default_window_icon().cloned() {
+                    window.set_icon(icon)?;
+                }
                 window.set_title(&format!("MemeHelper v{}", env!("CARGO_PKG_VERSION")))?;
                 let config = read_config();
                 let min_width = config_number(&config, "minWidth", 1024.0, 800.0);

@@ -1691,12 +1691,13 @@ function TemplateCard({ template, onUse, onEdit, onRename, onCopy, onDelete, onT
   </article>{pasteMenu && <div ref={pasteMenuRef} className="library-paste-menu" style={{ left: pasteMenu.x, top: pasteMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={pasteImage} disabled={quickWorking}><Clipboard size={16}/>粘贴图片并复制作品</button></div>}{renaming && <RenameTemplateDialog template={template} onCancel={() => setRenaming(false)} onSave={onRename}/>}<ExportProgressOverlay progress={quickExportProgress} onCancel={cancelQuickExport}/></>;
 }
 
-function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, onTogglePlay, onSelectFrame, onDropFrame, onDuplicateFrame, onDeleteFrame, onReorderFrame }) {
+function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, layerInsertionIndex = null, onTogglePlay, onSelectFrame, onDropFrame, onDuplicateFrame, onDeleteFrame, onReorderFrame }) {
   const [frameMenu, setFrameMenu] = useState(null);
   const [dragState, setDragState] = useState(null);
   const [dropState, setDropState] = useState(null);
   const menuRef = useRef(null);
   const selectedSet = new Set(selectedIndexes);
+  const menuSelectionCount = frameMenu && selectedSet.has(frameMenu.index) ? Math.max(1, selectedIndexes.length) : 1;
   useEffect(() => {
     if (!frameMenu) return undefined;
     const close = (event) => { if (!menuRef.current?.contains(event.target)) setFrameMenu(null); };
@@ -1746,12 +1747,12 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
     <div className="gif-timeline-heading"><div><strong>GIF 时间轴</strong><small>{frames.length ? `${frames.length} 帧` : '正在读取帧'}</small></div><button type="button" className="gif-play-button" disabled={!frames.length} onClick={onTogglePlay}>{playing ? '暂停' : '播放'}</button></div>
     <div className="gif-frame-strip" onWheel={scrollFrames} onDragOver={(event) => { if (isFrameDrag(event) || isFileDrag(event)) { event.preventDefault(); event.stopPropagation(); const resolved = resolveInsertion(event); setDropState(resolved); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDropState(null); }} onDrop={(event) => handleDrop(event, dropState?.targetIndex ?? null, dropState?.placement || 'before')}>
       {frames.length ? frames.map((frame, index) => {
-        const placement = dropState?.targetIndex === index ? dropState.placement : null;
+        const placement = layerInsertionIndex === index ? 'before' : dropState?.targetIndex === index ? dropState.placement : null;
         return <button type="button" draggable key={`${index}-${frame.dataUrl.slice(-12)}`} className={`gif-frame-cell ${selectedSet.has(index) ? 'selected' : ''} ${index === frameIndex ? 'active' : ''} ${dragState?.sourceIndex === index ? 'dragging' : ''} ${placement ? `drop-${placement}` : ''}`} onClick={(event) => { if (event.shiftKey) event.preventDefault(); onSelectFrame(index, event); }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); if (!selectedSet.has(index)) onSelectFrame(index, {}); setFrameMenu({ index, x: Math.min(event.clientX, window.innerWidth - 160), y: Math.min(event.clientY, window.innerHeight - 84) }); }} onDragStart={(event) => { event.dataTransfer.effectAllowed = 'copyMove'; event.dataTransfer.setData('application/x-meme-gif-frame', String(index)); setDragState({ sourceIndex: index }); setFrameMenu(null); }} onDragOver={(event) => { if (!isFrameDrag(event) && !isFileDrag(event)) return; event.preventDefault(); event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); const nextPlacement = event.clientX < rect.left + rect.width / 2 ? 'before' : 'after'; setDropState({ targetIndex: index, placement: nextPlacement }); }} onDrop={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const placement = event.clientX < rect.left + rect.width / 2 ? 'before' : 'after'; handleDrop(event, index, placement); }} onDragEnd={() => { setDragState(null); setDropState(null); }} title={`第 ${index + 1} 帧，${Math.max(20, Number(frame.delayMs) || 100)} ms`}><img src={frame.dataUrl} alt={`第 ${index + 1} 帧`} draggable={false}/><span>{index + 1}</span></button>;
       }) : <div className="gif-timeline-empty">GIF 帧加载中…</div>}
-      {dropState?.targetIndex === frames.length && dragState && <span className="gif-frame-end-drop" aria-hidden="true"/>}
+      {((dropState?.targetIndex === frames.length && dragState) || layerInsertionIndex === frames.length) && <span className="gif-frame-end-drop" aria-hidden="true"/>}
     </div>
-    {frameMenu && <div ref={menuRef} className="gif-frame-context-menu" style={{ left: frameMenu.x, top: frameMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={() => { const index = frameMenu.index; setFrameMenu(null); onDuplicateFrame?.(index); }}><Copy size={15}/>复制帧</button><button type="button" className="danger" onClick={() => { const index = frameMenu.index; setFrameMenu(null); onDeleteFrame?.(index); }}><Trash2 size={15}/>删除帧</button></div>}
+    {frameMenu && <div ref={menuRef} className="gif-frame-context-menu" style={{ left: frameMenu.x, top: frameMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={() => { const index = frameMenu.index; setFrameMenu(null); onDuplicateFrame?.(index); }}><Copy size={15}/>{menuSelectionCount > 1 ? `复制 ${menuSelectionCount} 帧` : '复制帧'}</button><button type="button" className="danger" onClick={() => { const index = frameMenu.index; setFrameMenu(null); onDeleteFrame?.(index); }}><Trash2 size={15}/>{menuSelectionCount > 1 ? `删除 ${menuSelectionCount} 帧` : '删除帧'}</button></div>}
   </div>;
 }function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, notify }) {
   const draftKey = initial?.id || 'new';
@@ -1802,6 +1803,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
   const [draggedLayerId, setDraggedLayerId] = useState(null);
   const [layerDrop, setLayerDrop] = useState(null);
   const [gifFrameLayerDrop, setGifFrameLayerDrop] = useState(null);
+  const [timelineLayerInsertionIndex, setTimelineLayerInsertionIndex] = useState(null);
   const [editingLayerName, setEditingLayerName] = useState(null);
   const [hasCopiedLayers, setHasCopiedLayers] = useState(false);
   const [tagsText, setTagsText] = useState(() => (initialStateRef.current.draft.tags || []).join(', '));
@@ -1915,33 +1917,71 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
     } catch (error) { notify(`更新 GIF 帧失败：${error?.message || error}`, 'error'); return false; }
   };
 
-  const insertGifFrame = async (dataUrl, index = gifTimeline.frameIndex + 1) => {
-    if (!timelineGifLayer || !dataUrl || !gifTimeline.frames.length) return;
+  const insertGifFrames = async (incomingFrames, index = gifTimeline.frameIndex + 1) => {
+    if (!timelineGifLayer || !incomingFrames?.length || !gifTimeline.frames.length) return false;
     const safeIndex = Math.round(clamp(index, 0, gifTimeline.frames.length));
     const width = gifTimeline.frames[0].width; const height = gifTimeline.frames[0].height;
-    const image = await loadImage(dataUrl);
-    const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
-    const crop = getCoverCrop(image, width, height);
-    canvas.getContext('2d').drawImage(image, crop.x, crop.y, crop.width, crop.height, 0, 0, width, height);
-    const normalizedDataUrl = canvas.toDataURL('image/png');
-    const nextFrames = [...gifTimeline.frames.slice(0, safeIndex), { dataUrl: normalizedDataUrl, delayMs: 100, width, height }, ...gifTimeline.frames.slice(safeIndex)];
-    await commitGifFrames(nextFrames, safeIndex, [safeIndex]);
+    const normalizedFrames = [];
+    for (const incomingFrame of incomingFrames) {
+      const dataUrl = typeof incomingFrame === 'string' ? incomingFrame : incomingFrame?.dataUrl;
+      if (!dataUrl) continue;
+      const image = await loadImage(dataUrl);
+      const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+      const crop = getCoverCrop(image, width, height);
+      canvas.getContext('2d').drawImage(image, crop.x, crop.y, crop.width, crop.height, 0, 0, width, height);
+      normalizedFrames.push({ dataUrl: canvas.toDataURL('image/png'), delayMs: Math.max(20, Number(incomingFrame?.delayMs) || 100), width, height });
+    }
+    if (!normalizedFrames.length) return false;
+    const nextFrames = [...gifTimeline.frames.slice(0, safeIndex), ...normalizedFrames, ...gifTimeline.frames.slice(safeIndex)];
+    const insertedIndexes = normalizedFrames.map((_, offset) => safeIndex + offset);
+    return commitGifFrames(nextFrames, safeIndex, insertedIndexes);
+  };
+
+  const insertGifFrame = async (dataUrl, index = gifTimeline.frameIndex + 1) => insertGifFrames([{ dataUrl, delayMs: 100 }], index);
+
+  const insertLayerIntoGifTimeline = async (layerId, index) => {
+    const layer = draft.layers.find((item) => item.id === layerId);
+    if (!timelineGifLayer || !layer || !gifTimeline.frames.length) return;
+    try {
+      if (isGifSource(layer.src)) {
+        const decoded = await desktop.decodeGifFrames(layer.src);
+        if (!decoded?.frames?.length) throw new Error('GIF 图层没有可读取的帧');
+        const customDelays = Array.isArray(layer.gifFrameDelays) && layer.gifFrameDelays.length === decoded.frames.length ? layer.gifFrameDelays : null;
+        const renderedFrames = [];
+        for (let frameIndex = 0; frameIndex < decoded.frames.length; frameIndex += 1) {
+          const frame = decoded.frames[frameIndex];
+          const frameLayer = { ...layer, src: frame.dataUrl, rotation: 0 };
+          const isolated = await renderIsolatedLayer(frameLayer, frame.dataUrl, null, null, null);
+          renderedFrames.push({ dataUrl: isolated.canvas.toDataURL('image/png'), delayMs: Math.max(20, Number(customDelays?.[frameIndex]) || Number(frame.delayMs) || 100) });
+        }
+        if (await insertGifFrames(renderedFrames, index)) notify(`已将“${layer.name}”的 ${renderedFrames.length} 帧插入时间轴`);
+        return;
+      }
+      const isolated = await renderIsolatedLayer({ ...layer, rotation: 0 }, layer.src, null, null, null);
+      if (await insertGifFrames([{ dataUrl: isolated.canvas.toDataURL('image/png'), delayMs: 100 }], index)) notify(`已将“${layer.name}”作为帧插入时间轴`);
+    } catch (error) {
+      notify(`图层插入时间轴失败：${error?.message || error}`, 'error');
+    }
   };
 
   const duplicateGifFrame = async (index) => {
-    const frame = gifTimeline.frames[index];
-    if (!timelineGifLayer || !frame) return;
-    const insertAt = index + 1;
-    const nextFrames = [...gifTimeline.frames.slice(0, insertAt), { ...frame }, ...gifTimeline.frames.slice(insertAt)];
-    if (await commitGifFrames(nextFrames, insertAt, [insertAt])) notify('GIF 帧已复制');
+    if (!timelineGifLayer || !gifTimeline.frames[index]) return;
+    const indexes = (gifTimeline.selectedIndexes.includes(index) ? gifTimeline.selectedIndexes : [index]).slice().sort((a, b) => a - b);
+    const copies = indexes.map((frameIndex) => ({ ...gifTimeline.frames[frameIndex] }));
+    const insertAt = Math.max(...indexes) + 1;
+    const nextFrames = [...gifTimeline.frames.slice(0, insertAt), ...copies, ...gifTimeline.frames.slice(insertAt)];
+    const selectedCopies = copies.map((_, offset) => insertAt + offset);
+    if (await commitGifFrames(nextFrames, insertAt, selectedCopies)) notify(copies.length > 1 ? `已复制 ${copies.length} 帧` : 'GIF 帧已复制');
   };
 
   const deleteGifFrame = async (index) => {
     if (!timelineGifLayer || !gifTimeline.frames[index]) return;
-    if (gifTimeline.frames.length <= 1) return notify('GIF 至少需要保留一帧', 'error');
-    const nextFrames = gifTimeline.frames.filter((_, frameIndex) => frameIndex !== index);
-    const nextIndex = Math.min(index, nextFrames.length - 1);
-    if (await commitGifFrames(nextFrames, nextIndex, [nextIndex])) notify('GIF 帧已删除');
+    const indexes = (gifTimeline.selectedIndexes.includes(index) ? gifTimeline.selectedIndexes : [index]).slice().sort((a, b) => a - b);
+    if (gifTimeline.frames.length - indexes.length < 1) return notify('GIF 至少需要保留一帧', 'error');
+    const deleting = new Set(indexes);
+    const nextFrames = gifTimeline.frames.filter((_, frameIndex) => !deleting.has(frameIndex));
+    const nextIndex = Math.min(indexes[0], nextFrames.length - 1);
+    if (await commitGifFrames(nextFrames, nextIndex, [nextIndex])) notify(indexes.length > 1 ? `已删除 ${indexes.length} 帧` : 'GIF 帧已删除');
   };
 
   const reorderGifFrame = async (sourceIndex, insertionIndex) => {
@@ -2643,6 +2683,18 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
     setSelectedGroupIds(movedGroupIds);
     setSelectedGroupId(movedGroupIds.length === 1 ? movedGroupIds[0] : null);
   };
+  const resolveTimelineLayerInsertion = (pointerEvent) => {
+    if (!timelineGifLayer || !gifTimeline.frames.length) return null;
+    const strip = document.querySelector('.gif-frame-strip');
+    const rect = strip?.getBoundingClientRect();
+    if (!strip || !rect || pointerEvent.clientX < rect.left || pointerEvent.clientX > rect.right || pointerEvent.clientY < rect.top || pointerEvent.clientY > rect.bottom) return null;
+    const cells = [...strip.querySelectorAll('.gif-frame-cell')];
+    for (let index = 0; index < cells.length; index += 1) {
+      const cellRect = cells[index].getBoundingClientRect();
+      if (pointerEvent.clientX < cellRect.left + cellRect.width / 2) return index;
+    }
+    return cells.length;
+  };
   const beginLayerReorder = (event, sourceId, sourceGroupId = null) => {
     if (event.button !== 0) return;
     event.stopPropagation();
@@ -2721,18 +2773,28 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
       if (layerReorderRef.current) layerReorderRef.current.active = true;
       pointerEvent.preventDefault();
       setDraggedLayerId(sourceId);
+      const timelineInsertionIndex = sourceGroupId ? null : resolveTimelineLayerInsertion(pointerEvent);
+      setTimelineLayerInsertionIndex(timelineInsertionIndex);
+      if (timelineInsertionIndex != null) {
+        setLayerDrop(null);
+        return;
+      }
       const target = resolveTarget(pointerEvent);
       setLayerDrop((current) => current?.id === target?.id && current?.placement === target?.placement ? current : target);
     };
     const finish = (pointerEvent) => {
       const active = layerReorderRef.current?.active;
+      const timelineInsertionIndex = sourceGroupId ? null : resolveTimelineLayerInsertion(pointerEvent);
       const target = resolveTarget(pointerEvent);
       cleanup();
-      if (active && target) {
+      if (active && timelineInsertionIndex != null) {
+        insertLayerIntoGifTimeline(sourceId, timelineInsertionIndex);
+      } else if (active && target) {
         reorderLayer(sourceId, target.id, target.placement, Boolean(sourceGroupId), dragSelectedIds, target.targetGroupId || null, dragSelectedGroupIds);
       }
       setDraggedLayerId(null);
       setLayerDrop(null);
+      setTimelineLayerInsertionIndex(null);
     };
     layerReorderRef.current?.cleanup?.();
     layerReorderRef.current = { active: false, cleanup };
@@ -3088,7 +3150,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, o
           <div className="canvas-size"><button type="button" className={`size-mode-button ${sizeMode === 'image' ? 'active' : ''}`} title={sizeMode === 'canvas' ? '点击切换为修改图像尺寸' : '点击切换为修改画布尺寸'} onClick={() => setSizeMode((mode) => mode === 'canvas' ? 'image' : 'canvas')}>{sizeMode === 'canvas' ? '画布' : '图像'}</button><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeWidth} disabled={sizeMode === 'image' && !imageBounds} onCommit={(width) => commitToolbarSize('width', width)}/><span>×</span><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeHeight} disabled={sizeMode === 'image' && !imageBounds} onCommit={(height) => commitToolbarSize('height', height)}/>{sizeMode === 'image' && <IconButton className={`size-lock-button ${imageSizeLocked ? 'active' : ''}`} label={imageSizeLocked ? '已锁定宽高比' : '锁定宽高比'} onClick={() => setImageSizeLocked((locked) => !locked)}><Link2 size={15}/></IconButton>}{sizeMode === 'canvas' && <button className="auto-canvas-button" onClick={autoSizeCanvas}>自动设置</button>}</div>
           <div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>
         </div>
-        {timelineGifLayer && <GifTimeline frames={gifTimeline.frames} frameIndex={gifTimeline.frameIndex} selectedIndexes={gifTimeline.selectedIndexes} playing={gifTimeline.playing} onTogglePlay={() => setGifTimeline((current) => ({ ...current, playing: !current.playing }))} onSelectFrame={selectGifFrame} onDropFrame={insertGifFrame} onDuplicateFrame={duplicateGifFrame} onDeleteFrame={deleteGifFrame} onReorderFrame={reorderGifFrame}/> }
+        {timelineGifLayer && <GifTimeline frames={gifTimeline.frames} frameIndex={gifTimeline.frameIndex} selectedIndexes={gifTimeline.selectedIndexes} playing={gifTimeline.playing} layerInsertionIndex={timelineLayerInsertionIndex} onTogglePlay={() => setGifTimeline((current) => ({ ...current, playing: !current.playing }))} onSelectFrame={selectGifFrame} onDropFrame={insertGifFrame} onDuplicateFrame={duplicateGifFrame} onDeleteFrame={deleteGifFrame} onReorderFrame={reorderGifFrame}/> }
         <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropImageOnEditor} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, altKey: event.altKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { if (activeTool === 'text' && event.button === 0 && !event.target.closest('.canvas-tool-dock')) { event.preventDefault(); event.stopPropagation(); const bounds = stageHostRef.current?.getBoundingClientRect(); const point = bounds ? { x: clamp((event.clientX - bounds.left) / zoom, 0, Math.max(0, draft.width)), y: clamp((event.clientY - bounds.top) / zoom, 0, Math.max(0, draft.height)) } : { x: 0, y: 0 }; addTextLayer(point, textOrientation); return; } if (beginOutsideSelectionDrag(event)) return; const blank = !event.target.closest('.stage-shadow, .canvas-tool-dock'); if (activeTool === 'select' && blank) { clearSelection(); beginPan(event); } else if (activeTool === 'marquee' && event.button === 0 && blank) { event.preventDefault(); setMarqueeStartRequest({ clientX: event.clientX, clientY: event.clientY, key: event.timeStamp }); } }}>
           <div className="canvas-tool-dock"><div className="editor-paint-tools">
             <IconButton label="选择与移动" className={activeTool === 'select' ? 'active' : ''} onClick={() => setActiveTool('select')}><MousePointer2 size={17}/></IconButton>
@@ -4565,17 +4627,18 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     });
   }, [commitSession]);
 
-  const pasteClipboardImage = useCallback(async (targetId) => {
+  const pasteClipboardImage = useCallback(async (targetId, append = false) => {
     const slotId = targetId || selectedId || composition.layers.find((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId)?.id;
     if (!slotId) return notify('模板中没有可替换照片图层', 'error');
     try {
       const dataUrl = await desktop.readClipboardImage();
       if (!dataUrl) return notify('剪贴板中没有图片', 'error');
-      replaceSlotSource(slotId, dataUrl, '剪贴板图片');
+      if (append) replaceSlotSources(slotId, [dataUrl], ['剪贴板图片'], true);
+      else replaceSlotSource(slotId, dataUrl, '剪贴板图片');
     } catch (error) {
       notify(`读取剪贴板失败：${error?.message || error}`, 'error');
     }
-  }, [composition.layers, notify, replaceSlotSource, selectedId]);
+  }, [composition.layers, notify, replaceSlotSource, replaceSlotSources, selectedId]);
 
   const nudgeSelectedPhoto = useCallback((key, distance) => {
     const layer = composition.layers.find((item) => item.id === selectedId && item.type === 'slot');
@@ -4898,6 +4961,12 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   }, [commitSession, template]);
 
   useEffect(() => {
+    if (!slotGalleryId) return undefined;
+    const frame = requestAnimationFrame(() => slotGalleryRef.current?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
+  }, [slotGalleryId]);
+
+  useEffect(() => {
     const handleKeyDown = async (event) => {
       const commandKey = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
@@ -4910,7 +4979,9 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
         return;
       }
       if (commandKey && key === 'v' && !event.shiftKey && !event.altKey && !isTextEditingTarget(event.target)) {
-        event.preventDefault(); pasteClipboardImage();
+        event.preventDefault();
+        if (slotGalleryId && slotGalleryRef.current?.contains(event.target)) pasteClipboardImage(slotGalleryId, true);
+        else pasteClipboardImage();
         return;
       }
       if (event.key.startsWith('Arrow') && !commandKey && !event.altKey && !isTextEditingTarget(event.target)) {
@@ -4941,7 +5012,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       window.removeEventListener('copy', handleCopy);
       window.removeEventListener('pointerdown', closeMenu);
     };
-  }, [copyAgain, nudgeSelectedPhoto, pasteClipboardImage, redo, selectedId, tryBack, undo]);
+  }, [copyAgain, nudgeSelectedPhoto, pasteClipboardImage, redo, selectedId, slotGalleryId, tryBack, undo]);
 
   const resetCrop = () => { if (cropModeId) updatePhotoTransform(cropModeId, { zoom: 1, offsetX: 0, offsetY: 0 }); };
 
@@ -5038,7 +5109,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
                   : <ImagePlus size={16}/>}
               </button>
               {source && <IconButton label={cropModeId === layer.id ? '退出裁切' : '裁切照片'} className={cropModeId === layer.id ? 'active slot-crop-button' : 'slot-crop-button'} onClick={() => { setSelectedId(layer.id); setCropModeId((current) => current === layer.id ? null : layer.id); }}><Crop size={16}/></IconButton>}
-              {galleryOpen && <div ref={slotGalleryRef} className="slot-gallery-popover" role="dialog" aria-label={`${layer.name} 已选择的照片`} onPointerDown={(event) => event.stopPropagation()}>
+              {galleryOpen && <div ref={slotGalleryRef} className="slot-gallery-popover" role="dialog" tabIndex={-1} aria-label={`${layer.name} 已选择的照片`} onPointerDown={(event) => event.stopPropagation()} onDragOver={(event) => { const hasFiles = Array.from(event.dataTransfer?.types || []).includes('Files') || Array.from(event.dataTransfer?.items || []).some((item) => item.kind === 'file'); if (!hasFiles) return; event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'; setSlotDropId(layer.id); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setSlotDropId((current) => current === layer.id ? null : current); }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); setSlotDropId(null); const files = Array.from(event.dataTransfer?.files || []).filter((file) => isImageFileLike(file)); if (files.length) acceptInitialFiles(files, layer.id, true); }}>
                 <div className="slot-gallery-heading"><div><strong>已选择的照片</strong><span>{gallerySources.length} 张</span></div><IconButton label="收起" onClick={() => setSlotGalleryId(null)}><ChevronUp size={17}/></IconButton></div>
                 <div className="slot-gallery-grid">
                   {gallerySources.map((gallerySource, index) => <div className="slot-gallery-item" key={`${gallerySource.slice(-32)}-${index}`} title={galleryNames[index] || `第 ${index + 1} 张`}><img src={gallerySource} alt={galleryNames[index] || ''}/><button type="button" aria-label={`移除第 ${index + 1} 张图片`} onClick={() => removeSlotSourceAt(layer.id, index)}><X size={13}/></button></div>)}
