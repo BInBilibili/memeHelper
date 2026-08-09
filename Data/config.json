@@ -1,6 +1,7 @@
 {
   "theme": "system",
   "autoCopy": true,
+  "libraryCardSize": "large",
   "window": {
     "width": 1320,
     "height": 860,

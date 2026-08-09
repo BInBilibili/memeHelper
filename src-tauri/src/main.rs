@@ -65,6 +65,25 @@ fn app_directory() -> PathBuf {
     }
 }
 
+fn data_directory() -> PathBuf {
+    let directory = app_directory().join("Data");
+    let _ = fs::create_dir_all(&directory);
+    directory
+}
+
+fn data_file_path(name: &str) -> PathBuf {
+    let target = data_directory().join(name);
+    let legacy = app_directory().join(name);
+    if !target.exists() && legacy.is_file() {
+        if fs::rename(&legacy, &target).is_err() {
+            if fs::copy(&legacy, &target).is_ok() {
+                let _ = fs::remove_file(&legacy);
+            }
+        }
+    }
+    target
+}
+
 fn merge_object(base: &mut Value, saved: &Value) {
     let (Some(base_map), Some(saved_map)) = (base.as_object_mut(), saved.as_object()) else {
         return;
@@ -83,7 +102,7 @@ fn merge_object(base: &mut Value, saved: &Value) {
 
 fn read_config() -> Value {
     let mut config = default_config();
-    let path = app_directory().join("config.json");
+    let path = data_file_path("config.json");
     if let Ok(contents) = fs::read_to_string(path) {
         if let Ok(saved) = serde_json::from_str::<Value>(&contents) {
             merge_object(&mut config, &saved);
@@ -551,11 +570,11 @@ fn merge_templates(groups: impl IntoIterator<Item = Vec<Value>>) -> Vec<Value> {
 }
 
 fn editor_drafts_path() -> PathBuf {
-    app_directory().join("autosave.json")
+    data_file_path("autosave.json")
 }
 
 fn use_sessions_path() -> PathBuf {
-    app_directory().join("use-sessions.json")
+    data_file_path("use-sessions.json")
 }
 
 fn decode_image_data_url(data_url: &str) -> Result<(&str, Vec<u8>), String> {
@@ -672,7 +691,7 @@ fn save_config(config: Value) -> Result<bool, String> {
     let mut merged = read_config();
     merge_object(&mut merged, &config);
     let json = serde_json::to_string_pretty(&merged).map_err(|error| error.to_string())?;
-    fs::write(app_directory().join("config.json"), json).map_err(|error| error.to_string())?;
+    fs::write(data_file_path("config.json"), json).map_err(|error| error.to_string())?;
     Ok(true)
 }
 
