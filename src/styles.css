@@ -753,7 +753,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .gif-timeline-heading small { color: var(--muted); font-size: 9px; }
 .gif-play-button { height: 26px; padding: 0 11px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: 10px; }
 .gif-play-button:disabled { opacity: .45; cursor: not-allowed; }
-.gif-frame-strip { display: flex; gap: 6px; min-height: 55px; overflow-x: auto; padding: 2px 1px 5px; scrollbar-width: thin; overscroll-behavior-inline: contain; }
+.gif-frame-strip { position: relative; display: flex; gap: 6px; min-height: 55px; overflow-x: auto; padding: 2px 1px 5px; border-radius: 5px; scrollbar-width: thin; overscroll-behavior-inline: contain; }
+.gif-frame-strip.file-drop-active { outline: 2px dashed var(--accent); outline-offset: -2px; background: color-mix(in srgb, var(--accent) 10%, var(--surface-soft)); }
 .gif-frame-cell { position: relative; flex: 0 0 58px; height: 50px; padding: 2px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-soft); overflow: hidden; outline: none; }
 .gif-frame-cell:focus-visible { outline: none; }
 .gif-frame-cell.selected { border-color: var(--accent); box-shadow: none; background: var(--accent-soft); }

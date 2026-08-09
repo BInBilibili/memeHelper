@@ -1969,11 +1969,12 @@ function TemplateCard({ template, onUse, onCopied, onEdit, onRename, onCopy, onD
   </article>{pasteMenu && <div ref={pasteMenuRef} className="library-paste-menu" style={{ left: pasteMenu.x, top: pasteMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={pasteImage} disabled={quickWorking}><Clipboard size={16}/>粘贴图片并复制作品</button></div>}{renaming && <RenameTemplateDialog template={template} onCancel={() => setRenaming(false)} onSave={onRename}/>}<ExportProgressOverlay progress={quickExportProgress} onCancel={cancelQuickExport}/></>;
 }
 
-function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, layerInsertionIndex = null, onTogglePlay, onSelectFrame, onDropFrame, onDuplicateFrame, onDeleteFrame, onReorderFrame }) {
+function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, layerInsertionIndex = null, onTogglePlay, onSelectFrame, onDropFrames, onDuplicateFrame, onDeleteFrame, onReorderFrame }) {
   const [frameMenu, setFrameMenu] = useState(null);
   const [dragState, setDragState] = useState(null);
   const [dropState, setDropState] = useState(null);
   const menuRef = useRef(null);
+  const stripRef = useRef(null);
   const selectedSet = new Set(selectedIndexes);
   const menuSelectionCount = frameMenu && selectedSet.has(frameMenu.index) ? Math.max(1, selectedIndexes.length) : 1;
   useEffect(() => {
@@ -1984,9 +1985,9 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
   }, [frameMenu]);
   const isFrameDrag = (event) => Array.from(event.dataTransfer?.types || []).includes('application/x-meme-gif-frame');
   const isFileDrag = (event) => Array.from(event.dataTransfer?.types || []).includes('Files');
+  const frameCells = () => [...(stripRef.current?.querySelectorAll('.gif-frame-cell') || [])];
   const resolveInsertion = (event) => {
-    const strip = event.currentTarget;
-    const cells = [...strip.querySelectorAll('.gif-frame-cell')];
+    const cells = frameCells();
     if (!cells.length) return { targetIndex: 0, placement: 'before' };
     const pointerX = event.clientX;
     for (let index = 0; index < cells.length; index += 1) {
@@ -1995,25 +1996,40 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
     }
     return { targetIndex: cells.length, placement: 'before' };
   };
-  const handleDrop = async (event, targetIndex = null, placement = 'before') => {
+  const resolveExternalFileDrop = (event) => {
+    const cells = frameCells();
+    if (!cells.length) return { targetIndex: 0, placement: 'before', zone: true };
+    const pointerX = event.clientX;
+    const edgeThreshold = 12;
+    for (let index = 0; index < cells.length; index += 1) {
+      const rect = cells[index].getBoundingClientRect();
+      if (Math.abs(pointerX - rect.left) <= edgeThreshold) return { targetIndex: index, placement: 'before' };
+      if (Math.abs(pointerX - rect.right) <= edgeThreshold) return { targetIndex: index, placement: 'after' };
+    }
+    return { targetIndex: frames.length, placement: 'before', zone: true };
+  };
+  const handleDrop = async (event) => {
     event.preventDefault();
     event.stopPropagation();
     const sourceValue = event.dataTransfer?.getData('application/x-meme-gif-frame');
     if (sourceValue !== undefined && sourceValue !== '') {
       const sourceIndex = Number(sourceValue);
-      const resolved = targetIndex == null ? resolveInsertion(event) : { targetIndex, placement };
+      const resolved = dropState || resolveInsertion(event);
       const insertionIndex = resolved.targetIndex + (resolved.placement === 'after' ? 1 : 0);
       onReorderFrame?.(sourceIndex, insertionIndex);
       setDragState(null); setDropState(null);
       return;
     }
     const files = Array.from(event.dataTransfer?.files || []).filter((file) => isImageFileLike(file));
-    const file = files[0];
-    if (!file) return;
-    const resolved = targetIndex == null ? resolveInsertion(event) : { targetIndex, placement };
-    const index = resolved.targetIndex + (resolved.placement === 'after' ? 1 : 0);
-    onDropFrame(await fileToDataUrl(file), index);
-    setDropState(null);
+    if (!files.length) { setDropState(null); return; }
+    const resolved = dropState || resolveExternalFileDrop(event);
+    const index = resolved.zone ? frames.length : resolved.targetIndex + (resolved.placement === 'after' ? 1 : 0);
+    try {
+      const dataUrls = await Promise.all(files.map((file) => fileToDataUrl(file)));
+      await onDropFrames?.(dataUrls.map((dataUrl) => ({ dataUrl, delayMs: 100 })), index);
+    } finally {
+      setDropState(null);
+    }
   };
   const scrollFrames = (event) => {
     if (!event.deltaX && !event.deltaY) return;
@@ -2023,12 +2039,17 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
   };
   return <div className="gif-timeline">
     <div className="gif-timeline-heading"><div><strong>GIF 时间轴</strong><small>{frames.length ? `${frames.length} 帧` : '正在读取帧'}</small></div><button type="button" className="gif-play-button" disabled={!frames.length} onClick={onTogglePlay}>{playing ? '暂停' : '播放'}</button></div>
-    <div className="gif-frame-strip" onWheel={scrollFrames} onDragOver={(event) => { if (isFrameDrag(event) || isFileDrag(event)) { event.preventDefault(); event.stopPropagation(); const resolved = resolveInsertion(event); setDropState(resolved); } }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDropState(null); }} onDrop={(event) => handleDrop(event, dropState?.targetIndex ?? null, dropState?.placement || 'before')}>
+    <div ref={stripRef} className={`gif-frame-strip ${dropState?.zone ? 'file-drop-active' : ''}`} onWheel={scrollFrames} onDragOver={(event) => {
+      if (!isFrameDrag(event) && !isFileDrag(event)) return;
+      event.preventDefault(); event.stopPropagation();
+      event.dataTransfer.dropEffect = isFileDrag(event) ? 'copy' : 'move';
+      setDropState(isFileDrag(event) ? resolveExternalFileDrop(event) : resolveInsertion(event));
+    }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setDropState(null); }} onDrop={handleDrop}>
       {frames.length ? frames.map((frame, index) => {
-        const placement = layerInsertionIndex === index ? 'before' : dropState?.targetIndex === index ? dropState.placement : null;
-        return <button type="button" draggable key={`${index}-${frame.dataUrl.slice(-12)}`} className={`gif-frame-cell ${selectedSet.has(index) ? 'selected' : ''} ${index === frameIndex ? 'active' : ''} ${dragState?.sourceIndex === index ? 'dragging' : ''} ${placement ? `drop-${placement}` : ''}`} onClick={(event) => { if (event.shiftKey) event.preventDefault(); onSelectFrame(index, event); }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); if (!selectedSet.has(index)) onSelectFrame(index, {}); setFrameMenu({ index, x: Math.min(event.clientX, window.innerWidth - 160), y: Math.min(event.clientY, window.innerHeight - 84) }); }} onDragStart={(event) => { event.dataTransfer.effectAllowed = 'copyMove'; event.dataTransfer.setData('application/x-meme-gif-frame', String(index)); setDragState({ sourceIndex: index }); setFrameMenu(null); }} onDragOver={(event) => { if (!isFrameDrag(event) && !isFileDrag(event)) return; event.preventDefault(); event.stopPropagation(); const rect = event.currentTarget.getBoundingClientRect(); const nextPlacement = event.clientX < rect.left + rect.width / 2 ? 'before' : 'after'; setDropState({ targetIndex: index, placement: nextPlacement }); }} onDrop={(event) => { const rect = event.currentTarget.getBoundingClientRect(); const placement = event.clientX < rect.left + rect.width / 2 ? 'before' : 'after'; handleDrop(event, index, placement); }} onDragEnd={() => { setDragState(null); setDropState(null); }} title={`第 ${index + 1} 帧，${Math.max(20, Number(frame.delayMs) || 100)} ms`}><img src={frame.dataUrl} alt={`第 ${index + 1} 帧`} draggable={false}/><span>{index + 1}</span></button>;
+        const placement = layerInsertionIndex === index ? 'before' : !dropState?.zone && dropState?.targetIndex === index ? dropState.placement : null;
+        return <button type="button" draggable key={`${index}-${frame.dataUrl.slice(-12)}`} className={`gif-frame-cell ${selectedSet.has(index) ? 'selected' : ''} ${index === frameIndex ? 'active' : ''} ${dragState?.sourceIndex === index ? 'dragging' : ''} ${placement ? `drop-${placement}` : ''}`} onClick={(event) => { if (event.shiftKey) event.preventDefault(); onSelectFrame(index, event); }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); if (!selectedSet.has(index)) onSelectFrame(index, {}); setFrameMenu({ index, x: Math.min(event.clientX, window.innerWidth - 160), y: Math.min(event.clientY, window.innerHeight - 84) }); }} onDragStart={(event) => { event.dataTransfer.effectAllowed = 'copyMove'; event.dataTransfer.setData('application/x-meme-gif-frame', String(index)); setDragState({ sourceIndex: index }); setFrameMenu(null); }} onDragOver={(event) => { if (!isFrameDrag(event) && !isFileDrag(event)) return; event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = isFileDrag(event) ? 'copy' : 'move'; if (isFileDrag(event)) setDropState(resolveExternalFileDrop(event)); else { const rect = event.currentTarget.getBoundingClientRect(); const nextPlacement = event.clientX < rect.left + rect.width / 2 ? 'before' : 'after'; setDropState({ targetIndex: index, placement: nextPlacement }); } }} onDrop={handleDrop} onDragEnd={() => { setDragState(null); setDropState(null); }} title={`第 ${index + 1} 帧，${Math.max(20, Number(frame.delayMs) || 100)} ms`}><img src={frame.dataUrl} alt={`第 ${index + 1} 帧`} draggable={false}/><span>{index + 1}</span></button>;
       }) : <div className="gif-timeline-empty">GIF 帧加载中…</div>}
-      {((dropState?.targetIndex === frames.length && dragState) || layerInsertionIndex === frames.length) && <span className="gif-frame-end-drop" aria-hidden="true"/>}
+      {((dropState && !dropState.zone && dropState.targetIndex === frames.length) || layerInsertionIndex === frames.length) && <span className="gif-frame-end-drop" aria-hidden="true"/>}
     </div>
     {frameMenu && <div ref={menuRef} className="gif-frame-context-menu" style={{ left: frameMenu.x, top: frameMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={() => { const index = frameMenu.index; setFrameMenu(null); onDuplicateFrame?.(index); }}><Copy size={15}/>{menuSelectionCount > 1 ? `复制 ${menuSelectionCount} 帧` : '复制帧'}</button><button type="button" className="danger" onClick={() => { const index = frameMenu.index; setFrameMenu(null); onDeleteFrame?.(index); }}><Trash2 size={15}/>{menuSelectionCount > 1 ? `删除 ${menuSelectionCount} 帧` : '删除帧'}</button></div>}
   </div>;
@@ -2630,10 +2651,18 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
           return;
         }
       }
-      if (event.key === 'Delete' && !isTextEditingTarget(event.target) && selectedIds.length) {
-        event.preventDefault();
-        removeSelectedLayers();
-        return;
+      if (event.key === 'Delete' && !isTextEditingTarget(event.target)) {
+        const frameFocused = Boolean(event.target?.closest?.('.gif-frame-cell') || document.activeElement?.closest?.('.gif-frame-cell'));
+        if (frameFocused && selectedGifLayer && gifTimeline.layerId === selectedGifLayer.id && gifTimeline.frames.length) {
+          event.preventDefault();
+          await deleteGifFrame(gifTimeline.frameIndex);
+          return;
+        }
+        if (selectedIds.length) {
+          event.preventDefault();
+          removeSelectedLayers();
+          return;
+        }
       }
       if (event.key.startsWith('Arrow') && !event.ctrlKey && !event.metaKey && !event.altKey && !isTextEditingTarget(event.target) && selectedIds.length) {
         event.preventDefault();
@@ -2720,6 +2749,66 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
       });
       setSelectedIds([layer.id]); setSelectedGroupId(null); setActiveTool('select');
     } catch (error) { notify(error.message, 'error'); }
+  };
+
+  const addImagesAsGif = async (files, dropPoint = null, { insertIndex = null, groupId = null } = {}) => {
+    const incomingFiles = Array.from(files || []).filter((file) => isImageFileLike(file));
+    if (!incomingFiles.length) return;
+    if (incomingFiles.length === 1) {
+      await addImage(incomingFiles[0], dropPoint, { asGif: true, insertIndex, groupId });
+      return;
+    }
+    try {
+      const incomingFrames = [];
+      let pseudoGifCount = 0;
+      for (const file of incomingFiles) {
+        const source = await fileToDataUrl(file);
+        if (isGifSource(source)) {
+          const decoded = await desktop.decodeGifFrames(source);
+          if (decoded?.frames?.length) incomingFrames.push(...decoded.frames.map((frame) => ({ ...frame, delayMs: Math.max(20, Number(frame.delayMs) || 100) })));
+        } else {
+          if (/\.gif$/i.test(file.name || '')) pseudoGifCount += 1;
+          incomingFrames.push({ dataUrl: await normalizeStaticImageDataUrl(source), delayMs: 100 });
+        }
+      }
+      if (!incomingFrames.length) throw new Error('没有可用于创建 GIF 的图片帧');
+      const firstImage = await loadImage(incomingFrames[0].dataUrl);
+      const frameScale = Math.min(4000 / firstImage.width, 4000 / firstImage.height, 1);
+      const frameWidth = Math.max(1, Math.round(firstImage.width * frameScale));
+      const frameHeight = Math.max(1, Math.round(firstImage.height * frameScale));
+      const normalizedFrames = [];
+      for (const frame of incomingFrames) {
+        const image = await loadImage(frame.dataUrl);
+        const canvas = document.createElement('canvas'); canvas.width = frameWidth; canvas.height = frameHeight;
+        const crop = getCoverCrop(image, frameWidth, frameHeight);
+        canvas.getContext('2d').drawImage(image, crop.x, crop.y, crop.width, crop.height, 0, 0, frameWidth, frameHeight);
+        normalizedFrames.push({ dataUrl: canvas.toDataURL('image/png'), delayMs: Math.max(20, Number(frame.delayMs) || 100), width: frameWidth, height: frameHeight });
+      }
+      const src = await desktop.encodeGifFrames(normalizedFrames, null);
+      if (!isGifSource(src)) throw new Error('GIF 编码失败，请重新选择图片');
+      const initializeCanvas = !draft.layers.length && draft.width === 0 && draft.height === 0;
+      const maxW = initializeCanvas ? frameWidth : Math.max(1, draft.width * .9);
+      const maxH = initializeCanvas ? frameHeight : Math.max(1, draft.height * .9);
+      const scale = Math.min(maxW / frameWidth, maxH / frameHeight, 1);
+      const width = Math.round(frameWidth * scale); const height = Math.round(frameHeight * scale);
+      const x = initializeCanvas ? 0 : Math.round((dropPoint?.x ?? draft.width / 2) - width / 2);
+      const y = initializeCanvas ? 0 : Math.round((dropPoint?.y ?? draft.height / 2) - height / 2);
+      const layer = {
+        id: uid(), name: incomingFiles[0].name.replace(/\.[^.]+$/, ''), type: 'static', src,
+        x, y, width, height, rotation: 0, opacity: 1, blendMode: 'source-over', aspectRatioLocked: true,
+        visible: true, fit: 'fill', gifFrameCount: normalizedFrames.length,
+        gifFrameDelays: normalizedFrames.map((frame) => frame.delayMs), ...(groupId ? { groupId } : {})
+      };
+      updateDraft((previous) => {
+        const layers = [...previous.layers];
+        const resolvedIndex = Number.isInteger(insertIndex) ? clamp(insertIndex, 0, layers.length) : layers.length;
+        layers.splice(resolvedIndex, 0, layer);
+        return { ...previous, width: initializeCanvas ? width : previous.width, height: initializeCanvas ? height : previous.height, layers };
+      });
+      setSelectedIds([layer.id]); setSelectedGroupId(null); setSelectedGroupIds([]); setActiveTool('select');
+      if (pseudoGifCount) notify('检测到 ' + pseudoGifCount + ' 个伪 GIF，已分别转换为单帧（100ms）');
+      else notify('已创建包含 ' + normalizedFrames.length + ' 帧的 GIF 图层');
+    } catch (error) { notify('创建 GIF 图层失败：' + (error?.message || error), 'error'); }
   };
 
   const addWhiteCanvasBackground = () => {
@@ -2893,14 +2982,14 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
   const openLayerMenu = (id, event) => {
     event.preventDefault(); event.stopPropagation();
     if (!selectedIds.includes(id)) selectLayer(id, event);
-    setLayerMenu({ id, x: Math.min(event.clientX, window.innerWidth - 166), y: Math.min(event.clientY, window.innerHeight - 334) });
+    setLayerMenu({ id, x: Math.min(event.clientX, window.innerWidth - 166), y: Math.min(event.clientY, window.innerHeight - 370) });
   };
   const openGroupMenu = (groupId, event) => {
     event.preventDefault(); event.stopPropagation();
     const members = draft.layers.filter((item) => item.groupId === groupId);
     if (!members.length) return;
     if (selectedGroupId !== groupId) selectGroup(groupId, event);
-    setLayerMenu({ id: members.at(-1).id, groupId, x: Math.min(event.clientX, window.innerWidth - 166), y: Math.min(event.clientY, window.innerHeight - 334) });
+    setLayerMenu({ id: members.at(-1).id, groupId, x: Math.min(event.clientX, window.innerWidth - 166), y: Math.min(event.clientY, window.innerHeight - 370) });
   };
   const openLayersBlankMenu = (event) => {
     if (!hasCopiedLayers) return;
@@ -2912,6 +3001,27 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
   const openMarqueeMenu = (ids, rect, event) => {
     event.preventDefault(); event.stopPropagation();
     setLayerMenu({ marquee: { ids, rect: { ...rect } }, x: Math.min(event.clientX, window.innerWidth - 206), y: Math.min(event.clientY, window.innerHeight - 120) });
+  };
+
+  const upgradeLayerToGif = async (id) => {
+    const layer = draft.layers.find((item) => item.id === id);
+    if (!layer || isGifSource(layer.src) || templateHasGif) return;
+    if (layer.locked) return notify('请先解锁图层', 'error');
+    try {
+      const rendered = await renderIsolatedLayer({ ...layer, rotation: 0 }, layer.src, null, null, null);
+      const frame = { dataUrl: rendered.canvas.toDataURL('image/png'), delayMs: 100 };
+      const src = await desktop.encodeGifFrames([frame], null);
+      if (!isGifSource(src)) throw new Error('GIF 编码失败');
+      updateLayer(id, {
+        type: 'static', src, fit: 'fill', gifFrameCount: 1, gifFrameDelays: [100],
+        x: layer.x - rendered.insets.left, y: layer.y - rendered.insets.top,
+        width: rendered.logicalWidth, height: rendered.logicalHeight,
+        borderWidth: 0, paintSrc: null, eraseSrc: null, mosaicSrc: null, mosaicMaskSrc: null,
+        healSrc: null, healMaskSrc: null, replacementDisabled: false
+      });
+      setSelectedIds([id]); setSelectedGroupId(null); setSelectedGroupIds([]); setActiveTool('select'); setLayerMenu(null);
+      notify('图层已升级为单帧 GIF（100ms）');
+    } catch (error) { notify('升级为 GIF 失败：' + (error?.message || error), 'error'); }
   };
 
   const removeLayer = (id) => {
@@ -3463,14 +3573,14 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
         <div className="layer-add-row">
           <div className="fixed-layer-add-wrap">
             <button onClick={() => memeInput.current?.click()} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setFixedLayerMenu((open) => !open); }}><ImagePlus size={18}/><span>添加固定图层</span></button>
-            {fixedLayerMenu && <div className="fixed-layer-menu" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setFixedLayerMenu(false); gifLayerInput.current?.click(); }}><ImagePlus size={16}/><span>选择一张图片创建 GIF 图层</span></button><button title="创建一个与当前画布等大的纯白色固定图层，并放到所有图层下方" onClick={addWhiteCanvasBackground}><Square size={16}/><span>添加白色画布背景</span></button></div>}
+            {fixedLayerMenu && <div className="fixed-layer-menu" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setFixedLayerMenu(false); gifLayerInput.current?.click(); }}><ImagePlus size={16}/><span>选择图片创建 GIF 图层</span></button><button title="创建一个与当前画布等大的纯白色固定图层，并放到所有图层下方" onClick={addWhiteCanvasBackground}><Square size={16}/><span>添加白色画布背景</span></button></div>}
           </div>
           <div className="shape-picker-wrap"><button onClick={(event) => { event.stopPropagation(); setShapeMenu((open) => !open); }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setShapeMenu(true); }}><Shapes size={18}/><span>添加可替换照片</span></button>{shapeMenu && <div className="shape-picker" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => addEmptySlot('rect')}><Square size={17}/><span>矩形</span></button><button onClick={() => addEmptySlot('circle')}><Circle size={17}/><span>圆形</span></button><button onClick={() => addEmptySlot('rounded')}><Shapes size={17}/><span>圆角矩形</span></button><button onClick={() => addEmptySlot('polygon')}><Pentagon size={17}/><span>多边形</span></button></div>}</div>
           <div className="text-add-wrap"><button className={activeTool === 'text' ? 'active' : ''} onClick={() => { setTextOrientation('horizontal'); setTextMenu(false); setActiveTool('text'); }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setTextMenu(true); }}><Type size={18}/><span>添加文字</span></button>{textMenu && <div className="text-orientation-menu" onPointerDown={(event) => event.stopPropagation()}><button className={textOrientation === 'horizontal' ? 'active' : ''} onClick={() => { setTextOrientation('horizontal'); setTextMenu(false); setActiveTool('text'); }}>横排文本</button><button className={textOrientation === 'vertical' ? 'active' : ''} onClick={() => { setTextOrientation('vertical'); setTextMenu(false); setActiveTool('text'); }}>竖排文本</button></div>}</div>
         </div>
         <label className="template-tags-field"><span>模板标签</span><input value={tagsText} onChange={(event) => { const value = event.target.value; setTagsText(value); updateDraft({ ...draft, tags: value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 10) }); }} placeholder="反应、工作、猫"/></label>
         <input ref={memeInput} hidden type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) addImage(file); }}/>
-        <input ref={gifLayerInput} hidden type="file" accept="image/*" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) addImage(file, null, { asGif: true }); }}/>
+        <input ref={gifLayerInput} hidden multiple type="file" accept="image/*" onChange={(event) => { const files = Array.from(event.target.files || []); event.target.value = ''; if (files.length) addImagesAsGif(files); }}/>
         <div className="layers-list" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu} onDragOver={handleGifFrameLayerDragOver} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setGifFrameLayerDrop(null); }} onDrop={handleGifFrameLayerDrop}>{layerListRows}</div>
         {!draft.layers.length && <div className="layers-empty" onClick={clearSelection} onContextMenu={openLayersBlankMenu}><Layers3 size={28}/><p>添加第一个图层后，画布会自动匹配图层大小。</p></div>}
       </aside>
@@ -3479,7 +3589,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
           <div className="canvas-size"><button type="button" className={`size-mode-button ${sizeMode === 'image' ? 'active' : ''}`} title={sizeMode === 'canvas' ? '点击切换为修改图像尺寸' : '点击切换为修改画布尺寸'} onClick={() => setSizeMode((mode) => mode === 'canvas' ? 'image' : 'canvas')}>{sizeMode === 'canvas' ? '画布' : '图像'}</button><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeWidth} disabled={sizeMode === 'image' && !imageBounds} onCommit={(width) => commitToolbarSize('width', width)}/><span>×</span><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeHeight} disabled={sizeMode === 'image' && !imageBounds} onCommit={(height) => commitToolbarSize('height', height)}/>{sizeMode === 'image' && <IconButton className={`size-lock-button ${imageSizeLocked ? 'active' : ''}`} label={imageSizeLocked ? '已锁定宽高比' : '锁定宽高比'} onClick={() => setImageSizeLocked((locked) => !locked)}><Link2 size={15}/></IconButton>}{sizeMode === 'canvas' && <button className="auto-canvas-button" onClick={autoSizeCanvas}>自动设置</button>}</div>
           <div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>
         </div>
-        {timelineGifLayer && <GifTimeline frames={gifTimeline.frames} frameIndex={gifTimeline.frameIndex} selectedIndexes={gifTimeline.selectedIndexes} playing={gifTimeline.playing} layerInsertionIndex={timelineLayerInsertionIndex} onTogglePlay={() => setGifTimeline((current) => ({ ...current, playing: !current.playing }))} onSelectFrame={selectGifFrame} onDropFrame={insertGifFrame} onDuplicateFrame={duplicateGifFrame} onDeleteFrame={deleteGifFrame} onReorderFrame={reorderGifFrame}/> }
+        {timelineGifLayer && <GifTimeline frames={gifTimeline.frames} frameIndex={gifTimeline.frameIndex} selectedIndexes={gifTimeline.selectedIndexes} playing={gifTimeline.playing} layerInsertionIndex={timelineLayerInsertionIndex} onTogglePlay={() => setGifTimeline((current) => ({ ...current, playing: !current.playing }))} onSelectFrame={selectGifFrame} onDropFrames={insertGifFrames} onDuplicateFrame={duplicateGifFrame} onDeleteFrame={deleteGifFrame} onReorderFrame={reorderGifFrame}/> }
         <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropImageOnEditor} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, altKey: event.altKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { if (activeTool === 'text' && event.button === 0 && !event.target.closest('.canvas-tool-dock')) { event.preventDefault(); event.stopPropagation(); const bounds = stageHostRef.current?.getBoundingClientRect(); const point = bounds ? { x: clamp((event.clientX - bounds.left) / zoom, 0, Math.max(0, draft.width)), y: clamp((event.clientY - bounds.top) / zoom, 0, Math.max(0, draft.height)) } : { x: 0, y: 0 }; addTextLayer(point, textOrientation); return; } if (beginOutsideSelectionDrag(event)) return; const blank = !event.target.closest('.stage-shadow, .canvas-tool-dock'); if (activeTool === 'select' && blank) { clearSelection(); beginPan(event); } else if (activeTool === 'marquee' && event.button === 0 && blank) { event.preventDefault(); setMarqueeStartRequest({ clientX: event.clientX, clientY: event.clientY, key: event.timeStamp }); } }}>
           <div className="canvas-tool-dock"><div className="editor-paint-tools">
             <IconButton label="选择与移动" className={activeTool === 'select' ? 'active' : ''} onClick={() => setActiveTool('select')}><MousePointer2 size={17}/></IconButton>
@@ -3519,6 +3629,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
     {layerMenu && <div className="layer-context-menu" style={{ left: layerMenu.x, top: Math.max(6, layerMenu.y) }} onPointerDown={(event) => event.stopPropagation()}>
       {layerMenu.marquee ? <><button onClick={() => { copyMarqueePixels(layerMenu.marquee.ids, layerMenu.marquee.rect); setLayerMenu(null); }}><Copy size={16}/>复制选区内容</button><button className="danger" onClick={() => { cutMarqueePixels(layerMenu.marquee.ids, layerMenu.marquee.rect); setLayerMenu(null); }}><Scissors size={16}/>剪切选区内容</button></> : layerMenu.blank ? <button onClick={() => { pasteLayers(); setLayerMenu(null); }}><Clipboard size={16}/>粘贴图层</button> : <>
       <button onClick={() => { copyLayerFromMenu(layerMenu.id, contextGroupId); setLayerMenu(null); }}><Copy size={16}/>复制{contextGroupId ? '图层组' : '图层'}</button>
+      {!templateHasGif && contextLayer && !contextGroupId && !isGifSource(contextLayer.src) && <button disabled={contextLocked} onClick={() => upgradeLayerToGif(layerMenu.id)}><ImagePlus size={16}/>升级为 GIF</button>}
       {selectedIds.length > 1 && <button disabled={selectedLayers.some((layer) => layer.locked)} onClick={mergeSelectedLayers}><Layers3 size={16}/>合并图层</button>}
       {contextGroupId || contextLayer?.groupId
         ? <button onClick={() => { ungroupGroup(contextGroupId || contextLayer.groupId); setLayerMenu(null); }}><Layers3 size={16}/>取消组合</button>
