@@ -577,6 +577,46 @@ function getPhotoPlacement(image, layer, transform = {}) {
   };
 }
 
+function multiPhotoLayoutOf(layer) {
+  return ['horizontal', 'vertical', 'grid'].includes(layer?.multiPhotoLayout) ? layer.multiPhotoLayout : 'none';
+}
+
+function multiPhotoCells(layer, count) {
+  const total = Math.max(1, Number(count) || 1);
+  const layout = multiPhotoLayoutOf(layer);
+  if (layout === 'none' || total === 1) return [{ x: 0, y: 0, width: layer.width, height: layer.height }];
+  if (layout === 'horizontal') {
+    const width = layer.width / total;
+    return Array.from({ length: total }, (_, index) => ({ x: index * width, y: 0, width, height: layer.height }));
+  }
+  if (layout === 'vertical') {
+    const height = layer.height / total;
+    return Array.from({ length: total }, (_, index) => ({ x: 0, y: index * height, width: layer.width, height }));
+  }
+  const columns = clamp(Number(layer.multiPhotoColumns) || 2, 1, Math.max(1, Math.min(12, total)));
+  const rows = Math.ceil(total / columns);
+  const width = layer.width / columns;
+  const height = layer.height / rows;
+  return Array.from({ length: total }, (_, index) => ({ x: (index % columns) * width, y: Math.floor(index / columns) * height, width, height }));
+}
+
+async function drawMultiPhotoSources(ctx, layer, sources, signal) {
+  const validSources = (Array.isArray(sources) ? sources : [sources]).filter(Boolean);
+  if (!validSources.length) return;
+  const cells = multiPhotoCells(layer, validSources.length);
+  for (let index = 0; index < validSources.length; index += 1) {
+    if (signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
+    const image = await loadImage(validSources[index]);
+    const cell = cells[index] || cells[cells.length - 1];
+    if (layer.fit === 'cover') {
+      const crop = getCoverCrop(image, cell.width, cell.height);
+      ctx.drawImage(image, crop.x, crop.y, crop.width, crop.height, cell.x, cell.y, cell.width, cell.height);
+    } else {
+      ctx.drawImage(image, 0, 0, image.width, image.height, cell.x, cell.y, cell.width, cell.height);
+    }
+  }
+}
+
 function parseFrameList(value) {
   if (Array.isArray(value)) return value.map(Number).filter((item) => Number.isInteger(item) && item > 0);
   return String(value || '').split(/[.,，、\s]+/).map((item) => Number(item.trim())).filter((item) => Number.isInteger(item) && item > 0);
@@ -898,7 +938,10 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
     const suppliedReplacement = typeof replacements === 'string' ? replacements : replacements?.[layer.id];
     const boundReplacement = layer.type === 'slot' && layer.boundLayerId && typeof replacements !== 'string' ? replacements?.[layer.boundLayerId] : undefined;
     const replacement = layer.type === 'slot' && !layer.replacementDisabled ? (suppliedReplacement || boundReplacement) : undefined;
-    const src = layer.type === 'slot' ? (replacement || (layer.replacementDisabled ? '' : layer.src)) : layer.src;
+    const replacementSources = layer.type === 'slot'
+      ? (Array.isArray(replacement) ? replacement.filter(Boolean) : replacement ? [replacement] : [])
+      : [];
+    const src = layer.type === 'slot' ? (replacementSources[0] || (layer.replacementDisabled ? '' : layer.src)) : layer.src;
     if (layer.eraseSrc) {
       const isolated = await renderIsolatedLayer(layer, layer.type === 'slot' ? replacement : src, photoTransforms[layer.id], null, null, scale);
       ctx.drawImage(isolated.canvas, -isolated.insets.left, -isolated.insets.top, isolated.logicalWidth, isolated.logicalHeight);
@@ -915,7 +958,11 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
     }
     const shapeClipped = layer.type === 'slot';
     if (shapeClipped) { ctx.save(); traceLayerShape(ctx, layer); ctx.clip(); }
-    if (!src) {
+    if (layer.type === 'slot' && replacementSources.length && multiPhotoLayoutOf(layer) !== 'none') {
+      await drawMultiPhotoSources(ctx, layer, replacementSources, signal);
+      await drawPaintOverlay(ctx, layer);
+      await drawMosaicOverlay(ctx, layer);
+    } else if (!src) {
       if (layer.slotFill) {
         ctx.fillStyle = layer.slotFill;
         traceLayerShape(ctx, layer); ctx.fill();
@@ -1080,6 +1127,23 @@ function useHtmlImage(src) {
     return () => { alive = false; };
   }, [src]);
   return image;
+}
+
+function useHtmlImages(sources = []) {
+  const [images, setImages] = useState([]);
+  useEffect(() => {
+    const list = (Array.isArray(sources) ? sources : [sources]).filter(Boolean);
+    if (!list.length) { setImages([]); return undefined; }
+    let alive = true;
+    Promise.all(list.map((src) => new Promise((resolve) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => resolve(null);
+      image.src = src;
+    }))).then((loaded) => { if (alive) setImages(loaded.filter(Boolean)); });
+    return () => { alive = false; };
+  }, [sources]);
+  return images;
 }
 
 function useUndoState(initializer, limit = 50) {
@@ -2476,7 +2540,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
     const width = size;
     const height = size;
     const shapeName = shape === 'circle' ? '圆形' : shape === 'rounded' ? '圆角矩形' : shape === 'polygon' ? '多边形' : '矩形';
-    const layer = { id: uid(), name: `${shapeName}照片 ${draft.layers.filter((x) => x.type === 'slot').length + 1}`, type: 'slot', shape, src: '', x: initializeCanvas ? 0 : Math.round((draft.width - width) / 2), y: initializeCanvas ? 0 : Math.round((draft.height - height) / 2), width, height, rotation: 0, opacity: 1, blendMode: 'source-over', aspectRatioLocked: true, visible: true, fit: 'cover', ...(shape === 'polygon' ? { polygonSides: 5, polygonPoints: regularPolygonPoints(5) } : shape === 'rounded' ? { cornerRadius: 36 } : {}) };
+    const layer = { id: uid(), name: `${shapeName}照片 ${draft.layers.filter((x) => x.type === 'slot').length + 1}`, type: 'slot', shape, src: '', x: initializeCanvas ? 0 : Math.round((draft.width - width) / 2), y: initializeCanvas ? 0 : Math.round((draft.height - height) / 2), width, height, rotation: 0, opacity: 1, blendMode: 'source-over', aspectRatioLocked: true, visible: true, fit: 'cover', multiPhotoLayout: 'none', multiPhotoColumns: 2, ...(shape === 'polygon' ? { polygonSides: 5, polygonPoints: regularPolygonPoints(5) } : shape === 'rounded' ? { cornerRadius: 36 } : {}) };
     updateDraft((prev) => ({ ...prev, width: initializeCanvas ? width : prev.width, height: initializeCanvas ? height : prev.height, layers: [...prev.layers, layer] })); setSelectedIds([layer.id]); setSelectedGroupId(null);
     setShapeMenu(false); setActiveTool('select');
   };
@@ -3976,8 +4040,9 @@ function LayerBorderShape({ layer }) {
   return <Rect x={inset} y={inset} width={Math.max(0, layer.width - borderWidth)} height={Math.max(0, layer.height - borderWidth)} cornerRadius={shapeOf(layer) === 'rounded' ? Math.max(0, cornerRadiusOf(layer) - inset) : 0} {...props}/>;
 }
 
-function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, source, paintSource, eraseSource, mosaicSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
+function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, source, sources, paintSource, eraseSource, mosaicSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
   const image = useHtmlImage(source ?? layer.src);
+  const multiImages = useHtmlImages(sources || []);
   const loadedPaintImage = useHtmlImage(layer.paintSrc);
   const loadedMosaicImage = useHtmlImage(layer.mosaicSrc);
   const paintImage = paintSource || loadedPaintImage;
@@ -4007,8 +4072,10 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
   const colorFilled = layer.type === 'slot' && Boolean(layer.slotFill);
   const bindingActive = layer.type === 'slot' && Boolean(layer.boundLayerId);
   const placeholderProps = { fill: layer.slotFill || (disabledReplacement ? 'rgba(0,0,0,0)' : highlight ? 'rgba(233,78,55,.14)' : '#eceae4'), stroke: disabledReplacement ? undefined : highlight ? '#e94e37' : layer.slotFill ? undefined : '#77746d', strokeWidth: disabledReplacement ? 0 : highlight ? 5 : 2, dash: disabledReplacement || (layer.slotFill && !highlight) ? undefined : [12, 8] };
+  const multiLayoutActive = layer.type === 'slot' && multiPhotoLayoutOf(layer) !== 'none' && multiImages.length > 1;
+  const multiCells = multiLayoutActive ? multiPhotoCells(layer, multiImages.length) : [];
   return <Group {...common} clipFunc={layer.type === 'slot' ? clipFunc : undefined}>
-    {image ? <KonvaImage image={image} x={placement?.x || 0} y={placement?.y || 0} width={placement?.width || layer.width} height={placement?.height || layer.height} crop={placement ? undefined : crop} draggable={cropMode} onDragMove={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); onPhotoTransformMove ? onPhotoTransformMove({ event, x, y, placement }) : event.target.position({ x, y }); } : undefined} onDragEnd={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); event.target.position({ x, y }); if (onPhotoTransformEnd) onPhotoTransformEnd({ event, x, y, placement }); else onPhotoTransform?.({ offsetX: x - placement.centeredX, offsetY: y - placement.centeredY }); } : undefined}/> : shapeOf(layer) === 'circle' ? <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={layer.width / 2} radiusY={layer.height / 2} {...placeholderProps}/> : shapeOf(layer) === 'polygon' ? <Line points={polygonPixelPoints(layer)} closed {...placeholderProps}/> : <Rect width={layer.width} height={layer.height} cornerRadius={shapeOf(layer) === 'rounded' ? cornerRadiusOf(layer) : 0} {...placeholderProps}/>}
+    {multiLayoutActive ? multiImages.map((multiImage, index) => { const cell = multiCells[index]; const cropCell = layer.fit === 'cover' ? getCoverCrop(multiImage, cell.width, cell.height) : null; return <KonvaImage key={`${layer.id}-multi-${index}`} image={multiImage} x={cell.x} y={cell.y} width={cell.width} height={cell.height} crop={cropCell || undefined} listening={false}/>; }) : image ? <KonvaImage image={image} x={placement?.x || 0} y={placement?.y || 0} width={placement?.width || layer.width} height={placement?.height || layer.height} crop={placement ? undefined : crop} draggable={cropMode} onDragMove={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); onPhotoTransformMove ? onPhotoTransformMove({ event, x, y, placement }) : event.target.position({ x, y }); } : undefined} onDragEnd={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); event.target.position({ x, y }); if (onPhotoTransformEnd) onPhotoTransformEnd({ event, x, y, placement }); else onPhotoTransform?.({ offsetX: x - placement.centeredX, offsetY: y - placement.centeredY }); } : undefined}/> : shapeOf(layer) === 'circle' ? <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={layer.width / 2} radiusY={layer.height / 2} {...placeholderProps}/> : shapeOf(layer) === 'polygon' ? <Line points={polygonPixelPoints(layer)} closed {...placeholderProps}/> : <Rect width={layer.width} height={layer.height} cornerRadius={shapeOf(layer) === 'rounded' ? cornerRadiusOf(layer) : 0} {...placeholderProps}/>} 
     {paintImage && <KonvaImage image={paintImage} width={layer.width} height={layer.height} listening={false}/>}
     {mosaicImage && <KonvaImage image={mosaicImage} width={layer.width} height={layer.height} listening={false}/>}
     {cropMode && <Rect x={1} y={1} width={Math.max(0, layer.width - 2)} height={Math.max(0, layer.height - 2)} stroke="#e94e37" strokeWidth={3} dash={[10, 7]} listening={false}/>}
@@ -4200,8 +4267,8 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
       <div className="property-section"><h4>槽位形状</h4><div className="shape-segmented four"><button className={shapeOf(layer) === 'rect' ? 'active' : ''} onClick={() => update({ shape: 'rect' })}>矩形</button><button className={shapeOf(layer) === 'circle' ? 'active' : ''} onClick={() => update({ shape: 'circle' })}>圆形</button><button className={shapeOf(layer) === 'rounded' ? 'active' : ''} onClick={() => update({ shape: 'rounded', cornerRadius: layer.cornerRadius ?? 36 })}>圆角</button><button className={shapeOf(layer) === 'polygon' ? 'active' : ''} onClick={() => update({ shape: 'polygon', polygonSides: layer.polygonSides || 5, polygonPoints: polygonPointsOf(layer) })}>多边形</button></div>{shapeOf(layer) === 'rounded' && <div className="rounded-radius-control"><NumberField label="圆角半径" value={layer.cornerRadius ?? 36} min={0} max={Math.floor(Math.min(layer.width, layer.height) / 2)} presets={[0, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128]} onChange={(cornerRadius) => update({ cornerRadius })}/></div>}{shapeOf(layer) === 'polygon' && <div className="polygon-controls"><NumberField label="边数" value={layer.polygonSides || 5} min={POLYGON_MIN_SIDES} max={POLYGON_MAX_SIDES} presets={[3, 4, 5, 6, 8, 10, 12, 16]} onChange={(polygonSides) => update({ polygonSides, polygonPoints: regularPolygonPoints(polygonSides) })}/>{polygonPointsOf(layer).map((point, index) => <label key={index} className="polygon-radius"><span>顶点 {index + 1}</span><input type="range" min="10" max="100" value={polygonRadiusPercent(point)} onChange={(event) => update({ polygonPoints: polygonPointsOf(layer).map((item, itemIndex) => itemIndex === index ? polygonPointAtRadius(item, Number(event.target.value)) : item) })}/><output>{polygonRadiusPercent(point)}%</output></label>)}</div>}</div>
       <div className="property-section slot-fill-section"><h4>照片 / 颜色填充</h4>
         <div className="slot-fill-mode" role="group" aria-label="填充类型"><button type="button" className={!colorFilled ? 'active' : ''} onClick={() => update({ slotFill: '' })}><FileImage size={15}/>照片填充</button><button type="button" className={colorFilled ? 'active' : ''} onClick={() => update({ slotFill: layer.slotFill || '#e24b35', replacementDisabled: false, boundLayerId: undefined })}><PaintBucket size={15}/>颜色填充</button></div>
-        <div className={`slot-photo-options ${colorFilled ? 'disabled' : ''}`}><div className="slot-option-heading"><span>照片适配</span>{colorFilled && <small>颜色填充已启用</small>}</div><div className="segmented"><button disabled={disabledReplacement || colorFilled || bindingActive} className={layer.fit === 'cover' ? 'active' : ''} onClick={() => update({ fit: 'cover' })}>裁切铺满</button><button disabled={disabledReplacement || colorFilled || bindingActive} className={layer.fit === 'fill' ? 'active' : ''} onClick={() => update({ fit: 'fill' })}>拉伸填满</button></div><label className="check-row replacement-disable-row" title="禁用后，使用模板时不再要求添加照片；槽位保持透明，但颜色填充和边框仍会显示。"><input type="checkbox" disabled={colorFilled || bindingActive} checked={Boolean(layer.replacementDisabled)} onChange={(event) => update({ replacementDisabled: event.target.checked })}/><span>禁用替换照片</span></label><div ref={bindingMenuRef} className={`property-dropdown slot-binding-field ${colorFilled ? 'disabled' : ''}`}><span className="property-dropdown-label">绑定图层</span><button type="button" className="property-dropdown-trigger" disabled={colorFilled} aria-expanded={bindingMenuOpen} onClick={() => setBindingMenuOpen((open) => !open)}><span>{boundLayerName}</span><ChevronDown size={14}/></button>{bindingMenuOpen && !colorFilled && <div className="property-dropdown-menu"><button type="button" className={!layer.boundLayerId ? 'active' : ''} onClick={() => { update({ boundLayerId: undefined, replacementDisabled: false }); setBindingMenuOpen(false); }}>不绑定</button>{bindingCandidates.map((candidate) => <button type="button" key={candidate.id} className={layer.boundLayerId === candidate.id ? 'active' : ''} onClick={() => { update({ boundLayerId: candidate.id, replacementDisabled: false }); setBindingMenuOpen(false); }}>{candidate.name}</button>)}</div>}</div>{bindingActive && <p className="property-note">使用模板时跟随绑定的可替换图层，不会单独显示在可替换图层列表中。</p>}</div>
-        <div className={`slot-color-options ${colorFilled ? 'active' : ''}`}><label className="slot-color-picker"><span>填充颜色</span><input type="color" disabled={!colorFilled} value={layer.slotFill || '#e24b35'} onChange={(event) => update({ slotFill: event.target.value, replacementDisabled: false, boundLayerId: undefined })}/><code>{layer.slotFill || '#e24b35'}</code></label><button type="button" className={`wide-property-button ${colorFilled ? 'active' : ''}`} onClick={() => update(colorFilled ? { slotFill: '' } : { slotFill: '#e24b35', replacementDisabled: false, boundLayerId: undefined })}>{colorFilled ? '关闭颜色填充' : '启用颜色填充'}</button></div>
+        <div className={`slot-photo-options ${colorFilled ? 'disabled' : ''}`}><div className="slot-option-heading"><span>照片适配</span>{colorFilled && <small>颜色填充已启用</small>}</div><div className="segmented"><button disabled={disabledReplacement || colorFilled || bindingActive} className={layer.fit === 'cover' ? 'active' : ''} onClick={() => update({ fit: 'cover' })}>裁切铺满</button><button disabled={disabledReplacement || colorFilled || bindingActive} className={layer.fit === 'fill' ? 'active' : ''} onClick={() => update({ fit: 'fill' })}>拉伸填满</button></div><div className="property-dropdown multi-photo-layout-field"><span className="property-dropdown-label">多图排列</span><select className="property-select" disabled={colorFilled || bindingActive} value={multiPhotoLayoutOf(layer)} onChange={(event) => update({ multiPhotoLayout: event.target.value })}><option value="none">无</option><option value="horizontal">横向排列</option><option value="vertical">纵向排列</option><option value="grid">网格换行</option></select>{multiPhotoLayoutOf(layer) === 'grid' && <label className="multi-photo-columns"><span>每行最多</span><input type="number" min="1" max="12" value={Math.max(1, Math.min(12, Number(layer.multiPhotoColumns) || 2))} onChange={(event) => update({ multiPhotoColumns: clamp(Number(event.target.value) || 1, 1, 12) })}/><span>张</span></label>}</div><label className="check-row replacement-disable-row" title="禁用后，使用模板时不再要求添加照片；槽位保持透明，但颜色填充和边框仍会显示。"><input type="checkbox" disabled={colorFilled || bindingActive} checked={Boolean(layer.replacementDisabled)} onChange={(event) => update({ replacementDisabled: event.target.checked })}/><span>禁用替换照片</span></label><div ref={bindingMenuRef} className={`property-dropdown slot-binding-field ${colorFilled ? 'disabled' : ''}`}><span className="property-dropdown-label">绑定图层</span><button type="button" className="property-dropdown-trigger" disabled={colorFilled} aria-expanded={bindingMenuOpen} onClick={() => setBindingMenuOpen((open) => !open)}><span>{boundLayerName}</span><ChevronDown size={14}/></button>{bindingMenuOpen && !colorFilled && <div className="property-dropdown-menu"><button type="button" className={!layer.boundLayerId ? 'active' : ''} onClick={() => { update({ boundLayerId: undefined, replacementDisabled: false, slotFill: '' }); setBindingMenuOpen(false); }}>不绑定</button>{bindingCandidates.map((candidate) => <button type="button" key={candidate.id} className={layer.boundLayerId === candidate.id ? 'active' : ''} onClick={() => { update({ boundLayerId: candidate.id, replacementDisabled: false, slotFill: '' }); setBindingMenuOpen(false); }}>{candidate.name}</button>)}</div>}</div>{bindingActive && <p className="property-note">使用模板时跟随绑定的可替换图层，不会单独显示在可替换图层列表中。</p>}</div>
+        <div className={`slot-color-options ${colorFilled ? 'active' : ''} ${bindingActive ? 'disabled' : ''}`}><label className="slot-color-picker"><span>填充颜色</span><input type="color" disabled={!colorFilled || bindingActive} value={layer.slotFill || '#e24b35'} onChange={(event) => update({ slotFill: event.target.value, replacementDisabled: false, boundLayerId: undefined })}/><code>{layer.slotFill || '#e24b35'}</code></label><button type="button" disabled={bindingActive} className={`wide-property-button ${colorFilled ? 'active' : ''}`} onClick={() => update(colorFilled ? { slotFill: '' } : { slotFill: '#e24b35', replacementDisabled: false, boundLayerId: undefined })}>{colorFilled ? '关闭颜色填充' : '启用颜色填充'}</button></div>
       </div>    </>}
 
     <div className="property-section opacity-inline-row"><h4>透明度</h4><div className="opacity-inline-control"><NumericInput value={Math.round(layerOpacityOf(layer) * 100)} min={0} max={100} presets={OPACITY_PRESETS} onCommit={(opacity) => update({ opacity: clamp(opacity / 100, 0, 1) })}/></div></div>
@@ -4242,7 +4309,7 @@ function pointInLayer(x, y, layer) {
   return nx * nx + ny * ny <= 1;
 }
 
-function UseStage({ composition, slotSources, slotTransforms, selectedId, setSelectedId, updateLayer, cropModeId, setCropModeId, updatePhotoTransform, onRequestSlot, zoom, pan, panning, onPanStart, transparent, lockAspectRatio, textEditingId, textSelection, onEditText, onTextChange, onTextSelectionChange, onTextDone }) {
+function UseStage({ composition, slotSources, slotSourceLists = {}, slotTransforms, selectedId, setSelectedId, updateLayer, cropModeId, setCropModeId, updatePhotoTransform, onRequestSlot, zoom, pan, panning, onPanStart, transparent, lockAspectRatio, textEditingId, textSelection, onEditText, onTextChange, onTextSelectionChange, onTextDone }) {
   const hostRef = useRef();
   const transformerRef = useRef();
   const nodeRefs = useRef({});
@@ -4321,7 +4388,8 @@ function UseStage({ composition, slotSources, slotTransforms, selectedId, setSel
           {composition.layers.map((layer) => textEditingId === layer.id ? null : <EditorLayer
             key={layer.id}
             layer={layer}
-            source={layer.type === 'slot' ? (slotSources[layer.id] || (layer.boundLayerId ? slotSources[layer.boundLayerId] : undefined)) : undefined}
+             source={layer.type === 'slot' ? (slotSources[layer.id] || (layer.boundLayerId ? slotSources[layer.boundLayerId] : undefined)) : undefined}
+             sources={layer.type === 'slot' ? (slotSourceLists[layer.id] || (layer.boundLayerId ? slotSourceLists[layer.boundLayerId] : undefined)) : undefined}
             photoTransform={slotTransforms[layer.id]}
             cropMode={cropModeId === layer.id}
             interactive={layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId && Boolean(slotSources[layer.id]) && cropModeId !== layer.id}
@@ -4450,6 +4518,13 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   const batchNames = batchSlot ? (slotNameLists[batchSlot.id] || (slotNames[batchSlot.id] ? [slotNames[batchSlot.id]] : [])) : [];
   const gallerySources = slotGalleryId ? (slotSourceLists[slotGalleryId] || (slotSources[slotGalleryId] ? [slotSources[slotGalleryId]] : [])) : [];
   const galleryNames = slotGalleryId ? (slotNameLists[slotGalleryId] || (slotNames[slotGalleryId] ? [slotNames[slotGalleryId]] : [])) : [];
+  const renderReplacements = useMemo(() => {
+    const next = { ...slotSources };
+    Object.entries(slotSourceLists).forEach(([slotId, sources]) => {
+      if (Array.isArray(sources) && sources.length) next[slotId] = sources;
+    });
+    return next;
+  }, [slotSourceLists, slotSources]);
   const cropLayer = composition.layers.find((layer) => layer.id === cropModeId && layer.type === 'slot');
   const cropTransform = cropLayer ? (slotTransforms[cropLayer.id] || { zoom: 1, offsetX: 0, offsetY: 0 }) : null;
   const outputMime = exportFormat === 'jpg' ? 'image/jpeg' : `image/${exportFormat}`;
@@ -4881,7 +4956,8 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   }, [acceptFile, acceptInitialFiles, composition.layers, initialFiles]);
 
   const currentResult = useCallback(async (job = null) => {
-    const dataUrl = outputMime === 'image/gif' && batchSlot && batchSources.length > 1
+    const useLegacyBatchAnimation = batchSlot && multiPhotoLayoutOf(batchSlot) === 'none' && batchSources.length > 1;
+    const dataUrl = outputMime === 'image/gif' && useLegacyBatchAnimation
       ? await renderAnimatedBatchTemplate(composition, batchSlot.id, batchSources, slotSources, slotTransforms, {
         scale: exportScale,
         transparent,
@@ -4890,25 +4966,25 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
          onFrameProgress: job ? (value) => updateExport(job, 8 + value * 58, `正在生成 GIF（${Math.round(value * 100)}%）`) : undefined,
          onBatchProgress: job ? (value) => updateExport(job, 8 + value * 58, `正在合成 GIF（${Math.round(value * 100)}%）`) : undefined
       })
-      : await renderOutput(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: outputMime, signal: job?.controller.signal });
+      : await renderOutput(composition, renderReplacements, slotTransforms, { scale: exportScale, transparent, mime: outputMime, signal: job?.controller.signal });
     if (job && isExportCancelled(job)) return '';
     if (job) updateExport(job, 68, '正在准备复制');
     setResult(dataUrl);
     return dataUrl;
-  }, [batchSlot, batchSources, composition, exportScale, isExportCancelled, outputMime, renderOutput, slotSources, slotTransforms, transparent, updateExport]);
+  }, [batchSlot, batchSources, composition, exportScale, isExportCancelled, outputMime, renderOutput, renderReplacements, slotSources, slotTransforms, transparent, updateExport]);
 
   const copyAgain = useCallback(async () => {
     const job = beginExport(outputMime === 'image/gif' ? '正在导出 GIF' : '正在导出图片');
     updateExport(job, 5);
     await new Promise((resolve) => requestAnimationFrame(() => resolve()));
     try {
-      if (batchSlot && batchSources.length > 1 && outputMime !== 'image/gif') {
+      if (batchSlot && multiPhotoLayoutOf(batchSlot) === 'none' && batchSources.length > 1 && outputMime !== 'image/gif') {
         const outputs = [];
         for (let index = 0; index < batchSources.length; index += 1) {
           if (isExportCancelled(job)) return;
           outputs.push(await renderOutput(
             composition,
-            { ...slotSources, [batchSlot.id]: batchSources[index] },
+             { ...renderReplacements, [batchSlot.id]: batchSources[index] },
             slotTransforms,
             { scale: exportScale, transparent, mime: outputMime, signal: job.controller.signal }
           ));
@@ -4929,7 +5005,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       if (!dataUrl || isExportCancelled(job)) return;
       const clipboardDataUrl = outputMime === 'image/png'
         ? undefined
-        : await renderTemplate(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: 'image/png', signal: job.controller.signal });
+         : await renderTemplate(composition, renderReplacements, slotTransforms, { scale: exportScale, transparent, mime: 'image/png', signal: job.controller.signal });
       if (isExportCancelled(job)) return;
       updateExport(job, 88, '正在复制到剪贴板');
       await desktop.copyImage(dataUrl, clipboardDataUrl);
@@ -4947,7 +5023,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     } finally {
       finishExport(job);
     }
-  }, [batchSlot, batchSources, beginExport, composition, currentResult, exportScale, finishExport, isExportCancelled, notify, outputMime, renderOutput, slotSources, slotTransforms, transparent, updateExport]);
+  }, [batchSlot, batchSources, beginExport, composition, currentResult, exportScale, finishExport, isExportCancelled, notify, outputMime, renderOutput, renderReplacements, slotSources, slotTransforms, transparent, updateExport]);
 
   const resetUse = useCallback(() => {
     commitSession(createUseSession(template));
@@ -5130,7 +5206,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       <section className="result-area">
         <div className="result-heading"><div><p className="eyebrow">第 2 步</p><h2>生成结果</h2></div><div className="result-heading-actions"><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>{result && <div className="result-actions"><button className="primary-button" onClick={copyAgain}>{copied ? <Check size={17}/> : <Copy size={17}/>}{exportFormat === 'gif' ? '复制 GIF' : '复制图片'}</button></div>}</div></div>
         <div className="result-stage has-result" onWheel={handleResultWheel} onContextMenu={openContextMenu} onDragStart={(event) => event.preventDefault()} onDragOver={(event) => { if (Array.from(event.dataTransfer.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropOnSlot}>
-          <UseStage composition={composition} slotSources={slotSources} slotTransforms={slotTransforms} selectedId={selectedId} setSelectedId={setSelectedId} updateLayer={updateLayer} cropModeId={cropModeId} setCropModeId={setCropModeId} updatePhotoTransform={updatePhotoTransform} onRequestSlot={requestSlotImage} zoom={zoom} pan={pan} panning={panning} onPanStart={beginPan} transparent={transparent} lockAspectRatio={lockAspectRatio} textEditingId={textEditingId} textSelection={textSelection} onEditText={editTextLayer} onTextChange={updateTextLayer} onTextSelectionChange={setTextSelection} onTextDone={finishTextEditing}/>
+          <UseStage composition={composition} slotSources={slotSources} slotSourceLists={slotSourceLists} slotTransforms={slotTransforms} selectedId={selectedId} setSelectedId={setSelectedId} updateLayer={updateLayer} cropModeId={cropModeId} setCropModeId={setCropModeId} updatePhotoTransform={updatePhotoTransform} onRequestSlot={requestSlotImage} zoom={zoom} pan={pan} panning={panning} onPanStart={beginPan} transparent={transparent} lockAspectRatio={lockAspectRatio} textEditingId={textEditingId} textSelection={textSelection} onEditText={editTextLayer} onTextChange={updateTextLayer} onTextSelectionChange={setTextSelection} onTextDone={finishTextEditing}/>
         </div>
       </section>
     </div>

@@ -698,6 +698,10 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .slot-option-heading { min-height: 18px; margin-bottom: 7px; display: flex; align-items: center; justify-content: space-between; gap: 7px; color: var(--ink); font-size: 9px; font-weight: 650; }
 .slot-option-heading small { color: var(--muted); font-size: 8px; font-weight: 500; }
 .slot-binding-field { margin-top: 10px; }
+.multi-photo-layout-field { margin-top: 10px; }
+.multi-photo-layout-field .property-select { width: 100%; }
+.multi-photo-columns { margin-top: 8px; display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 6px; color: var(--muted); font-size: 9px; }
+.multi-photo-columns input { width: 64px; min-width: 0; }
 .slot-color-options { display: grid; grid-template-columns: minmax(0,1fr); gap: 8px; opacity: .65; }
 .slot-color-options.active { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface-soft)); opacity: 1; }
 .slot-color-picker { display: grid; grid-template-columns: 1fr 38px auto; align-items: center; gap: 7px; color: var(--muted); font-size: 9px; }
