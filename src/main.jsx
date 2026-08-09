@@ -1394,6 +1394,18 @@ function App() {
 
   useEffect(() => { const suppressAltMenu = (event) => { if (event.key === 'Alt') event.preventDefault(); }; window.addEventListener('keydown', suppressAltMenu, true); window.addEventListener('keyup', suppressAltMenu, true); return () => { window.removeEventListener('keydown', suppressAltMenu, true); window.removeEventListener('keyup', suppressAltMenu, true); }; }, []);
 
+  useEffect(() => {
+    if (!settingsOpen) return undefined;
+    const closeSettingsOnEscape = (event) => {
+      if (event.key !== 'Escape' || event.repeat) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setSettingsOpen(false);
+    };
+    window.addEventListener('keydown', closeSettingsOnEscape, true);
+    return () => window.removeEventListener('keydown', closeSettingsOnEscape, true);
+  }, [settingsOpen]);
+
   const notify = useCallback((message, kind = '') => {
     clearTimeout(toastTimer.current); setToast({ message, kind });
     toastTimer.current = setTimeout(() => setToast(null), 2600);
@@ -4589,9 +4601,9 @@ function UseStage({ composition, slotSources, slotSourceLists = {}, slotTransfor
           <Transformer
             ref={transformerRef}
             rotateEnabled={false}
-            keepRatio
+            keepRatio={false}
             flipEnabled={false}
-            enabledAnchors={['top-left','top-right','bottom-left','bottom-right']}
+            enabledAnchors={['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']}
             borderStroke="#e24b35"
             anchorFill="#fff"
             anchorStroke="#e24b35"

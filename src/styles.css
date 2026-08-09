@@ -489,7 +489,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .use-text-input-wrap { position: relative; min-width: 0; }
 .use-text-input-wrap > textarea, .batch-text-row textarea { width: 100%; min-height: 34px; resize: vertical; padding: 7px 9px; border: 1px solid var(--line); border-radius: 5px; outline: 0; background: var(--surface); color: var(--ink); font: inherit; font-size: 11px; line-height: 1.45; }
 .use-text-layer-field textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
-.batch-text-control { position: absolute; z-index: 3; right: -7px; bottom: -7px; }
+.batch-text-control { position: absolute; z-index: 3; right: -7px; top: 6px; }
 .batch-text-trigger { min-width: 21px; height: 21px; padding: 0 5px; border: 2px solid var(--surface); border-radius: 999px; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 9px; font-weight: 800; line-height: 1; box-shadow: 0 2px 7px rgba(0,0,0,.24); cursor: pointer; }
 .batch-text-trigger:hover, .batch-text-trigger.active { background: color-mix(in srgb, var(--accent) 82%, #000); color: #fff; transform: translateY(-1px); }
 .batch-text-popover { position: fixed; z-index: 900; overflow: auto; overscroll-behavior: contain; padding: 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); box-shadow: 0 14px 34px rgba(22,20,17,.24); }
