@@ -587,6 +587,7 @@ function isReplaceableSlot(layer) {
   return layer?.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId && !layer.slotFill;
 }
 
+const MULTI_PHOTO_LAYOUT_OPTIONS = [{ value: 'none', label: '无' }, { value: 'horizontal', label: '横向排列' }, { value: 'vertical', label: '纵向排列' }, { value: 'grid', label: '网格换行' }];
 const MULTI_PHOTO_LAYOUT_LABELS = { horizontal: '横向排列', vertical: '纵向排列', grid: '网格换行' };
 
 function multiPhotoLayoutLabel(layer) {
@@ -1341,6 +1342,7 @@ function App() {
   const [useSessions, setUseSessions] = useState({});
   const [config, setConfig] = useState({ theme: 'system', autoCopy: true, libraryCardSize: 'large' });
   const [templateFolders, setTemplateFolders] = useState([]);
+  const [libraryFolder, setLibraryFolder] = useState('');
   const [ready, setReady] = useState(false);
   const [page, setPage] = useState({ name: 'library' });
   const [toast, setToast] = useState(null);
@@ -1516,8 +1518,8 @@ function App() {
   if (!ready) return <div className="loading-screen"><Sparkles size={26}/><span>正在准备模板库...</span></div>;
 
   return <div className="app-shell">
-     {page.name === 'library' && <Library templates={templates} folders={templateFolders} cardSize={config.libraryCardSize || 'large'} query={query} setQuery={setQuery} onCardSizeChange={(libraryCardSize) => updateConfig({ libraryCardSize })} onRefresh={refreshTemplates} onCreate={() => setPage({ name: 'editor' })} onOpenSettings={() => setSettingsOpen(true)} onEdit={(template) => setPage({ name: 'editor', template })} onRename={renameTemplate} onUse={useTemplate} onDelete={deleteTemplate} onCopy={copyTemplate} onToggleFavorite={toggleFavorite} notify={notify}/>}
-    {page.name === 'editor' && <Editor initial={page.template} autosave={editorDrafts[page.template?.id || 'new']} onSaveDraft={saveEditorDraft} onClearDraft={clearEditorDraft} onBack={() => setPage({ name: 'library' })} onSave={saveTemplate} notify={notify}/>}
+     {page.name === 'library' && <Library templates={templates} folders={templateFolders} currentFolder={libraryFolder} onFolderChange={setLibraryFolder} cardSize={config.libraryCardSize || 'large'} query={query} setQuery={setQuery} onCardSizeChange={(libraryCardSize) => updateConfig({ libraryCardSize })} onRefresh={refreshTemplates} onCreate={(folderPath) => setPage({ name: 'editor', folderPath })} onOpenSettings={() => setSettingsOpen(true)} onEdit={(template) => setPage({ name: 'editor', template })} onRename={renameTemplate} onUse={useTemplate} onDelete={deleteTemplate} onCopy={copyTemplate} onToggleFavorite={toggleFavorite} notify={notify}/>}
+    {page.name === 'editor' && <Editor initial={page.template} initialFolderPath={page.folderPath || ''} autosave={editorDrafts[page.template?.id || 'new']} onSaveDraft={saveEditorDraft} onClearDraft={clearEditorDraft} onBack={() => setPage({ name: 'library' })} onSave={saveTemplate} notify={notify}/>}
     {page.name === 'use' && <UseTemplate template={page.template} initialFiles={page.files} cachedSession={useSessions[page.template.id]} onSaveSession={saveUseSession} onBack={() => setPage({ name: 'library' })} onEdit={() => setPage({ name: 'editor', template: page.template })} notify={notify}/>}
     {settingsOpen && <SettingsDialog config={config} onChange={updateConfig} onClose={() => setSettingsOpen(false)}/>}
     <Toast toast={toast}/>
@@ -1599,12 +1601,12 @@ function SettingsDialog({ config, onChange, onClose }) {
   return <div className="settings-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="settings-dialog" role="dialog" aria-modal="true"><div className="settings-dialog-heading"><div><p className="eyebrow">全局设置</p><h2>界面主题与主页显示</h2></div><IconButton label="关闭" onClick={onClose}><X size={18}/></IconButton></div><div className="settings-dialog-section"><h3>界面主题</h3><div className="settings-options">{themeOptions.map(({ value, label, description, icon: Icon }) => <button type="button" key={value} className={`settings-option ${config.theme === value ? 'active' : ''}`} onClick={() => onChange({ theme: value })}><span className="settings-option-icon"><Icon size={18}/></span><span><strong>{label}</strong><small>{description}</small></span><span className="settings-option-check">{config.theme === value ? '✓' : ''}</span></button>)}</div></div><div className="settings-dialog-section"><h3>主页模板显示大小</h3><div className="settings-size-options">{sizeOptions.map(({ value, label }) => <button type="button" key={value} className={`settings-size-option ${((config.libraryCardSize || 'large') === value) ? 'active' : ''}`} onClick={() => onChange({ libraryCardSize: value })}><span className="settings-size-radio">{(config.libraryCardSize || 'large') === value ? '●' : '○'}</span><strong>{label}</strong></button>)}</div></div><p className="settings-note">设置会立即生效，并保存到程序目录的 Data/config.json。</p></div></div>;
 }
 
-function Library({ templates, folders = [], cardSize = 'large', query, setQuery, onCardSizeChange, onRefresh, onCreate, onOpenSettings, onEdit, onRename, onUse, onDelete, onCopy, onToggleFavorite, notify }) {
+function Library({ templates, folders = [], currentFolder = '', onFolderChange, cardSize = 'large', query, setQuery, onCardSizeChange, onRefresh, onCreate, onOpenSettings, onEdit, onRename, onUse, onDelete, onCopy, onToggleFavorite, notify }) {
   const [sort, setSort] = useState('recent');
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [templateType, setTemplateType] = useState('all');
   const [refreshing, setRefreshing] = useState(false);
-  const [currentFolder, setCurrentFolder] = useState('');
+  const setCurrentFolder = onFolderChange;
   const refresh = async () => {
     if (refreshing) return;
     setRefreshing(true);
@@ -1670,13 +1672,13 @@ function Library({ templates, folders = [], cardSize = 'large', query, setQuery,
     return () => window.removeEventListener('wheel', handleCardSizeWheel, { capture: true });
   }, [cardSize, onCardSizeChange]);
   return <main className={`library-page library-size-${['small', 'medium', 'large'].includes(cardSize) ? cardSize : 'large'}`}>
-    <header className="topbar"><Brand/><div className="topbar-actions"><button className="secondary-button" onClick={onOpenSettings}><Settings size={17}/>设置</button><span className="storage-note">{desktop.isDesktop ? '模板保存在程序目录的 meme 文件夹' : '模板保存在浏览器'}</span><button className="secondary-button" onClick={refresh} disabled={refreshing}><RefreshCw className={refreshing ? 'refresh-icon spinning' : 'refresh-icon'} size={17}/>{refreshing ? '刷新中' : '刷新'}</button><button className="primary-button" onClick={onCreate}><Plus size={18}/>新建模板</button></div></header>
+    <header className="topbar"><Brand/><div className="topbar-actions"><button className="secondary-button" onClick={onOpenSettings}><Settings size={17}/>设置</button><span className="storage-note">{desktop.isDesktop ? '模板保存在程序目录的 meme 文件夹' : '模板保存在浏览器'}</span><button className="secondary-button" onClick={refresh} disabled={refreshing}><RefreshCw className={refreshing ? 'refresh-icon spinning' : 'refresh-icon'} size={17}/>{refreshing ? '刷新中' : '刷新'}</button><button className="primary-button" onClick={() => onCreate(normalizedFolder)}><Plus size={18}/>新建模板</button></div></header>
     <section className="library-heading"><div><p className="eyebrow">模板工作台</p><h1>选择一个模板，马上开始</h1><p>点击使用，或把图片直接拖到模板上。</p><nav className="library-breadcrumb" aria-label="模板目录路径"><button type="button" onClick={() => setCurrentFolder('')}>meme</button>{breadcrumbParts.map((part, index) => { const target = breadcrumbParts.slice(0, index + 1).join('/'); return <React.Fragment key={target}><span>/</span><button type="button" onClick={() => setCurrentFolder(target)}>{part}</button></React.Fragment>; })}<span>/</span></nav></div><div className="library-controls"><div className="search-box"><LayoutTemplate size={18}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索名称或标签"/></div><button className={`favorite-filter ${favoritesOnly ? 'active' : ''}`} onClick={() => setFavoritesOnly((current) => !current)}><Star size={16} fill={favoritesOnly ? 'currentColor' : 'none'}/>收藏</button><div className="template-type-filter" role="group" aria-label="模板类型"><button className={templateType === 'all' ? 'active' : ''} onClick={() => setTemplateType('all')}>全部</button><button className={templateType === 'gif' ? 'active' : ''} onClick={() => setTemplateType('gif')}>GIF</button><button className={templateType === 'static' ? 'active' : ''} onClick={() => setTemplateType('static')}>普通</button></div><select value={sort} onChange={(event) => setSort(event.target.value)} aria-label="模板排序"><option value="recent">最近使用</option><option value="created">最近创建</option><option value="name">按名称</option></select></div></section>
     <section className="template-grid">
       {normalizedFolder && <button className="folder-card folder-parent-card" onClick={() => setCurrentFolder(parentFolder)}><span className="folder-card-icon"><ArrowLeft size={24}/></span><strong>返回上一级</strong><small>{parentFolder ? `${folderName(parentFolder)}/` : 'meme/'}</small></button>}
       {visibleFolders.map((folder) => <button className="folder-card" key={folder} onClick={() => { setCurrentFolder(folder); if (normalizedQuery) setQuery(''); }}><span className="folder-card-icon"><FolderOpen size={24}/></span><strong>{folderName(folder)}</strong><small>{`${folder}/`}</small></button>)}
       {filtered.map((template) => <TemplateCard key={template.id} template={template} onUse={onUse} onEdit={onEdit} onRename={onRename} onCopy={onCopy} onDelete={onDelete} onToggleFavorite={onToggleFavorite} notify={notify}/>) }
-      <button className="new-template-card" onClick={onCreate}><span className="new-icon"><Plus size={26}/></span><strong>创建新模板</strong><small>设置底图与照片位置</small></button>
+      <button className="new-template-card" onClick={() => onCreate(normalizedFolder)}><span className="new-icon"><Plus size={26}/></span><strong>创建新模板</strong><small>设置底图与照片位置</small></button>
     </section>
     {!filtered.length && !visibleFolders.length && <div className="empty-state"><LayoutTemplate size={34}/><h3>没有找到模板或文件夹</h3><p>换个关键词，或新建一个模板。</p></div>}
     <footer className="app-footer"><span>{filtered.length} 个模板</span></footer>
@@ -1920,14 +1922,16 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
     </div>
     {frameMenu && <div ref={menuRef} className="gif-frame-context-menu" style={{ left: frameMenu.x, top: frameMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={() => { const index = frameMenu.index; setFrameMenu(null); onDuplicateFrame?.(index); }}><Copy size={15}/>{menuSelectionCount > 1 ? `复制 ${menuSelectionCount} 帧` : '复制帧'}</button><button type="button" className="danger" onClick={() => { const index = frameMenu.index; setFrameMenu(null); onDeleteFrame?.(index); }}><Trash2 size={15}/>{menuSelectionCount > 1 ? `删除 ${menuSelectionCount} 帧` : '删除帧'}</button></div>}
   </div>;
-}function Editor({ initial, autosave, onSaveDraft, onClearDraft, onBack, onSave, notify }) {
+}function Editor({ initial, initialFolderPath = '', autosave, onSaveDraft, onClearDraft, onBack, onSave, notify }) {
   const draftKey = initial?.id || 'new';
   const initialStateRef = useRef();
   if (!initialStateRef.current) {
     const canRestore = autosave?.draft?.layers && (initial ? autosave.draft.id === initial.id && autosave.savedAt > (initial.updatedAt || 0) : autosave.kind === 'new');
+    const restoredDraft = canRestore ? structuredClone(autosave.draft) : null;
+    if (restoredDraft && !initial) restoredDraft._folderPath = initialFolderPath;
     initialStateRef.current = {
       restored: Boolean(canRestore),
-      draft: canRestore ? structuredClone(autosave.draft) : initial ? structuredClone(initial) : { id: uid(), name: '未命名模板', width: 0, height: 0, createdAt: Date.now(), updatedAt: Date.now(), layers: [] }
+      draft: restoredDraft || (initial ? structuredClone(initial) : { id: uid(), name: '未命名模板', width: 0, height: 0, createdAt: Date.now(), updatedAt: Date.now(), layers: [], _folderPath: initialFolderPath })
     };
   }
   const [draft, commitDraft, undo, canUndo, redo, canRedo] = useUndoState(() => initialStateRef.current.draft);
@@ -4282,13 +4286,15 @@ function MultiSelectionProperties({ layers, grouped, onGroup, onUngroup, onToggl
 function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifFrameDelay, textStyle, textSelection, onBeginTextInteraction, onTextSelectionChange, updateTextStyle, updateText, update, toggleLock, remove, move }) {
   const [frameMenuOpen, setFrameMenuOpen] = useState(false);
   const [bindingMenuOpen, setBindingMenuOpen] = useState(false);
+  const [multiPhotoMenuOpen, setMultiPhotoMenuOpen] = useState(false);
   const [blendMenuOpen, setBlendMenuOpen] = useState(false);
   const frameMenuRef = useRef(null);
   const bindingMenuRef = useRef(null);
+  const multiPhotoMenuRef = useRef(null);
   const blendMenuRef = useRef(null);
   const rotationShiftRef = useRef(false);
   const visibleFrameValues = parseFrameList(layer.visibleFrames);
-  useEffect(() => { setFrameMenuOpen(false); setBindingMenuOpen(false); setBlendMenuOpen(false); }, [layer.id]);
+  useEffect(() => { setFrameMenuOpen(false); setBindingMenuOpen(false); setMultiPhotoMenuOpen(false); setBlendMenuOpen(false); }, [layer.id]);
   useEffect(() => {
     const updateShift = (event) => { if (event.key === 'Shift') rotationShiftRef.current = event.type === 'keydown'; };
     const releaseShift = () => { rotationShiftRef.current = false; };
@@ -4314,6 +4320,12 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
     return () => window.removeEventListener('pointerdown', close);
   }, [bindingMenuOpen]);
   useEffect(() => {
+    if (!multiPhotoMenuOpen) return undefined;
+    const close = (event) => { if (!multiPhotoMenuRef.current?.contains(event.target)) setMultiPhotoMenuOpen(false); };
+    window.addEventListener('pointerdown', close);
+    return () => window.removeEventListener('pointerdown', close);
+  }, [multiPhotoMenuOpen]);
+  useEffect(() => {
     if (!blendMenuOpen) return undefined;
     const close = (event) => { if (!blendMenuRef.current?.contains(event.target)) setBlendMenuOpen(false); };
     window.addEventListener('pointerdown', close);
@@ -4329,6 +4341,10 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
   const bindingActive = bindingConfigured && !colorFilled;
   const bindingCandidates = layers.filter((candidate) => candidate.type === 'slot' && candidate.id !== layer.id && !candidate.boundLayerId && !candidate.replacementDisabled && !candidate.slotFill);
   const boundLayerName = bindingCandidates.find((candidate) => candidate.id === layer.boundLayerId)?.name || layers.find((candidate) => candidate.id === layer.boundLayerId)?.name || '不绑定';
+  useEffect(() => {
+    if (disabledReplacement || colorFilled) setBindingMenuOpen(false);
+    if (disabledReplacement || colorFilled || bindingActive) setMultiPhotoMenuOpen(false);
+  }, [bindingActive, colorFilled, disabledReplacement]);
   const activeBlendMode = LAYER_BLEND_MODES.find((option) => option.value === layerBlendModeOf(layer)) || LAYER_BLEND_MODES[0];
   const activeTextStyle = textStyle || baseTextStyle(layer);
   const fontTokenSet = new Set(String(activeTextStyle.fontStyle || '').split(/\s+/).filter((token) => token && token !== 'normal'));
@@ -4373,7 +4389,15 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
       <div className="property-section"><h4>槽位形状</h4><div className="shape-segmented four"><button className={shapeOf(layer) === 'rect' ? 'active' : ''} onClick={() => update({ shape: 'rect' })}>矩形</button><button className={shapeOf(layer) === 'circle' ? 'active' : ''} onClick={() => update({ shape: 'circle' })}>圆形</button><button className={shapeOf(layer) === 'rounded' ? 'active' : ''} onClick={() => update({ shape: 'rounded', cornerRadius: layer.cornerRadius ?? 36 })}>圆角</button><button className={shapeOf(layer) === 'polygon' ? 'active' : ''} onClick={() => update({ shape: 'polygon', polygonSides: layer.polygonSides || 5, polygonPoints: polygonPointsOf(layer) })}>多边形</button></div>{shapeOf(layer) === 'rounded' && <div className="rounded-radius-control"><NumberField label="圆角半径" value={layer.cornerRadius ?? 36} min={0} max={Math.floor(Math.min(layer.width, layer.height) / 2)} presets={[0, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128]} onChange={(cornerRadius) => update({ cornerRadius })}/></div>}{shapeOf(layer) === 'polygon' && <div className="polygon-controls"><NumberField label="边数" value={layer.polygonSides || 5} min={POLYGON_MIN_SIDES} max={POLYGON_MAX_SIDES} presets={[3, 4, 5, 6, 8, 10, 12, 16]} onChange={(polygonSides) => update({ polygonSides, polygonPoints: regularPolygonPoints(polygonSides) })}/>{polygonPointsOf(layer).map((point, index) => <label key={index} className="polygon-radius"><span>顶点 {index + 1}</span><input type="range" min="10" max="100" value={polygonRadiusPercent(point)} onChange={(event) => update({ polygonPoints: polygonPointsOf(layer).map((item, itemIndex) => itemIndex === index ? polygonPointAtRadius(item, Number(event.target.value)) : item) })}/><output>{polygonRadiusPercent(point)}%</output></label>)}</div>}</div>
       <div className="property-section slot-fill-section"><h4>照片 / 颜色填充</h4>
         <div className="slot-fill-mode" role="group" aria-label="填充类型"><button type="button" className={!colorFilled ? 'active' : ''} onClick={() => update({ slotFill: '' })}><FileImage size={15}/>照片填充</button><button type="button" className={colorFilled ? 'active' : ''} onClick={() => update({ slotFill: layer.slotFill || '#e24b35', replacementDisabled: false })}><PaintBucket size={15}/>颜色填充</button></div>
-        <div className={`slot-photo-options ${!colorFilled ? 'active' : 'disabled'}`}><label className="check-row replacement-disable-row" title="禁用后，使用模板时不再要求添加照片；槽位保持透明，但颜色填充和边框仍会显示。"><input type="checkbox" disabled={colorFilled} checked={Boolean(layer.replacementDisabled)} onChange={(event) => update({ replacementDisabled: event.target.checked })}/><span>禁用替换照片</span></label><div className="slot-option-heading"><strong>照片适配</strong>{colorFilled && <small>颜色填充已启用</small>}</div><div className="segmented"><button disabled={disabledReplacement || colorFilled || bindingActive} className={layer.fit === 'cover' ? 'active' : ''} onClick={() => update({ fit: 'cover' })}>裁切铺满</button><button disabled={disabledReplacement || colorFilled || bindingActive} className={layer.fit === 'fill' ? 'active' : ''} onClick={() => update({ fit: 'fill' })}>拉伸填满</button></div><div className={`slot-inline-field multi-photo-layout-field ${disabledReplacement || colorFilled || bindingActive ? 'disabled' : ''}`}><strong>多图排列</strong><select className="property-select" disabled={disabledReplacement || colorFilled || bindingActive} value={multiPhotoLayoutOf(layer)} onChange={(event) => update({ multiPhotoLayout: event.target.value })}><option value="none">无</option><option value="horizontal">横向排列</option><option value="vertical">纵向排列</option><option value="grid">网格换行</option></select></div>{multiPhotoLayoutOf(layer) === 'grid' && <label className={`multi-photo-columns ${disabledReplacement || colorFilled || bindingActive ? 'disabled' : ''}`}><strong>每行最多</strong><NumericInput disabled={disabledReplacement || colorFilled || bindingActive} min={1} max={12} presets={[1,2,3,4,5,6,7,8,9,10,11,12]} value={Number(layer.multiPhotoColumns) || 2} onCommit={(value) => update({ multiPhotoColumns: value })}/><span>张</span></label>}<div ref={bindingMenuRef} className={`property-dropdown slot-inline-field slot-binding-field ${colorFilled ? 'disabled' : ''}`}><strong>绑定图层</strong><button type="button" className="property-dropdown-trigger" disabled={colorFilled} aria-expanded={bindingMenuOpen} onClick={() => setBindingMenuOpen((open) => !open)}><span>{boundLayerName}</span><ChevronDown size={14}/></button>{bindingMenuOpen && !colorFilled && <div className="property-dropdown-menu"><button type="button" className={!layer.boundLayerId ? 'active' : ''} onClick={() => { update({ boundLayerId: undefined }); setBindingMenuOpen(false); }}>不绑定</button>{bindingCandidates.map((candidate) => <button type="button" key={candidate.id} className={layer.boundLayerId === candidate.id ? 'active' : ''} onClick={() => { update({ boundLayerId: candidate.id }); setBindingMenuOpen(false); }}>{candidate.name}</button>)}</div>}</div>{bindingActive && <p className="property-note">使用模板时跟随绑定的可替换图层，不会单独显示在可替换图层列表中。</p>}</div>
+        <div className={`slot-photo-options ${!colorFilled ? 'active' : 'disabled'}`}>
+          <label className="check-row replacement-disable-row" title="禁用后，使用模板时不再要求添加照片；槽位保持透明，但颜色填充和边框仍会显示。"><input type="checkbox" disabled={colorFilled} checked={Boolean(layer.replacementDisabled)} onChange={(event) => { setBindingMenuOpen(false); setMultiPhotoMenuOpen(false); update({ replacementDisabled: event.target.checked }); }}/><span>禁用替换照片</span></label>
+          <div className="slot-option-heading"><strong>照片适配</strong>{colorFilled && <small>颜色填充已启用</small>}</div>
+          <div className="segmented"><button disabled={disabledReplacement || colorFilled} className={layer.fit === 'cover' ? 'active' : ''} onClick={() => update({ fit: 'cover' })}>裁切铺满</button><button disabled={disabledReplacement || colorFilled} className={layer.fit === 'fill' ? 'active' : ''} onClick={() => update({ fit: 'fill' })}>拉伸填满</button></div>
+          <div ref={bindingMenuRef} className={`property-dropdown slot-inline-field slot-binding-field ${disabledReplacement || colorFilled ? 'disabled' : ''}`}><strong>绑定图层</strong><button type="button" className="property-dropdown-trigger" disabled={disabledReplacement || colorFilled} aria-expanded={bindingMenuOpen} onClick={() => setBindingMenuOpen((open) => !open)}><span>{boundLayerName}</span><ChevronDown size={14}/></button>{bindingMenuOpen && !disabledReplacement && !colorFilled && <div className="property-dropdown-menu"><button type="button" className={!layer.boundLayerId ? 'active' : ''} onClick={() => { update({ boundLayerId: undefined }); setBindingMenuOpen(false); }}>不绑定</button>{bindingCandidates.map((candidate) => <button type="button" key={candidate.id} className={layer.boundLayerId === candidate.id ? 'active' : ''} onClick={() => { update({ boundLayerId: candidate.id }); setBindingMenuOpen(false); }}>{candidate.name}</button>)}</div>}</div>
+          {bindingActive && <p className="property-note">使用模板时跟随绑定的可替换图层，不会单独显示在可替换图层列表中。</p>}
+          <div ref={multiPhotoMenuRef} className={`property-dropdown slot-inline-field multi-photo-layout-field ${disabledReplacement || colorFilled || bindingActive ? 'disabled' : ''}`}><strong>多图排列</strong><button type="button" className="property-dropdown-trigger" disabled={disabledReplacement || colorFilled || bindingActive} aria-expanded={multiPhotoMenuOpen} onClick={() => setMultiPhotoMenuOpen((open) => !open)}><span>{multiPhotoLayoutLabel(layer) || '无'}</span><ChevronDown size={14}/></button>{multiPhotoMenuOpen && !disabledReplacement && !colorFilled && !bindingActive && <div className="property-dropdown-menu">{MULTI_PHOTO_LAYOUT_OPTIONS.map((option) => <button type="button" key={option.value} className={multiPhotoLayoutOf(layer) === option.value ? 'active' : ''} onClick={() => { update({ multiPhotoLayout: option.value }); setMultiPhotoMenuOpen(false); }}>{option.label}</button>)}</div>}</div>
+          {multiPhotoLayoutOf(layer) === 'grid' && <label className={`multi-photo-columns ${disabledReplacement || colorFilled || bindingActive ? 'disabled' : ''}`}><strong>每行最多</strong><NumericInput className="multi-photo-count-input" disabled={disabledReplacement || colorFilled || bindingActive} min={1} max={12} presets={[1,2,3,4,5,6,7,8,9,10,11,12]} value={Number(layer.multiPhotoColumns) || 2} onCommit={(value) => update({ multiPhotoColumns: value })}/><span>张</span></label>}
+        </div>
         <div className={`slot-color-options ${colorFilled ? 'active' : ''}`}><label className="slot-color-picker"><strong>填充颜色</strong><input type="color" disabled={!colorFilled} value={layer.slotFill || '#e24b35'} onChange={(event) => update({ slotFill: event.target.value, replacementDisabled: false })}/><code>{layer.slotFill || '#e24b35'}</code></label><button type="button" className={`wide-property-button ${colorFilled ? 'active' : ''}`} onClick={() => update(colorFilled ? { slotFill: '' } : { slotFill: '#e24b35', replacementDisabled: false })}>{colorFilled ? '关闭颜色填充' : '启用颜色填充'}</button></div>
       </div>    </>}
 
