@@ -583,23 +583,54 @@ function multiPhotoLayoutOf(layer) {
   return ['horizontal', 'vertical', 'grid'].includes(layer?.multiPhotoLayout) ? layer.multiPhotoLayout : 'none';
 }
 
+function isReplaceableSlot(layer) {
+  return layer?.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId && !layer.slotFill;
+}
+
+const MULTI_PHOTO_LAYOUT_LABELS = { horizontal: '横向排列', vertical: '纵向排列', grid: '网格换行' };
+
+function multiPhotoLayoutLabel(layer) {
+  return MULTI_PHOTO_LAYOUT_LABELS[multiPhotoLayoutOf(layer)] || '';
+}
+
+function multiPhotoExpandedSize(layer, count, baseLayer = layer) {
+  const total = Math.max(1, Number(count) || 1);
+  const layout = multiPhotoLayoutOf(layer);
+  const unitWidth = Math.max(1, Number(baseLayer?.width) || Number(layer.width) || 1);
+  const unitHeight = Math.max(1, Number(baseLayer?.height) || Number(layer.height) || 1);
+  if (layout === 'horizontal') return { width: unitWidth * total, height: unitHeight, multiPhotoCellWidth: unitWidth, multiPhotoCellHeight: unitHeight };
+  if (layout === 'vertical') return { width: unitWidth, height: unitHeight * total, multiPhotoCellWidth: unitWidth, multiPhotoCellHeight: unitHeight };
+  if (layout === 'grid') {
+    const columns = clamp(Number(layer.multiPhotoColumns) || 2, 1, Math.max(1, Math.min(12, total)));
+    const rows = Math.ceil(total / columns);
+    return { width: unitWidth * columns, height: unitHeight * rows, multiPhotoCellWidth: unitWidth, multiPhotoCellHeight: unitHeight };
+  }
+  return { width: unitWidth, height: unitHeight, multiPhotoCellWidth: undefined, multiPhotoCellHeight: undefined };
+}
+
+function resizeMultiPhotoSlot(composition, template, slotId, count) {
+  const baseLayer = template.layers?.find((layer) => layer.id === slotId) || composition.layers?.find((layer) => layer.id === slotId);
+  if (!baseLayer) return composition;
+  return {
+    ...composition,
+    layers: composition.layers.map((layer) => layer.id === slotId ? { ...layer, ...multiPhotoExpandedSize(layer, count, baseLayer) } : layer)
+  };
+}
+
 function multiPhotoCells(layer, count) {
   const total = Math.max(1, Number(count) || 1);
   const layout = multiPhotoLayoutOf(layer);
   if (layout === 'none' || total === 1) return [{ x: 0, y: 0, width: layer.width, height: layer.height }];
+  const unitWidth = Math.max(1, Number(layer.multiPhotoCellWidth) || Number(layer.width) || 1);
+  const unitHeight = Math.max(1, Number(layer.multiPhotoCellHeight) || Number(layer.height) || 1);
   if (layout === 'horizontal') {
-    const width = layer.width / total;
-    return Array.from({ length: total }, (_, index) => ({ x: index * width, y: 0, width, height: layer.height }));
+    return Array.from({ length: total }, (_, index) => ({ x: index * unitWidth, y: 0, width: unitWidth, height: unitHeight }));
   }
   if (layout === 'vertical') {
-    const height = layer.height / total;
-    return Array.from({ length: total }, (_, index) => ({ x: 0, y: index * height, width: layer.width, height }));
+    return Array.from({ length: total }, (_, index) => ({ x: 0, y: index * unitHeight, width: unitWidth, height: unitHeight }));
   }
   const columns = clamp(Number(layer.multiPhotoColumns) || 2, 1, Math.max(1, Math.min(12, total)));
-  const rows = Math.ceil(total / columns);
-  const width = layer.width / columns;
-  const height = layer.height / rows;
-  return Array.from({ length: total }, (_, index) => ({ x: (index % columns) * width, y: Math.floor(index / columns) * height, width, height }));
+  return Array.from({ length: total }, (_, index) => ({ x: (index % columns) * unitWidth, y: Math.floor(index / columns) * unitHeight, width: unitWidth, height: unitHeight }));
 }
 
 async function drawMultiPhotoSources(ctx, layer, sources, signal) {
@@ -632,6 +663,7 @@ function isLayerVisibleAtFrame(layer, frameIndex) {
 
 function layerSourceForRender(layer, replacements = {}) {
   if (layer.type !== 'slot') return layer.src || '';
+  if (layer.slotFill) return '';
   const boundSource = layer.boundLayerId ? replacements[layer.boundLayerId] : undefined;
   return replacements[layer.id] || boundSource || (layer.replacementDisabled ? '' : layer.src) || '';
 }
@@ -939,11 +971,11 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
     ctx.rotate((layer.rotation || 0) * Math.PI / 180);
     const suppliedReplacement = typeof replacements === 'string' ? replacements : replacements?.[layer.id];
     const boundReplacement = layer.type === 'slot' && layer.boundLayerId && typeof replacements !== 'string' ? replacements?.[layer.boundLayerId] : undefined;
-    const replacement = layer.type === 'slot' && !layer.replacementDisabled ? (suppliedReplacement || boundReplacement) : undefined;
+    const replacement = layer.type === 'slot' && !layer.replacementDisabled && !layer.slotFill ? (suppliedReplacement || boundReplacement) : undefined;
     const replacementSources = layer.type === 'slot'
       ? (Array.isArray(replacement) ? replacement.filter(Boolean) : replacement ? [replacement] : [])
       : [];
-    const src = layer.type === 'slot' ? (replacementSources[0] || (layer.replacementDisabled ? '' : layer.src)) : layer.src;
+    const src = layer.type === 'slot' ? (layer.slotFill ? '' : (replacementSources[0] || (layer.replacementDisabled ? '' : layer.src))) : layer.src;
     if (layer.eraseSrc) {
       const isolated = await renderIsolatedLayer(layer, layer.type === 'slot' ? replacement : src, photoTransforms[layer.id], null, null, scale);
       ctx.drawImage(isolated.canvas, -isolated.insets.left, -isolated.insets.top, isolated.logicalWidth, isolated.logicalHeight);
@@ -1649,7 +1681,7 @@ function TemplateCard({ template, onUse, onEdit, onRename, onCopy, onDelete, onT
   const quickWorking = Boolean(quickExportProgress);
   const menuRef = useRef();
   const pasteMenuRef = useRef();
-  const slots = useMemo(() => template.layers.filter((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId), [template.layers]);
+  const slots = useMemo(() => template.layers.filter(isReplaceableSlot), [template.layers]);
   const canQuickReplace = slots.length === 1;
   const slotCountHint = slots.length === 0
     ? '此模板没有可替换图层。'
@@ -4067,8 +4099,8 @@ function LayerBorderShape({ layer }) {
   return <Rect x={inset} y={inset} width={Math.max(0, layer.width - borderWidth)} height={Math.max(0, layer.height - borderWidth)} cornerRadius={shapeOf(layer) === 'rounded' ? Math.max(0, cornerRadiusOf(layer) - inset) : 0} {...props}/>;
 }
 
-function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, source, sources, paintSource, eraseSource, mosaicSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
-  const image = useHtmlImage(source ?? layer.src);
+function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, selected = false, source, sources, paintSource, eraseSource, mosaicSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
+  const image = useHtmlImage(layer.type === 'slot' && layer.slotFill ? '' : (source ?? layer.src));
   const multiImages = useHtmlImages(sources || EMPTY_IMAGE_SOURCES);
   const loadedPaintImage = useHtmlImage(layer.paintSrc);
   const loadedMosaicImage = useHtmlImage(layer.mosaicSrc);
@@ -4098,7 +4130,7 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
   const disabledReplacement = layer.type === 'slot' && layer.replacementDisabled;
   const colorFilled = layer.type === 'slot' && Boolean(layer.slotFill);
   const bindingActive = layer.type === 'slot' && Boolean(layer.boundLayerId);
-  const placeholderProps = { fill: layer.slotFill || (disabledReplacement ? 'rgba(0,0,0,0)' : highlight ? 'rgba(233,78,55,.14)' : '#eceae4'), stroke: disabledReplacement ? undefined : highlight ? '#e94e37' : layer.slotFill ? undefined : '#77746d', strokeWidth: disabledReplacement ? 0 : highlight ? 5 : 2, dash: disabledReplacement || (layer.slotFill && !highlight) ? undefined : [12, 8] };
+  const placeholderProps = { fill: layer.slotFill || (disabledReplacement ? 'rgba(0,0,0,0)' : highlight ? 'rgba(233,78,55,.14)' : '#eceae4'), stroke: disabledReplacement ? undefined : highlight ? '#e94e37' : layer.slotFill ? undefined : '#77746d', strokeWidth: disabledReplacement ? 0 : highlight ? 5 : 2, dash: selected || disabledReplacement || (layer.slotFill && !highlight) ? undefined : [12, 8] };
   const multiLayoutActive = layer.type === 'slot' && multiPhotoLayoutOf(layer) !== 'none' && multiImages.length > 1;
   const multiCells = multiLayoutActive ? multiPhotoCells(layer, multiImages.length) : [];
   return <Group {...common} clipFunc={layer.type === 'slot' ? clipFunc : undefined}>
@@ -4414,19 +4446,20 @@ function UseStage({ composition, slotSources, slotSourceLists = {}, slotTransfor
           <Rect name="result-background" width={composition.width} height={composition.height} fill={transparent ? 'rgba(0,0,0,0)' : '#fff'}/>
           {composition.layers.map((layer) => textEditingId === layer.id ? null : <EditorLayer
             key={layer.id}
-            layer={layer}
+             layer={layer}
+             selected={selectedId === layer.id}
              source={layer.type === 'slot' ? (slotSources[layer.id] || (layer.boundLayerId ? slotSources[layer.boundLayerId] : undefined)) : undefined}
              sources={layer.type === 'slot' ? (slotSourceLists[layer.id] || (layer.boundLayerId ? slotSourceLists[layer.boundLayerId] : undefined)) : undefined}
             photoTransform={slotTransforms[layer.id]}
             cropMode={cropModeId === layer.id}
-            interactive={layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId && Boolean(slotSources[layer.id]) && cropModeId !== layer.id}
-            selectable={(layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId) || layer.type === 'text'}
-            highlight={layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId && !slotSources[layer.id]}
-            setRef={(node) => { if (layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId) nodeRefs.current[layer.id] = node; }}
+            interactive={isReplaceableSlot(layer) && Boolean(slotSources[layer.id]) && cropModeId !== layer.id}
+            selectable={isReplaceableSlot(layer) || layer.type === 'text'}
+            highlight={isReplaceableSlot(layer) && !slotSources[layer.id]}
+            setRef={(node) => { if (isReplaceableSlot(layer)) nodeRefs.current[layer.id] = node; }}
             onSelect={() => {
               setSelectedId(layer.id);
               setCropModeId(null);
-              if (layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId && !slotSources[layer.id]) onRequestSlot(layer.id);
+              if (isReplaceableSlot(layer) && !slotSources[layer.id]) onRequestSlot(layer.id);
             }}
              onEnterCrop={(event) => {
                event.cancelBubble = true;
@@ -4435,7 +4468,7 @@ function UseStage({ composition, slotSources, slotSourceLists = {}, slotTransfor
                  onEditText(layer.id);
                  return;
                }
-               if (layer.type !== 'slot' || layer.replacementDisabled || !slotSources[layer.id]) return;
+               if (!isReplaceableSlot(layer) || !slotSources[layer.id]) return;
                setSelectedId(layer.id);
                setCropModeId(layer.id);
              }}
@@ -4513,7 +4546,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     cancel: cancelExport
   } = useExportProgress(notify);
   const { zoom, pan, panning, setZoom, zoomAtPointer, beginPan } = useCanvasViewport(1, .5, 10);
-  const [selectedId, setSelectedId] = useState(template.layers.find((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId)?.id || null);
+  const [selectedId, setSelectedId] = useState(template.layers.find(isReplaceableSlot)?.id || null);
   const [textEditingId, setTextEditingId] = useState(null);
   const [textSelection, setTextSelection] = useState(null);
   const [cropModeId, setCropModeId] = useState(null);
@@ -4537,7 +4570,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   const topMenuRef = useRef();
   const slotGalleryRef = useRef();
   const groupRosterInput = useRef();
-  const slots = composition.layers.filter((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId);
+  const slots = composition.layers.filter(isReplaceableSlot);
   const textLayers = composition.layers.filter((layer) => layer.type === 'text' && !layer.textLocked);
   const editableTextLayers = textLayers;
   const batchSlot = slots.length === 1 ? slots[0] : null;
@@ -4635,6 +4668,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       const nextNames = [...previousNames, ...incomingSources.map((_, index) => names[index] || '')];
       return {
         ...previous,
+        composition: resizeMultiPhotoSlot(previous.composition, template, slotId, nextSources.length),
         slotSources: { ...previous.slotSources, [slotId]: nextSources[0] },
         slotNames: { ...previous.slotNames, [slotId]: nextNames[0] || '' },
         slotSourceLists: { ...(previous.slotSourceLists || {}), [slotId]: nextSources },
@@ -4643,7 +4677,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       };
     });
     setSelectedId(slotId);
-  }, [commitSession]);
+  }, [commitSession, template]);
 
   const replaceSlotSource = useCallback((slotId, dataUrl, name) => {
     replaceSlotSources(slotId, [dataUrl], [name], false);
@@ -4662,12 +4696,12 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       delete slotSourceLists[slotId];
       delete slotNameLists[slotId];
       delete slotTransforms[slotId];
-      return { ...previous, slotSources, slotNames, slotSourceLists, slotNameLists, slotTransforms };
+      return { ...previous, composition: resizeMultiPhotoSlot(previous.composition, template, slotId, 1), slotSources, slotNames, slotSourceLists, slotNameLists, slotTransforms };
     });
     setSelectedId(slotId);
     setCropModeId((current) => current === slotId ? null : current);
     setSlotGalleryId((current) => current === slotId ? null : current);
-  }, [commitSession]);
+  }, [commitSession, template]);
 
   const resetSlotLayer = useCallback((slotId) => {
     const originalLayer = template.layers.find((layer) => layer.id === slotId && layer.type === 'slot');
@@ -4709,6 +4743,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       const nextNames = currentNames.filter((_, itemIndex) => itemIndex !== index);
       const next = {
         ...previous,
+        composition: resizeMultiPhotoSlot(previous.composition, template, slotId, nextSources.length || 1),
         slotSources: { ...previous.slotSources },
         slotNames: { ...previous.slotNames },
         slotSourceLists: { ...(previous.slotSourceLists || {}) },
@@ -4727,10 +4762,10 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       }
       return next;
     });
-  }, [commitSession]);
+  }, [commitSession, template]);
 
   const pasteClipboardImage = useCallback(async (targetId, append = false) => {
-    const slotId = targetId || selectedId || composition.layers.find((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId)?.id;
+    const slotId = targetId || selectedId || composition.layers.find(isReplaceableSlot)?.id;
     if (!slotId) return notify('模板中没有可替换照片图层', 'error');
     try {
       const dataUrl = await desktop.readClipboardImage();
@@ -4809,9 +4844,9 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   const acceptFile = useCallback(async (file, targetId) => {
     try {
       const requestedLayer = composition.layers.find((layer) => layer.id === (targetId || selectedId));
-      const slotId = requestedLayer?.type === 'slot' && !requestedLayer.replacementDisabled
+      const slotId = isReplaceableSlot(requestedLayer)
         ? requestedLayer.id
-        : composition.layers.find((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId)?.id;
+        : composition.layers.find(isReplaceableSlot)?.id;
       if (!slotId) return notify('模板中没有可替换照片图层', 'error');
       const dataUrl = await fileToDataUrl(file);
       replaceSlotSource(slotId, dataUrl, file.name);
@@ -4821,7 +4856,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   const acceptInitialFiles = useCallback(async (files, targetId = null, append = false) => {
     const incoming = Array.from(files || []).filter((file) => isImageFileLike(file));
     if (!incoming.length) return;
-    const targetSlots = composition.layers.filter((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId);
+    const targetSlots = composition.layers.filter(isReplaceableSlot);
     if (!targetSlots.length) return;
     try {
       if (targetSlots.length === 1 || targetId) {
@@ -4958,14 +4993,14 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
 
   const generateBatch = useCallback(async (files, targetId, append = false) => {
     const requestedLayer = composition.layers.find((layer) => layer.id === targetId);
-    const slotId = requestedLayer?.type === 'slot' && !requestedLayer.replacementDisabled ? requestedLayer.id : slots.length === 1 ? slots[0].id : null;
+    const slotId = isReplaceableSlot(requestedLayer) ? requestedLayer.id : slots.length === 1 ? slots[0].id : null;
     if (!slotId) return notify('多图仅支持模板只有一个可替换照片图层的情况', 'error');
     await acceptInitialFiles(files, slotId, append);
   }, [acceptInitialFiles, composition.layers, notify, slots]);
 
   const requestSlotImage = useCallback((slotId, append = false) => {
     const layer = composition.layers.find((item) => item.id === slotId);
-    if (!layer || layer.type !== 'slot' || layer.replacementDisabled) return;
+    if (!isReplaceableSlot(layer)) return;
     pendingSlot.current = slotId;
     pendingAppend.current = append;
     input.current?.click();
@@ -4978,7 +5013,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     if (incomingFiles.length > 1) {
       acceptInitialFiles(incomingFiles);
     } else {
-      acceptFile(incomingFiles[0], composition.layers.find((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId)?.id);
+      acceptFile(incomingFiles[0], composition.layers.find(isReplaceableSlot)?.id);
     }
   }, [acceptFile, acceptInitialFiles, composition.layers, initialFiles]);
 
@@ -5129,16 +5164,16 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     const rect = frame.getBoundingClientRect();
     const x = (event.clientX - rect.left) * composition.width / rect.width;
     const y = (event.clientY - rect.top) * composition.height / rect.height;
-    const target = [...composition.layers].reverse().find((layer) => layer.type === 'slot' && !layer.replacementDisabled && !layer.boundLayerId && layer.visible && pointInLayer(x, y, layer));
+    const target = [...composition.layers].reverse().find((layer) => isReplaceableSlot(layer) && layer.visible && pointInLayer(x, y, layer));
     if (!target) return notify('请把图片拖到高亮的可替换区域', 'error');
-    if (files.length > 1 && slots.length === 1) generateBatch(files, target.id); else acceptFile(file, target.id);
+    if (files.length > 1) acceptInitialFiles(files, target.id); else acceptFile(file, target.id);
   };
 
   const dropOnSlotList = (event, slotId) => {
     event.preventDefault(); event.stopPropagation(); setSlotDropId(null);
     const files = Array.from(event.dataTransfer.files || []).filter((item) => isImageFileLike(item)); const file = files[0];
     if (!file) return notify('请拖入图片文件', 'error');
-    if (files.length > 1 && slots.length === 1) generateBatch(files, slotId); else acceptFile(file, slotId);
+    if (files.length > 1) acceptInitialFiles(files, slotId); else acceptFile(file, slotId);
   };
 
   const handleResultWheel = (event) => {
@@ -5206,7 +5241,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
             return <div key={layer.id} className={`slot-item-row ${slotDropId === layer.id ? 'dragging' : ''} ${galleryOpen ? 'gallery-open' : ''}`} onContextMenu={(event) => openSlotContextMenu(event, layer.id)} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setSlotDropId(layer.id); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setSlotDropId((current) => current === layer.id ? null : current); }} onDrop={(event) => dropOnSlotList(event, layer.id)}>
               <button type="button" className={`slot-item ${selectedId === layer.id ? 'selected' : ''}`} onClick={() => setSelectedId(layer.id)} onDoubleClick={() => { setSelectedId(layer.id); requestSlotImage(layer.id); }}>
                 <span className={`slot-item-thumb ${source ? 'has-image' : ''}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (!source) return; event.stopPropagation(); setSelectedId(layer.id); setSlotGalleryId((current) => current === layer.id ? null : layer.id); }}>{source ? <><img src={source} alt=""/>{extraCount > 0 && <b className="slot-thumb-count">+{extraCount}</b>}</> : <LayerThumb layer={layer}/>}</span>
-                <span className="slot-item-copy"><strong>{layer.name}</strong><small>{name || (slots.length === 1 ? '双击选择照片（支持多张）' : '双击选择照片')}</small></span>
+                <span className="slot-item-copy"><strong>{layer.name}</strong><small>{name || (multiPhotoLayoutLabel(layer) ? `双击选择图片（${multiPhotoLayoutLabel(layer)}）` : '双击选择照片')}</small></span>
                 {source
                   ? <span className="slot-reset-control" role="button" tabIndex={0} title="重置此可替换图层" aria-label="重置此可替换图层" onClick={(event) => { event.stopPropagation(); resetSlotLayer(layer.id); }} onDoubleClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); resetSlotLayer(layer.id); } }}><RotateCcw size={16}/></span>
                   : <ImagePlus size={16}/>}
@@ -5224,7 +5259,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
         </div>
         <label className="check-row" title="开启后，拖动照片图层的边角会按原始宽高比例缩放，避免图片被横向或纵向拉伸变形；关闭后可自由改变宽度和高度。"><input type="checkbox" checked={lockAspectRatio} onChange={(event) => setLockAspectRatio(event.target.checked)}/><span>锁定照片宽高比</span></label>
         {cropLayer && slotSources[cropLayer.id] && <div className="crop-controls"><div className="crop-controls-heading"><strong><Crop size={16}/>裁切照片</strong><IconButton label="完成裁切" onClick={() => setCropModeId(null)}><Check size={16}/></IconButton></div><label className="crop-zoom-field"><span>缩放</span><input type="range" min="1" max="5" step="0.05" value={cropTransform.zoom} onChange={(event) => updatePhotoTransform(cropLayer.id, { zoom: Number(event.target.value) })}/><output>{Math.round(cropTransform.zoom * 100)}%</output></label><button className="wide-property-button" onClick={resetCrop}><RotateCcw size={16}/>重置裁切</button></div>}
-        <input ref={input} hidden type="file" accept="image/*" multiple={slots.length === 1} onChange={(event) => { const files = Array.from(event.target.files || []); if (files.length) { if (files.length > 1 || pendingAppend.current) acceptInitialFiles(files, pendingSlot.current, pendingAppend.current); else acceptFile(files[0], pendingSlot.current); } event.target.value = ''; pendingSlot.current = null; pendingAppend.current = false; }}/>
+        <input ref={input} hidden type="file" accept="image/*" multiple onChange={(event) => { const files = Array.from(event.target.files || []); if (files.length) { if (files.length > 1 || pendingAppend.current) acceptInitialFiles(files, pendingSlot.current, pendingAppend.current); else acceptFile(files[0], pendingSlot.current); } event.target.value = ''; pendingSlot.current = null; pendingAppend.current = false; }}/>
         {textLayers.length > 0 && <div className="use-text-layers"><div className="slot-list-heading"><strong>文字图层</strong><span>{textLayers.length}</span></div><div className="use-text-layer-list">{textLayers.map((layer) => <label key={layer.id} className="use-text-layer-field"><span>{layer.name}</span><textarea value={layer.text || ''} rows={Math.max(2, String(layer.text || '').split('\n').length)} onFocus={() => { finishTextEditing(); setSelectedId(layer.id); setCropModeId(null); }} onChange={(event) => updateTextLayerById(layer.id, event.target.value)}/></label>)}</div></div>}
         <div className="export-settings"><div className="slot-list-heading"><strong>导出设置</strong></div><div className="export-setting-row"><label><span>格式</span><select value={exportFormat} onChange={(event) => { const value = event.target.value; setExportFormat(value); if (value === 'jpg') setTransparent(false); }}><option value="png">PNG</option><option value="jpg">JPEG</option><option value="webp">WebP</option><option value="gif">GIF 动图</option></select></label><label title={exportScaleHint}><span title={exportScaleHint}>倍率</span><select title={exportScaleHint} value={exportScale} onChange={(event) => setExportScale(Number(event.target.value))}><option value="1" title={exportScaleHint}>1x</option><option value="2" title={exportScaleHint}>2x</option><option value="3" title={exportScaleHint}>3x</option></select></label></div><label className="check-row"><input type="checkbox" disabled={exportFormat === 'jpg'} checked={transparent} onChange={(event) => setTransparent(event.target.checked)}/><span>透明画布背景</span></label></div>
         <button type="button" className="secondary-button group-roster-import-button" title="选择 xlsx 群名单，按“工号”列下载成员头像，并可按工号、中文名、英文名或昵称依次替换文字图层。" disabled={groupRosterBusy} onClick={() => groupRosterInput.current?.click()}><Upload size={16}/>{groupRosterBusy ? '正在导入群名单（xlsx）' : '导入群名单（xlsx）'}</button>

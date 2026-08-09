@@ -281,6 +281,8 @@ fn collect_template_directories(root: &Path, current: &Path, hydrate: bool, resu
             let Some(mut template) = read_template_file(&template_path, hydrate) else { continue; };
             let Some(id) = template_id(&template).map(str::to_string) else { continue; };
             let folder_path = directory
+                .parent()
+                .unwrap_or(root)
                 .strip_prefix(root)
                 .ok()
                 .map(relative_path_string)
