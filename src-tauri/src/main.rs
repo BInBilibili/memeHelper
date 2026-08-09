@@ -41,6 +41,7 @@ fn default_config() -> Value {
     json!({
         "theme": "system",
         "autoCopy": true,
+        "libraryCardSize": "large",
         "window": {
             "width": 1320,
             "height": 860,
@@ -208,22 +209,9 @@ fn replacement_template_id(directory: &Path, used_ids: &HashSet<String>) -> Stri
 }
 
 fn repair_template_directory_ids(root: &Path) -> Result<(), String> {
-    let Ok(entries) = fs::read_dir(root) else {
-        return Ok(());
-    };
-    let mut directories: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .collect();
-    directories.sort();
-
     let mut used_ids = HashSet::new();
-    for directory in directories {
+    for (_, directory, mut template) in template_directories(root, false) {
         let path = directory.join(TEMPLATE_FILE_NAME);
-        let Some(mut template) = read_template_file(&path, false) else {
-            continue;
-        };
         if template_id(&template).is_some_and(|id| used_ids.insert(id.to_string())) {
             continue;
         }
@@ -276,24 +264,42 @@ fn read_template_file(path: &Path, hydrate: bool) -> Option<Value> {
     Some(template)
 }
 
-fn template_directories(root: &Path, hydrate: bool) -> Vec<(String, PathBuf, Value)> {
-    let Ok(entries) = fs::read_dir(root) else {
-        return Vec::new();
+fn collect_template_directories(root: &Path, current: &Path, hydrate: bool, result: &mut Vec<(String, PathBuf, Value)>) {
+    let Ok(entries) = fs::read_dir(current) else {
+        return;
     };
     let mut directories: Vec<PathBuf> = entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .filter(|path| path.is_dir())
+        .filter(|path| path.file_name().and_then(|name| name.to_str()) != Some(MIGRATION_MARKER_NAME))
         .collect();
     directories.sort();
-    directories
-        .into_iter()
-        .filter_map(|directory| {
-            let template = read_template_file(&directory.join(TEMPLATE_FILE_NAME), hydrate)?;
-            let id = template_id(&template)?.to_string();
-            Some((id, directory, template))
-        })
-        .collect()
+    for directory in directories {
+        let template_path = directory.join(TEMPLATE_FILE_NAME);
+        if template_path.is_file() {
+            let Some(mut template) = read_template_file(&template_path, hydrate) else { continue; };
+            let Some(id) = template_id(&template).map(str::to_string) else { continue; };
+            let folder_path = directory
+                .strip_prefix(root)
+                .ok()
+                .map(relative_path_string)
+                .unwrap_or_default();
+            if let Some(object) = template.as_object_mut() {
+                object.insert("_folderPath".to_string(), Value::String(folder_path));
+            }
+            result.push((id, directory, template));
+        } else {
+            collect_template_directories(root, &directory, hydrate, result);
+        }
+    }
+}
+
+fn template_directories(root: &Path, hydrate: bool) -> Vec<(String, PathBuf, Value)> {
+    let mut result = Vec::new();
+    collect_template_directories(root, root, hydrate, &mut result);
+    result.sort_by(|left, right| left.1.cmp(&right.1));
+    result
 }
 
 fn read_template_directories(root: &Path) -> Vec<Value> {
@@ -385,6 +391,9 @@ fn write_template_directory(directory: &Path, template: &Value) -> Result<(), St
         .map(layer_asset_paths)
         .unwrap_or_default();
     let mut stored = template.clone();
+    if let Some(object) = stored.as_object_mut() {
+        object.remove("_folderPath");
+    }
     let Some(layers) = layers_mut(&mut stored) else {
         return Err("模板图层数据格式无效".to_string());
     };
@@ -426,7 +435,17 @@ fn template_directory_base(root: &Path, template: &Value) -> PathBuf {
     let id = template_id(template)
         .map(|id| safe_name(id, "id", 12))
         .unwrap_or_else(|| "id".to_string());
-    root.join(format!("template-{name}-{id}"))
+    let folder_root = template
+        .get("_folderPath")
+        .and_then(Value::as_str)
+        .map(|folder| {
+            folder.split(['/', '\\']).filter(|part| !part.is_empty() && *part != "." && *part != "..").fold(root.to_path_buf(), |mut path, part| {
+                path.push(safe_name(part, "folder", 48));
+                path
+            })
+        })
+        .unwrap_or_else(|| root.to_path_buf());
+    folder_root.join(format!("template-{name}-{id}"))
 }
 
 fn available_template_directory(
@@ -443,7 +462,8 @@ fn available_template_directory(
         .unwrap_or("template")
         .to_string();
     while current.is_none_or(|path| candidate != path) && (candidate.exists() || used.contains(&candidate)) {
-        candidate = root.join(format!("{base_name}-{suffix}"));
+        let parent = candidate.parent().unwrap_or(root).to_path_buf();
+        candidate = parent.join(format!("{base_name}-{suffix}"));
         suffix += 1;
     }
     candidate
@@ -675,6 +695,36 @@ fn load_templates() -> Result<Vec<Value>, String> {
         legacy_paths.push(path);
     }
     load_templates_from(&templates_directory(), &legacy_paths)
+}
+
+fn collect_template_folders(root: &Path, current: &Path, result: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(current) else { return; };
+    let mut directories: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .filter(|path| path.file_name().and_then(|name| name.to_str()) != Some(MIGRATION_MARKER_NAME))
+        .collect();
+    directories.sort();
+    for directory in directories {
+        if directory.join(TEMPLATE_FILE_NAME).is_file() {
+            continue;
+        }
+        if let Ok(relative) = directory.strip_prefix(root) {
+            let path = relative_path_string(relative);
+            if !path.is_empty() { result.push(path); }
+        }
+        collect_template_folders(root, &directory, result);
+    }
+}
+
+#[tauri::command]
+fn list_template_folders() -> Result<Vec<String>, String> {
+    let root = templates_directory();
+    let mut folders = Vec::new();
+    collect_template_folders(&root, &root, &mut folders);
+    folders.sort();
+    Ok(folders)
 }
 
 #[tauri::command]
@@ -1345,6 +1395,7 @@ fn main() {
             load_config,
             save_config,
             load_templates,
+            list_template_folders,
             save_templates,
             open_template_folder,
             load_editor_drafts,

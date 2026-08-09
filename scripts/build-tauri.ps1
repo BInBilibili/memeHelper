@@ -59,6 +59,7 @@ try {
 
   Copy-Item -LiteralPath $sourceExe -Destination (Join-Path $releaseDirectory 'MemeHelper.exe')
   Copy-Item -LiteralPath (Join-Path $projectRoot 'config.json') -Destination (Join-Path $releaseDirectory 'config.json')
+  Copy-Item -LiteralPath (Join-Path $projectRoot 'Changelog.txt') -Destination (Join-Path $releaseDirectory 'Changelog.txt')
   $sourceTemplates = Join-Path $projectRoot 'meme'
   if (-not (Test-Path -LiteralPath $sourceTemplates)) {
     throw "Template directory does not exist: $sourceTemplates"

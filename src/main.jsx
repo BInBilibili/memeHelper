@@ -20,6 +20,7 @@ const browserDesktop = {
   loadConfig: async () => ({ theme: 'system', autoCopy: true }),
   saveConfig: async (value) => localStorage.setItem('meme-helper-config', JSON.stringify(value)),
   loadTemplates: async () => JSON.parse(localStorage.getItem('meme-helper-templates') || '[]'),
+  listTemplateFolders: async () => [],
   saveTemplates: async (value) => localStorage.setItem('meme-helper-templates', JSON.stringify(value)),
   loadEditorDrafts: async () => JSON.parse(localStorage.getItem('meme-helper-editor-drafts') || '{}'),
   saveEditorDrafts: async (value) => localStorage.setItem('meme-helper-editor-drafts', JSON.stringify(value)),
@@ -67,6 +68,7 @@ const desktop = window.__TAURI_INTERNALS__ ? {
   loadConfig: () => invoke('load_config'),
   saveConfig: (config) => invoke('save_config', { config }),
   loadTemplates: () => invoke('load_templates'),
+  listTemplateFolders: () => invoke('list_template_folders'),
   saveTemplates: (templates) => invoke('save_templates', { templates }),
   loadEditorDrafts: () => invoke('load_editor_drafts'),
   saveEditorDrafts: (drafts) => invoke('save_editor_drafts', { drafts }),
@@ -1129,7 +1131,9 @@ function useHtmlImage(src) {
   return image;
 }
 
-function useHtmlImages(sources = []) {
+const EMPTY_IMAGE_SOURCES = Object.freeze([]);
+
+function useHtmlImages(sources = EMPTY_IMAGE_SOURCES) {
   const [images, setImages] = useState([]);
   useEffect(() => {
     const list = (Array.isArray(sources) ? sources : [sources]).filter(Boolean);
@@ -1293,7 +1297,8 @@ function App() {
   const [templates, setTemplates] = useState([]);
   const [editorDrafts, setEditorDrafts] = useState({});
   const [useSessions, setUseSessions] = useState({});
-  const [config, setConfig] = useState({ theme: 'system', autoCopy: true });
+  const [config, setConfig] = useState({ theme: 'system', autoCopy: true, libraryCardSize: 'large' });
+  const [templateFolders, setTemplateFolders] = useState([]);
   const [ready, setReady] = useState(false);
   const [page, setPage] = useState({ name: 'library' });
   const [toast, setToast] = useState(null);
@@ -1323,7 +1328,7 @@ function App() {
   const updateConfig = useCallback(async (patch) => { const next = { ...config, ...patch }; setConfig(next); applyTheme(next.theme); try { await desktop.saveConfig(next); } catch (error) { notify(`设置保存失败：${error?.message || error}`, 'error'); } }, [config, notify]);
 
   useEffect(() => {
-    Promise.all([desktop.loadTemplates(), desktop.loadConfig(), desktop.loadEditorDrafts(), desktop.loadUseSessions()]).then(([saved, loadedConfig, savedDrafts, savedUseSessions]) => {
+    Promise.all([desktop.loadTemplates(), desktop.listTemplateFolders(), desktop.loadConfig(), desktop.loadEditorDrafts(), desktop.loadUseSessions()]).then(([saved, loadedFolders, loadedConfig, savedDrafts, savedUseSessions]) => {
       const localTemplates = Array.isArray(saved) ? saved : [];
       const builtInTemplates = bundledTemplates.length ? structuredClone(bundledTemplates) : starterTemplates();
       const merged = localTemplates.length ? [...localTemplates, ...builtInTemplates] : builtInTemplates;
@@ -1333,11 +1338,12 @@ function App() {
       applyTheme(loadedConfig?.theme);
       editorDraftsRef.current = drafts;
       useSessionsRef.current = sessions;
-      setEditorDrafts(drafts); setUseSessions(sessions); setTemplates(next); setConfig((previous) => ({ ...previous, ...(loadedConfig || {}) })); setReady(true);
+       setEditorDrafts(drafts); setUseSessions(sessions); setTemplates(next); setTemplateFolders(Array.isArray(loadedFolders) ? loadedFolders : []); setConfig((previous) => ({ ...previous, ...(loadedConfig || {}) })); setReady(true);
       if (next.length !== localTemplates.length) desktop.saveTemplates(next);
     }).catch((error) => {
       console.error(error);
-      setTemplates(bundledTemplates.length ? structuredClone(bundledTemplates) : starterTemplates());
+       setTemplates(bundledTemplates.length ? structuredClone(bundledTemplates) : starterTemplates());
+       setTemplateFolders([]);
       setReady(true);
     });
   }, []);
@@ -1449,14 +1455,15 @@ function App() {
 
   const refreshTemplates = useCallback(async () => {
     try {
-      const saved = await desktop.loadTemplates();
+       const [saved, loadedFolders] = await Promise.all([desktop.loadTemplates(), desktop.listTemplateFolders()]);
       const localTemplates = Array.isArray(saved) ? saved : [];
       const builtInTemplates = bundledTemplates.length ? structuredClone(bundledTemplates) : starterTemplates();
       const merged = localTemplates.length ? [...localTemplates, ...builtInTemplates] : builtInTemplates;
       const next = merged.filter((item, index) => merged.findIndex((candidate) => candidate.id === item.id) === index);
       const previousIds = new Set(templates.map((item) => item.id));
       const addedCount = next.filter((item) => !previousIds.has(item.id)).length;
-      setTemplates(next);
+       setTemplates(next);
+       setTemplateFolders(Array.isArray(loadedFolders) ? loadedFolders : []);
       notify(addedCount ? `模板库已刷新，发现 ${addedCount} 个新模板` : '模板库已刷新，未发现新模板');
     } catch (error) {
       notify(`刷新模板库失败：${error?.message || error}`, 'error');
@@ -1467,7 +1474,7 @@ function App() {
   if (!ready) return <div className="loading-screen"><Sparkles size={26}/><span>正在准备模板库...</span></div>;
 
   return <div className="app-shell">
-    {page.name === 'library' && <Library templates={templates} query={query} setQuery={setQuery} onRefresh={refreshTemplates} onCreate={() => setPage({ name: 'editor' })} onOpenSettings={() => setSettingsOpen(true)} onEdit={(template) => setPage({ name: 'editor', template })} onRename={renameTemplate} onUse={useTemplate} onDelete={deleteTemplate} onCopy={copyTemplate} onToggleFavorite={toggleFavorite} notify={notify}/>}
+     {page.name === 'library' && <Library templates={templates} folders={templateFolders} cardSize={config.libraryCardSize || 'large'} query={query} setQuery={setQuery} onRefresh={refreshTemplates} onCreate={() => setPage({ name: 'editor' })} onOpenSettings={() => setSettingsOpen(true)} onEdit={(template) => setPage({ name: 'editor', template })} onRename={renameTemplate} onUse={useTemplate} onDelete={deleteTemplate} onCopy={copyTemplate} onToggleFavorite={toggleFavorite} notify={notify}/>}
     {page.name === 'editor' && <Editor initial={page.template} autosave={editorDrafts[page.template?.id || 'new']} onSaveDraft={saveEditorDraft} onClearDraft={clearEditorDraft} onBack={() => setPage({ name: 'library' })} onSave={saveTemplate} notify={notify}/>}
     {page.name === 'use' && <UseTemplate template={page.template} initialFiles={page.files} cachedSession={useSessions[page.template.id]} onSaveSession={saveUseSession} onBack={() => setPage({ name: 'library' })} onEdit={() => setPage({ name: 'editor', template: page.template })} notify={notify}/>}
     {settingsOpen && <SettingsDialog config={config} onChange={updateConfig} onClose={() => setSettingsOpen(false)}/>}
@@ -1544,13 +1551,18 @@ function ExportProgressOverlay({ progress, onCancel }) {
   </div>;
 }
 
-function SettingsDialog({ config, onChange, onClose }) { const options = [{ value: 'light', label: '浅色', description: '使用明亮的浅色界面。', icon: Sun }, { value: 'dark', label: '深色', description: '使用深色界面，适合夜间使用。', icon: Monitor }, { value: 'system', label: '跟随 Windows 系统', description: '跟随系统的浅色或深色设置。', icon: Settings }]; return <div className="settings-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="settings-dialog" role="dialog" aria-modal="true"><div className="settings-dialog-heading"><div><p className="eyebrow">全局设置</p><h2>界面主题</h2></div><IconButton label="关闭" onClick={onClose}><X size={18}/></IconButton></div><div className="settings-options">{options.map(({ value, label, description, icon: Icon }) => <button type="button" key={value} className={`settings-option ${config.theme === value ? 'active' : ''}`} onClick={() => onChange({ theme: value })}><span className="settings-option-icon"><Icon size={18}/></span><span><strong>{label}</strong><small>{description}</small></span><span className="settings-option-check">{config.theme === value ? '✓' : ''}</span></button>)}</div><p className="settings-note">选择后立即生效，并保存到程序目录的 config.json。</p></div></div>; }
+function SettingsDialog({ config, onChange, onClose }) {
+  const themeOptions = [{ value: 'light', label: '浅色', description: '使用明亮的浅色界面。', icon: Sun }, { value: 'dark', label: '深色', description: '使用深色界面，适合夜间使用。', icon: Monitor }, { value: 'system', label: '跟随 Windows 系统', description: '跟随系统的浅色或深色设置。', icon: Settings }];
+  const sizeOptions = [{ value: 'small', label: '小', description: '约为当前模板卡片的 0.5 倍。' }, { value: 'medium', label: '中', description: '约为当前模板卡片的 0.75 倍。' }, { value: 'large', label: '大', description: '使用当前模板卡片大小。' }];
+  return <div className="settings-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="settings-dialog" role="dialog" aria-modal="true"><div className="settings-dialog-heading"><div><p className="eyebrow">全局设置</p><h2>界面主题与主页显示</h2></div><IconButton label="关闭" onClick={onClose}><X size={18}/></IconButton></div><div className="settings-dialog-section"><h3>界面主题</h3><div className="settings-options">{themeOptions.map(({ value, label, description, icon: Icon }) => <button type="button" key={value} className={`settings-option ${config.theme === value ? 'active' : ''}`} onClick={() => onChange({ theme: value })}><span className="settings-option-icon"><Icon size={18}/></span><span><strong>{label}</strong><small>{description}</small></span><span className="settings-option-check">{config.theme === value ? '✓' : ''}</span></button>)}</div></div><div className="settings-dialog-section"><h3>主页模板显示大小</h3><div className="settings-size-options">{sizeOptions.map(({ value, label, description }) => <button type="button" key={value} className={`settings-size-option ${((config.libraryCardSize || 'large') === value) ? 'active' : ''}`} onClick={() => onChange({ libraryCardSize: value })}><span className="settings-size-radio">{(config.libraryCardSize || 'large') === value ? '●' : '○'}</span><span><strong>{label}</strong><small>{description}</small></span></button>)}</div></div><p className="settings-note">设置会立即生效，并保存到程序目录的 config.json。</p></div></div>;
+}
 
-function Library({ templates, query, setQuery, onRefresh, onCreate, onOpenSettings, onEdit, onRename, onUse, onDelete, onCopy, onToggleFavorite, notify }) {
+function Library({ templates, folders = [], cardSize = 'large', query, setQuery, onRefresh, onCreate, onOpenSettings, onEdit, onRename, onUse, onDelete, onCopy, onToggleFavorite, notify }) {
   const [sort, setSort] = useState('recent');
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [templateType, setTemplateType] = useState('all');
   const [refreshing, setRefreshing] = useState(false);
+  const [currentFolder, setCurrentFolder] = useState('');
   const refresh = async () => {
     if (refreshing) return;
     setRefreshing(true);
@@ -1558,8 +1570,20 @@ function Library({ templates, query, setQuery, onRefresh, onCreate, onOpenSettin
     catch { /* The app-level toast reports the load error. */ }
     finally { setRefreshing(false); }
   };
+  const normalizedFolder = String(currentFolder || '').replace(/\\/g, '/').replace(/^\/|\/$/g, '');
+  const childFolders = folders
+    .map((folder) => String(folder || '').replace(/\\/g, '/').replace(/^\/|\/$/g, ''))
+    .filter((folder) => {
+      const parent = folder.includes('/') ? folder.slice(0, folder.lastIndexOf('/')) : '';
+      return parent === normalizedFolder;
+    })
+    .filter((folder, index, list) => list.indexOf(folder) === index)
+    .sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  const folderName = (folder) => folder.split('/').at(-1) || 'meme';
+  const parentFolder = normalizedFolder.includes('/') ? normalizedFolder.slice(0, normalizedFolder.lastIndexOf('/')) : '';
   const normalizedQuery = query.trim().toLowerCase();
   const filtered = templates
+    .filter((item) => String(item._folderPath || '').replace(/\\/g, '/').replace(/^\/|\/$/g, '') === normalizedFolder)
     .filter((item) => !favoritesOnly || item.favorite)
     .filter((item) => {
       const isGifTemplate = item.layers?.some((layer) => isGifSource(layer.src));
@@ -1569,15 +1593,18 @@ function Library({ templates, query, setQuery, onRefresh, onCreate, onOpenSettin
     })
     .filter((item) => !normalizedQuery || item.name.toLowerCase().includes(normalizedQuery) || (item.tags || []).some((tag) => tag.toLowerCase().includes(normalizedQuery)))
     .sort((a, b) => sort === 'name' ? a.name.localeCompare(b.name, 'zh-CN') : sort === 'created' ? (b.createdAt || 0) - (a.createdAt || 0) : (b.lastUsedAt || b.updatedAt || 0) - (a.lastUsedAt || a.updatedAt || 0));
-  return <main className="library-page">
+  const breadcrumbParts = normalizedFolder ? normalizedFolder.split('/') : [];
+  return <main className={`library-page library-size-${['small', 'medium', 'large'].includes(cardSize) ? cardSize : 'large'}`}>
     <header className="topbar"><Brand/><div className="topbar-actions"><button className="secondary-button" onClick={onOpenSettings}><Settings size={17}/>设置</button><span className="storage-note">{desktop.isDesktop ? '模板保存在程序目录的 meme 文件夹' : '模板保存在浏览器'}</span><button className="secondary-button" onClick={refresh} disabled={refreshing}><RefreshCw className={refreshing ? 'refresh-icon spinning' : 'refresh-icon'} size={17}/>{refreshing ? '刷新中' : '刷新'}</button><button className="primary-button" onClick={onCreate}><Plus size={18}/>新建模板</button></div></header>
-    <section className="library-heading"><div><p className="eyebrow">模板工作台</p><h1>选择一个模板，马上开始</h1><p>点击使用，或把图片直接拖到模板上。</p></div><div className="library-controls"><div className="search-box"><LayoutTemplate size={18}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索名称或标签"/></div><button className={`favorite-filter ${favoritesOnly ? 'active' : ''}`} onClick={() => setFavoritesOnly((current) => !current)}><Star size={16} fill={favoritesOnly ? 'currentColor' : 'none'}/>收藏</button><div className="template-type-filter" role="group" aria-label="模板类型"><button className={templateType === 'all' ? 'active' : ''} onClick={() => setTemplateType('all')}>全部</button><button className={templateType === 'gif' ? 'active' : ''} onClick={() => setTemplateType('gif')}>GIF</button><button className={templateType === 'static' ? 'active' : ''} onClick={() => setTemplateType('static')}>普通</button></div><select value={sort} onChange={(event) => setSort(event.target.value)} aria-label="模板排序"><option value="recent">最近使用</option><option value="created">最近创建</option><option value="name">按名称</option></select></div></section>
+    <section className="library-heading"><div><p className="eyebrow">模板工作台</p><h1>选择一个模板，马上开始</h1><p>点击使用，或把图片直接拖到模板上。</p><nav className="library-breadcrumb" aria-label="模板目录路径"><button type="button" onClick={() => setCurrentFolder('')}>meme</button>{breadcrumbParts.map((part, index) => { const target = breadcrumbParts.slice(0, index + 1).join('/'); return <React.Fragment key={target}><span>/</span><button type="button" onClick={() => setCurrentFolder(target)}>{part}</button></React.Fragment>; })}<span>/</span></nav></div><div className="library-controls"><div className="search-box"><LayoutTemplate size={18}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索名称或标签"/></div><button className={`favorite-filter ${favoritesOnly ? 'active' : ''}`} onClick={() => setFavoritesOnly((current) => !current)}><Star size={16} fill={favoritesOnly ? 'currentColor' : 'none'}/>收藏</button><div className="template-type-filter" role="group" aria-label="模板类型"><button className={templateType === 'all' ? 'active' : ''} onClick={() => setTemplateType('all')}>全部</button><button className={templateType === 'gif' ? 'active' : ''} onClick={() => setTemplateType('gif')}>GIF</button><button className={templateType === 'static' ? 'active' : ''} onClick={() => setTemplateType('static')}>普通</button></div><select value={sort} onChange={(event) => setSort(event.target.value)} aria-label="模板排序"><option value="recent">最近使用</option><option value="created">最近创建</option><option value="name">按名称</option></select></div></section>
     <section className="template-grid">
+      {normalizedFolder && <button className="folder-card folder-parent-card" onClick={() => setCurrentFolder(parentFolder)}><span className="folder-card-icon"><ArrowLeft size={24}/></span><strong>返回上一级</strong><small>{parentFolder ? `${folderName(parentFolder)}/` : 'meme/'}</small></button>}
+      {childFolders.map((folder) => <button className="folder-card" key={folder} onClick={() => setCurrentFolder(folder)}><span className="folder-card-icon"><FolderOpen size={24}/></span><strong>{folderName(folder)}</strong><small>{`${folder}/`}</small></button>)}
       <button className="new-template-card" onClick={onCreate}><span className="new-icon"><Plus size={26}/></span><strong>创建新模板</strong><small>设置底图与照片位置</small></button>
       {filtered.map((template) => <TemplateCard key={template.id} template={template} onUse={onUse} onEdit={onEdit} onRename={onRename} onCopy={onCopy} onDelete={onDelete} onToggleFavorite={onToggleFavorite} notify={notify}/>) }
     </section>
     {!filtered.length && <div className="empty-state"><LayoutTemplate size={34}/><h3>没有找到模板</h3><p>换个关键词，或新建一个模板。</p></div>}
-    <footer className="app-footer"><span>{templates.length} 个模板</span></footer>
+    <footer className="app-footer"><span>{filtered.length} 个模板</span></footer>
   </main>;
 }
 
@@ -4042,7 +4069,7 @@ function LayerBorderShape({ layer }) {
 
 function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, source, sources, paintSource, eraseSource, mosaicSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
   const image = useHtmlImage(source ?? layer.src);
-  const multiImages = useHtmlImages(sources || []);
+  const multiImages = useHtmlImages(sources || EMPTY_IMAGE_SOURCES);
   const loadedPaintImage = useHtmlImage(layer.paintSrc);
   const loadedMosaicImage = useHtmlImage(layer.mosaicSrc);
   const paintImage = paintSource || loadedPaintImage;
