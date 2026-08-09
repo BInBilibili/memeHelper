@@ -8,7 +8,7 @@ import {
   AlignHorizontalJustifyStart, AlignLeft, AlignRight, AlignVerticalDistributeCenter,
   AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowLeft, Bold, Check, ChevronDown, ChevronRight, ChevronUp,
   BoxSelect, Circle, Clipboard, Copy, Crop, Download, Eye, EyeOff, FileImage, Grid2X2, GripVertical, ImagePlus,
-  Eraser, FolderOpen, Italic, Layers3, LayoutTemplate, Lock, Monitor, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Pentagon, Pipette, Plus, Redo2, RefreshCw, RotateCcw, Scissors,
+  Bandage, Blend, Eraser, FolderOpen, Italic, Lasso, Layers3, LayoutTemplate, Lock, Monitor, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Pentagon, Pipette, Plus, Redo2, RefreshCw, RotateCcw, ScanSearch, Scissors,
   Save, Settings, Shapes, Sparkles, Square, Star, Strikethrough, Sun, Trash2, Type, Underline, Undo2, Unlock, Upload, Link2,
   X, ZoomIn, ZoomOut
 } from 'lucide-react';
@@ -1989,6 +1989,8 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
   const [brushSize, setBrushSize] = useState(18);
   const [eraserMode, setEraserMode] = useState('paint');
   const [eraserMenu, setEraserMenu] = useState(false);
+  const [lassoMode, setLassoMode] = useState('freehand');
+  const [lassoMenu, setLassoMenu] = useState(false);
   const [toolPointer, setToolPointer] = useState(null);
   const [outsideDragPreview, setOutsideDragPreview] = useState(null);
   const [textEditingId, setTextEditingId] = useState(null);
@@ -2322,7 +2324,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
     const top = Math.floor(rect.y);
     const right = Math.ceil(rect.x + rect.width);
     const bottom = Math.ceil(rect.y + rect.height);
-    return { x: left, y: top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
+    return { ...rect, x: left, y: top, width: Math.max(1, right - left), height: Math.max(1, bottom - top) };
   }, []);
   const buildMarqueeFragments = useCallback(async (ids, rect) => {
     const selection = normalizeMarqueeRect(rect);
@@ -2338,6 +2340,11 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
       canvas.width = Math.max(1, image.width); canvas.height = Math.max(1, image.height);
       const ctx = canvas.getContext('2d');
       ctx.drawImage(image, 0, 0);
+      const mask = await selectionMaskCanvas(selection);
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-in';
+      ctx.drawImage(mask, 0, 0, canvas.width, canvas.height);
+      ctx.restore();
       const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
       let left = canvas.width; let top = canvas.height; let right = -1; let bottom = -1;
       for (let y = 0; y < canvas.height; y += 1) for (let x = 0; x < canvas.width; x += 1) {
@@ -2363,14 +2370,15 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
       if (!fragments.length) return;
       clipboardLayersRef.current = { layers: fragments, groupMeta: {} };
       setHasCopiedLayers(true);
-      notify(fragments.length === 1 ? '已复制选框内容' : `已复制 ${fragments.length} 个图层的选框内容`);
-    } catch (error) { notify(`复制选框内容失败：${error?.message || error}`, 'error'); }
+      notify(fragments.length === 1 ? '已复制选区内容' : `已复制 ${fragments.length} 个图层的选区内容`);
+    } catch (error) { notify(`复制选区内容失败：${error?.message || error}`, 'error'); }
   }, [buildMarqueeFragments, notify]);
   const cutMarqueePixels = useCallback(async (ids, rect) => {
     const layers = draft.layers.filter((layer) => ids.includes(layer.id) && !layer.locked && layer.width > 0 && layer.height > 0);
     if (!layers.length) return notify('选框内没有可剪切的未锁定图层', 'error');
     try {
       const { fragments, selection } = await buildMarqueeFragments(layers.map((layer) => layer.id), rect);
+      const selectionMask = await selectionMaskCanvas(selection);
       const eraseSources = Object.fromEntries(await Promise.all(layers.map(async (layer) => {
         const canvas = document.createElement('canvas');
         canvas.width = Math.max(1, Math.ceil(layer.width));
@@ -2383,21 +2391,26 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
         }
         const radians = (Number(layer.rotation) || 0) * Math.PI / 180;
         const cosine = Math.cos(radians); const sine = Math.sin(radians);
-        const toLocal = (x, y) => {
-          const dx = x - layer.x; const dy = y - layer.y;
-          return { x: dx * cosine + dy * sine, y: -dx * sine + dy * cosine };
-        };
-        const corners = [[selection.x, selection.y], [selection.x + selection.width, selection.y], [selection.x + selection.width, selection.y + selection.height], [selection.x, selection.y + selection.height]].map(([x, y]) => toLocal(x, y));
-        ctx.fillStyle = '#000'; ctx.beginPath();
-        corners.forEach((point, index) => index ? ctx.lineTo(point.x, point.y) : ctx.moveTo(point.x, point.y));
-        ctx.closePath(); ctx.fill();
+        const scaleX = canvas.width / layer.width; const scaleY = canvas.height / layer.height;
+        const centerX = layer.x + layer.width / 2; const centerY = layer.y + layer.height / 2;
+        ctx.save();
+        ctx.setTransform(
+          scaleX * cosine,
+          -scaleY * sine,
+          scaleX * sine,
+          scaleY * cosine,
+          scaleX * (layer.width / 2 - cosine * centerX - sine * centerY),
+          scaleY * (layer.height / 2 + sine * centerX - cosine * centerY)
+        );
+        ctx.drawImage(selectionMask, selection.x, selection.y, selection.width, selection.height);
+        ctx.restore();
         return [layer.id, canvas.toDataURL('image/png')];
       })));
       clipboardLayersRef.current = { layers: fragments, groupMeta: {} };
       setHasCopiedLayers(true);
       updateDraft((previous) => ({ ...previous, layers: previous.layers.map((layer) => eraseSources[layer.id] ? { ...layer, eraseSrc: eraseSources[layer.id] } : layer) }));
-      notify(layers.length === 1 ? '已剪切选框内容' : `已剪切 ${layers.length} 个图层的选框内容`);
-    } catch (error) { notify(`剪切选框内容失败：${error?.message || error}`, 'error'); }
+      notify(layers.length === 1 ? '已剪切选区内容' : `已剪切 ${layers.length} 个图层的选区内容`);
+    } catch (error) { notify(`剪切选区内容失败：${error?.message || error}`, 'error'); }
   }, [buildMarqueeFragments, draft.layers, notify, updateDraft]);
   const pasteLayers = useCallback(() => {
     if (!clipboardLayersRef.current.layers.length) return notify('请先选择并复制图层', 'error');
@@ -2558,10 +2571,13 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
         } else if (activeTool === 'text') {
           setActiveTool('select');
           setTextMenu(false);
+        } else if (['quick-select', 'lasso'].includes(activeTool)) {
+          setActiveTool('select');
+          setLassoMenu(false);
         } else tryBack();
       }
     };
-    const closeMenus = () => { setShapeMenu(false); setLayerMenu(null); setFixedLayerMenu(false); setEraserMenu(false); setTextMenu(false); };
+    const closeMenus = () => { setShapeMenu(false); setLayerMenu(null); setFixedLayerMenu(false); setEraserMenu(false); setLassoMenu(false); setTextMenu(false); };
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('pointerdown', closeMenus);
     return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('pointerdown', closeMenus); };
@@ -2575,7 +2591,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
   }, [activeTool]);
 
   useEffect(() => {
-    if (!['select', 'picker', 'marquee', 'text'].includes(activeTool) && (selectedLayers.length !== 1 || selected?.locked)) setActiveTool('select');
+    if (!['select', 'picker', 'marquee', 'lasso', 'text'].includes(activeTool) && (selectedLayers.length !== 1 || selected?.locked)) setActiveTool('select');
   }, [activeTool, selected, selectedLayers.length]);
 
   useEffect(() => {
@@ -3366,17 +3382,20 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
         <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropImageOnEditor} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, altKey: event.altKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { if (activeTool === 'text' && event.button === 0 && !event.target.closest('.canvas-tool-dock')) { event.preventDefault(); event.stopPropagation(); const bounds = stageHostRef.current?.getBoundingClientRect(); const point = bounds ? { x: clamp((event.clientX - bounds.left) / zoom, 0, Math.max(0, draft.width)), y: clamp((event.clientY - bounds.top) / zoom, 0, Math.max(0, draft.height)) } : { x: 0, y: 0 }; addTextLayer(point, textOrientation); return; } if (beginOutsideSelectionDrag(event)) return; const blank = !event.target.closest('.stage-shadow, .canvas-tool-dock'); if (activeTool === 'select' && blank) { clearSelection(); beginPan(event); } else if (activeTool === 'marquee' && event.button === 0 && blank) { event.preventDefault(); setMarqueeStartRequest({ clientX: event.clientX, clientY: event.clientY, key: event.timeStamp }); } }}>
           <div className="canvas-tool-dock"><div className="editor-paint-tools">
             <IconButton label="选择与移动" className={activeTool === 'select' ? 'active' : ''} onClick={() => setActiveTool('select')}><MousePointer2 size={17}/></IconButton>
-            <IconButton label="选框工具：拖动后右键复制或剪切图层" className={activeTool === 'marquee' ? 'active' : ''} onClick={() => setActiveTool('marquee')}><BoxSelect size={17}/></IconButton>
+            <IconButton label="选框工具：拖动后右键复制或剪切选区" className={activeTool === 'marquee' ? 'active' : ''} onClick={() => setActiveTool('marquee')}><BoxSelect size={17}/></IconButton>
+            <IconButton label="快速选择工具：根据相近颜色选择连续区域" className={activeTool === 'quick-select' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('quick-select')}><ScanSearch size={17}/></IconButton>
+            <div className="tool-menu-wrap lasso-tool-wrap"><IconButton label={lassoMode === 'polygon' ? '多边形套索工具' : lassoMode === 'magnetic' ? '磁性套索工具' : '套索工具'} className={activeTool === 'lasso' ? 'active' : ''} onClick={() => setActiveTool('lasso')} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setLassoMenu(true); }}><Lasso size={17}/></IconButton>{lassoMenu && <div className="eraser-mode-menu lasso-mode-menu" onPointerDown={(event) => event.stopPropagation()}><button className={lassoMode === 'freehand' ? 'active' : ''} onClick={() => { setLassoMode('freehand'); setLassoMenu(false); setActiveTool('lasso'); }}>套索工具</button><button className={lassoMode === 'polygon' ? 'active' : ''} onClick={() => { setLassoMode('polygon'); setLassoMenu(false); setActiveTool('lasso'); }}>多边形套索工具</button><button className={lassoMode === 'magnetic' ? 'active' : ''} onClick={() => { setLassoMode('magnetic'); setLassoMenu(false); setActiveTool('lasso'); }}>磁性套索工具</button></div>}</div>
             <IconButton label="画笔（按住 Alt 临时取色）" className={activeTool === 'brush' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('brush')}><Pencil size={17}/></IconButton>
-            <IconButton label="马赛克" className={activeTool === 'mosaic' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('mosaic')}><Grid2X2 size={17}/></IconButton>
+            <IconButton label="高斯模糊（效果不可叠加）" className={activeTool === 'mosaic' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('mosaic')}><Blend size={17}/></IconButton>
+            <IconButton label="污点修复工具（内容识别）" className={activeTool === 'heal' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('heal')}><Bandage size={17}/></IconButton>
             <IconButton label="填充当前图层" className={activeTool === 'fill' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('fill')}><PaintBucket size={17}/></IconButton>
-            <div className="tool-menu-wrap eraser-tool-wrap"><IconButton label={`橡皮擦：${eraserMode === 'paint' ? '仅擦除画笔' : '擦除图层'}`} className={activeTool === 'eraser' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('eraser')} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setEraserMenu(true); }}><Eraser size={17}/></IconButton>{eraserMenu && <div className="eraser-mode-menu" onPointerDown={(event) => event.stopPropagation()}><button className={eraserMode === 'paint' ? 'active' : ''} onClick={() => { setEraserMode('paint'); setEraserMenu(false); setActiveTool('eraser'); }}>仅擦除画笔</button><button className={eraserMode === 'layer' ? 'active' : ''} onClick={() => { setEraserMode('layer'); setEraserMenu(false); setActiveTool('eraser'); }}>擦除图层</button></div>}</div>
+            <div className="tool-menu-wrap eraser-tool-wrap"><IconButton label={'橡皮擦：' + (eraserMode === 'paint' ? '仅擦除画笔' : '擦除图层')} className={activeTool === 'eraser' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('eraser')} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setEraserMenu(true); }}><Eraser size={17}/></IconButton>{eraserMenu && <div className="eraser-mode-menu" onPointerDown={(event) => event.stopPropagation()}><button className={eraserMode === 'paint' ? 'active' : ''} onClick={() => { setEraserMode('paint'); setEraserMenu(false); setActiveTool('eraser'); }}>仅擦除画笔</button><button className={eraserMode === 'layer' ? 'active' : ''} onClick={() => { setEraserMode('layer'); setEraserMenu(false); setActiveTool('eraser'); }}>擦除图层</button></div>}</div>
             <IconButton label="颜色选取器（可从所有图层取色）" className={activeTool === 'picker' ? 'active' : ''} onClick={() => setActiveTool('picker')}><Pipette size={17}/></IconButton>
             <input className="paint-color" type="color" aria-label="绘画颜色" title="绘画颜色" value={paintColor} onChange={(event) => setPaintColor(event.target.value)}/>
-            <label className="brush-size" title="画笔和橡皮擦大小"><NumericInput aria-label="画笔大小" min={1} max={160} presets={[1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 160]} value={brushSize} onCommit={setBrushSize}/><input type="range" min="1" max="160" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))}/></label>
+            <label className="brush-size" title="画笔、模糊、修复和橡皮擦大小"><NumericInput aria-label="画笔大小" min={1} max={160} presets={[1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 160]} value={brushSize} onCommit={setBrushSize}/><input type="range" min="1" max="160" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))}/></label>
           </div></div>
           <div className="canvas-scroll-surface" style={{ width: `max(100%, ${Math.max(0, draft.width * zoom) + 160}px)`, height: `max(100%, ${Math.max(0, draft.height * zoom) + 160}px)` }}><div ref={stageHostRef} className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}>
-            <EditorStage gifFrameIndex={timelineGifLayer ? gifTimeline.frameIndex + 1 : null} gifFrameLayerId={timelineGifLayer?.id || null} gifFrameSource={timelineGifLayer?.id === gifTimeline.layerId ? gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl : null} template={draft} selectedIds={selectedIds} selectedGroupId={selectedGroupId} selectLayer={selectLayer} selectGroup={selectGroup} clearSelection={clearSelection} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onGroupContextMenu={openGroupMenu} onMarqueeContextMenu={openMarqueeMenu} marqueeStartRequest={marqueeStartRequest} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} eraserMode={eraserMode} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, patch) => updateLayer(id, patch)} onPickColor={setPaintColor} zoom={zoom}/>
+            <EditorStage gifFrameIndex={timelineGifLayer ? gifTimeline.frameIndex + 1 : null} gifFrameLayerId={timelineGifLayer?.id || null} gifFrameSource={timelineGifLayer?.id === gifTimeline.layerId ? gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl : null} template={draft} selectedIds={selectedIds} selectedGroupId={selectedGroupId} selectLayer={selectLayer} selectGroup={selectGroup} clearSelection={clearSelection} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onGroupContextMenu={openGroupMenu} onMarqueeContextMenu={openMarqueeMenu} marqueeStartRequest={marqueeStartRequest} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} eraserMode={eraserMode} lassoMode={lassoMode} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, patch) => updateLayer(id, patch)} onPickColor={setPaintColor} zoom={zoom}/>
             {selectedOutsideLayers.map((layer) => { const preview = outsideDragPreview?.ids.includes(layer.id) ? outsideDragPreview : null; return <div key={`outside-outline-${layer.id}`} className="outside-layer-outline" style={{ left: (layer.x + (preview?.dx || 0)) * zoom, top: (layer.y + (preview?.dy || 0)) * zoom, width: layer.width * zoom, height: layer.height * zoom, transform: `rotate(${layer.rotation || 0}deg)` }}/>; }) }
             {textEditingId && draft.layers.find((layer) => layer.id === textEditingId && layer.type === 'text') && <RichTextOverlay
               layer={draft.layers.find((layer) => layer.id === textEditingId)}
@@ -3387,8 +3406,8 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
               onDone={() => { setTextEditingId(null); setTextSelection(null); }}
             />}
           </div></div>
-          {toolPointer && !['select', 'marquee'].includes(activeTool) && !panning && (
-            ['brush', 'mosaic', 'eraser'].includes(activeTool) && !(activeTool === 'brush' && toolPointer.altKey)
+          {toolPointer && !['select', 'marquee', 'lasso'].includes(activeTool) && !panning && (
+            ['brush', 'mosaic', 'heal', 'quick-select', 'eraser'].includes(activeTool) && !(activeTool === 'brush' && toolPointer.altKey)
               ? <div className="tool-cursor brush-preview" style={{ left: toolPointer.x, top: toolPointer.y, width: Math.max(3, brushSize * zoom), height: Math.max(3, brushSize * zoom) }}/>
               : <div className={`tool-cursor ${activeTool === 'text' ? 'text-tool-cursor' : ''}`} style={{ left: toolPointer.x, top: toolPointer.y }}>{activeTool === 'text' ? <span aria-hidden="true">T</span> : activeTool === 'picker' || (activeTool === 'brush' && toolPointer.altKey) ? <Pipette size={19}/> : <PaintBucket size={19}/>}</div>
           )}
@@ -3397,7 +3416,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
       <aside className="properties-panel"><div className="panel-title"><span>属性</span></div>{selectedGroupId && selectedGroupLayers.length ? <GroupProperties name={selectedGroupName} layers={selectedGroupLayers} onRename={(name) => updateGroupMeta(selectedGroupId, { name })} onToggleLock={() => updateGroupLayers(selectedGroupId, { locked: selectedGroupLayers.some((layer) => !layer.locked) })} onToggleVisibility={() => updateGroupLayers(selectedGroupId, { visible: !selectedGroupLayers.every((layer) => layer.visible) })} onMove={(axis, value) => moveGroupTo(selectedGroupId, axis, value)} onUngroup={ungroupSelected} onRemove={() => removeGroup(selectedGroupId)} onOrder={(direction) => moveLayer(selectedGroupLayers[0].id, direction, true)}/> : selectedLayers.length > 1 ? <MultiSelectionProperties layers={selectedLayers} grouped={Boolean(uniformlySelectedGroupId)} onGroup={groupSelected} onUngroup={ungroupSelected} onToggleLock={toggleSelectedLock} onAlign={alignSelected} onDistribute={distributeSelected}/> : selected ? <Properties layers={draft.layers} gifFrameCount={templateGifFrameCount} layer={selected} gifTimeline={selectedGifLayer?.id === gifTimeline.layerId ? gifTimeline : null} onGifFrameDelay={updateGifFrameDelay} textStyle={selected.type === 'text' ? textStyleAt(selected, Math.min(Math.max(0, String(selected.text || '').length - 1), Math.min(activeTextSelection?.start ?? 0, activeTextSelection?.end ?? 0))) : null} textSelection={activeTextSelection} onBeginTextInteraction={beginPropertyTextInteraction} onTextSelectionChange={(selection) => setPropertyTextSelection({ id: selected.id, ...selection })} updateTextStyle={applySelectedTextStyle} updateText={updateSelectedText} update={updateSelectedProperties} toggleLock={() => updateLayer(selected.id, { locked: !selected.locked })} remove={() => removeLayer(selected.id)} move={(direction) => moveLayer(selected.id, direction)}/> : <div className="property-empty"><Pencil size={26}/><p>选择一个图层后，可调整位置、尺寸和旋转。</p></div>}</aside>
     </div>
     {layerMenu && <div className="layer-context-menu" style={{ left: layerMenu.x, top: Math.max(6, layerMenu.y) }} onPointerDown={(event) => event.stopPropagation()}>
-      {layerMenu.marquee ? <><button onClick={() => { copyMarqueePixels(layerMenu.marquee.ids, layerMenu.marquee.rect); setLayerMenu(null); }}><Copy size={16}/>复制选框内容</button><button className="danger" onClick={() => { cutMarqueePixels(layerMenu.marquee.ids, layerMenu.marquee.rect); setLayerMenu(null); }}><Scissors size={16}/>剪切选框内容</button></> : layerMenu.blank ? <button onClick={() => { pasteLayers(); setLayerMenu(null); }}><Clipboard size={16}/>粘贴图层</button> : <>
+      {layerMenu.marquee ? <><button onClick={() => { copyMarqueePixels(layerMenu.marquee.ids, layerMenu.marquee.rect); setLayerMenu(null); }}><Copy size={16}/>复制选区内容</button><button className="danger" onClick={() => { cutMarqueePixels(layerMenu.marquee.ids, layerMenu.marquee.rect); setLayerMenu(null); }}><Scissors size={16}/>剪切选区内容</button></> : layerMenu.blank ? <button onClick={() => { pasteLayers(); setLayerMenu(null); }}><Clipboard size={16}/>粘贴图层</button> : <>
       <button onClick={() => { copyLayerFromMenu(layerMenu.id, contextGroupId); setLayerMenu(null); }}><Copy size={16}/>复制{contextGroupId ? '图层组' : '图层'}</button>
       {selectedIds.length > 1 && <button disabled={selectedLayers.some((layer) => layer.locked)} onClick={mergeSelectedLayers}><Layers3 size={16}/>合并图层</button>}
       {contextGroupId || contextLayer?.groupId
@@ -3636,8 +3655,69 @@ function rgbaToHex([red, green, blue]) {
 
 function layerLocalPoint(layer, point) {
   const radians = -(layer.rotation || 0) * Math.PI / 180;
-  const dx = point.x - layer.x; const dy = point.y - layer.y;
-  return { x: dx * Math.cos(radians) - dy * Math.sin(radians), y: dx * Math.sin(radians) + dy * Math.cos(radians) };
+  const centerX = layer.x + layer.width / 2; const centerY = layer.y + layer.height / 2;
+  const dx = point.x - centerX; const dy = point.y - centerY;
+  return { x: dx * Math.cos(radians) - dy * Math.sin(radians) + layer.width / 2, y: dx * Math.sin(radians) + dy * Math.cos(radians) + layer.height / 2 };
+}
+
+function layerTemplatePoint(layer, point) {
+  const radians = (layer.rotation || 0) * Math.PI / 180;
+  const centerX = layer.x + layer.width / 2; const centerY = layer.y + layer.height / 2;
+  const dx = point.x - layer.width / 2; const dy = point.y - layer.height / 2;
+  return {
+    x: centerX + dx * Math.cos(radians) - dy * Math.sin(radians),
+    y: centerY + dx * Math.sin(radians) + dy * Math.cos(radians)
+  };
+}
+
+function editorLayerBounds(layer) {
+  const corners = [
+    layerTemplatePoint(layer, { x: 0, y: 0 }),
+    layerTemplatePoint(layer, { x: layer.width, y: 0 }),
+    layerTemplatePoint(layer, { x: layer.width, y: layer.height }),
+    layerTemplatePoint(layer, { x: 0, y: layer.height })
+  ];
+  const xs = corners.map((point) => point.x); const ys = corners.map((point) => point.y);
+  const left = Math.min(...xs); const top = Math.min(...ys); const right = Math.max(...xs); const bottom = Math.max(...ys);
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+function selectionFromPoints(points, kind = 'lasso') {
+  if (!Array.isArray(points) || points.length < 3) return null;
+  const xs = points.map((point) => point.x);
+  const ys = points.map((point) => point.y);
+  const x = Math.floor(Math.min(...xs));
+  const y = Math.floor(Math.min(...ys));
+  const right = Math.ceil(Math.max(...xs));
+  const bottom = Math.ceil(Math.max(...ys));
+  if (right - x < 2 || bottom - y < 2) return null;
+  return { x, y, width: right - x, height: bottom - y, points: points.map((point) => ({ x: point.x, y: point.y })), kind };
+}
+
+async function selectionMaskCanvas(selection) {
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(selection.width));
+  canvas.height = Math.max(1, Math.round(selection.height));
+  const ctx = canvas.getContext('2d');
+  if (selection.maskSrc) {
+    const image = await loadImage(selection.maskSrc);
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvas;
+  }
+  ctx.fillStyle = '#000';
+  if (Array.isArray(selection.points) && selection.points.length >= 3) {
+    ctx.beginPath();
+    selection.points.forEach((point, index) => {
+      const x = point.x - selection.x;
+      const y = point.y - selection.y;
+      if (index) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+    });
+    ctx.closePath();
+    ctx.fill();
+  } else {
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  return canvas;
 }
 
 function floodFillCanvas(canvas, x, y, color) {
@@ -3670,7 +3750,7 @@ function floodFillCanvas(canvas, x, y, color) {
   ctx.putImageData(image, 0, 0);
 }
 
-function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, selectGroup, clearSelection, updateLayer, updateLayers, onLayerContextMenu, onGroupContextMenu, onMarqueeContextMenu, marqueeStartRequest, onPanStart, onEditText, textEditingId, tool, eraserMode, paintColor, brushSize, onPaintCommit, onPickColor, zoom, gifFrameLayerId, gifFrameSource, gifFrameIndex }) {
+function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, selectGroup, clearSelection, updateLayer, updateLayers, onLayerContextMenu, onGroupContextMenu, onMarqueeContextMenu, marqueeStartRequest, onPanStart, onEditText, textEditingId, tool, eraserMode, lassoMode, paintColor, brushSize, onPaintCommit, onPickColor, zoom, gifFrameLayerId, gifFrameSource, gifFrameIndex }) {
   const stageRef = useRef();
   const trRef = useRef();
   const nodeRefs = useRef({});
@@ -3680,11 +3760,14 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   const eraseSurfacesRef = useRef({});
   const mosaicSurfacesRef = useRef({});
   const mosaicBaseRef = useRef({});
+  const healingBaseRef = useRef({});
+  const selectionTokenRef = useRef(0);
   const paintingRef = useRef(null);
   const paintPointerRef = useRef(0);
   const [paintPreview, setPaintPreview] = useState(null);
   const [guides, setGuides] = useState([]);
   const [marquee, setMarquee] = useState(null);
+  const [lassoDraft, setLassoDraft] = useState(null);
   const marqueeRef = useRef(null);
   const marqueeTrackingRef = useRef(null);
   const lastMarqueeStartRequestRef = useRef(null);
@@ -3724,17 +3807,24 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   }, []);
 
   useEffect(() => {
-    if (tool !== 'marquee') {
+    selectionTokenRef.current += 1;
+    if (!['marquee', 'quick-select', 'lasso'].includes(tool)) {
       marqueeTrackingRef.current?.();
       marqueeTrackingRef.current = null;
       marqueeRef.current = null;
       setMarquee(null);
+      setLassoDraft(null);
     }
     return () => {
       marqueeTrackingRef.current?.();
       marqueeTrackingRef.current = null;
     };
   }, [tool]);
+
+  useEffect(() => {
+    marqueeRef.current = null;
+    setLassoDraft(null);
+  }, [lassoMode]);
 
   const startDrag = (layer) => {
     const requestedIds = selectedIds.includes(layer.id) ? selectedIds : [layer.id];
@@ -3896,15 +3986,58 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   };
 
   const ensureMosaicBase = async (layer) => {
-    const key = JSON.stringify(layer);
+    const baseLayer = { ...layer, mosaicSrc: undefined };
+    const key = JSON.stringify(baseLayer);
     if (mosaicBaseRef.current.key === key) return mosaicBaseRef.current.canvas;
-    const isolated = await renderIsolatedLayer(layer, layer.src, null, null, null);
+    const isolated = await renderIsolatedLayer(baseLayer, baseLayer.src, null, null, null);
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(layer.width));
     canvas.height = Math.max(1, Math.round(layer.height));
     canvas.getContext('2d').drawImage(isolated.canvas, -isolated.insets.left, -isolated.insets.top, isolated.logicalWidth, isolated.logicalHeight);
     mosaicBaseRef.current = { key, canvas };
     return canvas;
+  };
+
+  const createBlurredBase = (baseCanvas) => {
+    const blurRadius = Math.max(3, Math.round(brushSize * .32));
+    const padding = Math.ceil(blurRadius * 2);
+    const source = document.createElement('canvas');
+    source.width = baseCanvas.width + padding * 2;
+    source.height = baseCanvas.height + padding * 2;
+    const sourceCtx = source.getContext('2d');
+    sourceCtx.drawImage(baseCanvas, 0, 0, baseCanvas.width, 1, padding, 0, baseCanvas.width, padding);
+    sourceCtx.drawImage(baseCanvas, 0, baseCanvas.height - 1, baseCanvas.width, 1, padding, padding + baseCanvas.height, baseCanvas.width, padding);
+    sourceCtx.drawImage(baseCanvas, 0, 0, 1, baseCanvas.height, 0, padding, padding, baseCanvas.height);
+    sourceCtx.drawImage(baseCanvas, baseCanvas.width - 1, 0, 1, baseCanvas.height, padding + baseCanvas.width, padding, padding, baseCanvas.height);
+    sourceCtx.drawImage(baseCanvas, 0, 0, 1, 1, 0, 0, padding, padding);
+    sourceCtx.drawImage(baseCanvas, baseCanvas.width - 1, 0, 1, 1, padding + baseCanvas.width, 0, padding, padding);
+    sourceCtx.drawImage(baseCanvas, 0, baseCanvas.height - 1, 1, 1, 0, padding + baseCanvas.height, padding, padding);
+    sourceCtx.drawImage(baseCanvas, baseCanvas.width - 1, baseCanvas.height - 1, 1, 1, padding + baseCanvas.width, padding + baseCanvas.height, padding, padding);
+    sourceCtx.drawImage(baseCanvas, padding, padding);
+    const blurred = document.createElement('canvas');
+    blurred.width = source.width; blurred.height = source.height;
+    const blurredCtx = blurred.getContext('2d');
+    blurredCtx.filter = 'blur(' + blurRadius + 'px)';
+    blurredCtx.drawImage(source, 0, 0);
+    const canvas = document.createElement('canvas');
+    canvas.width = baseCanvas.width; canvas.height = baseCanvas.height;
+    canvas.getContext('2d').drawImage(blurred, padding, padding, baseCanvas.width, baseCanvas.height, 0, 0, baseCanvas.width, baseCanvas.height);
+    return canvas;
+  };
+
+  const ensureHealingBase = async (layer) => {
+    const baseLayer = { ...layer, paintSrc: undefined };
+    const key = JSON.stringify(baseLayer);
+    if (healingBaseRef.current.key === key) return healingBaseRef.current;
+    const isolated = await renderIsolatedLayer(baseLayer, baseLayer.src, null, null, null);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(layer.width));
+    canvas.height = Math.max(1, Math.round(layer.height));
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(isolated.canvas, -isolated.insets.left, -isolated.insets.top, isolated.logicalWidth, isolated.logicalHeight);
+    const result = { key, canvas, pixels: ctx.getImageData(0, 0, canvas.width, canvas.height).data };
+    healingBaseRef.current = result;
+    return result;
   };
 
   const drawPaintSegment = (painting, point) => {
@@ -3926,27 +4059,71 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
 
   const drawMosaicSegment = (painting, point) => {
     const ctx = painting.canvas.getContext('2d');
-    const base = painting.baseCanvas;
-    const pixels = painting.basePixels;
     const scaleX = painting.canvas.width / painting.layer.width;
     const scaleY = painting.canvas.height / painting.layer.height;
-    const radius = Math.max(6, brushSize) * (scaleX + scaleY) / 2;
-    const block = Math.max(4, Math.round(brushSize * .55 * (scaleX + scaleY) / 2));
+    const radius = Math.max(3, brushSize * .5 * (scaleX + scaleY) / 2);
     const distance = Math.hypot(point.x - painting.last.x, point.y - painting.last.y) * Math.max(scaleX, scaleY);
-    const steps = Math.max(1, Math.ceil(distance / Math.max(1, block / 2)));
+    const steps = Math.max(1, Math.ceil(distance / Math.max(2, radius * .45)));
     for (let step = 1; step <= steps; step += 1) {
       const ratio = step / steps;
-      const x = painting.last.x + (point.x - painting.last.x) * ratio;
-      const y = painting.last.y + (point.y - painting.last.y) * ratio;
-      for (let offsetY = -radius; offsetY <= radius; offsetY += block) {
-        for (let offsetX = -radius; offsetX <= radius; offsetX += block) {
-          const px = clamp(Math.floor((x + offsetX / scaleX) * scaleX), 0, base.width - 1);
-          const py = clamp(Math.floor((y + offsetY / scaleY) * scaleY), 0, base.height - 1);
-          const pixel = (py * base.width + px) * 4;
-          ctx.fillStyle = `rgba(${pixels[pixel]},${pixels[pixel + 1]},${pixels[pixel + 2]},${pixels[pixel + 3] / 255})`;
-          ctx.fillRect((x + offsetX / scaleX) * scaleX, (y + offsetY / scaleY) * scaleY, block, block);
-        }
-      }
+      const x = (painting.last.x + (point.x - painting.last.x) * ratio) * scaleX;
+      const y = (painting.last.y + (point.y - painting.last.y) * ratio) * scaleY;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(painting.blurredCanvas, 0, 0, painting.canvas.width, painting.canvas.height);
+      ctx.restore();
+    }
+    painting.last = point;
+  };
+
+  const drawHealingStamp = (painting, centerX, centerY, radius) => {
+    const size = Math.max(3, Math.ceil(radius * 2));
+    const patch = document.createElement('canvas');
+    patch.width = size; patch.height = size;
+    const patchCtx = patch.getContext('2d');
+    const image = patchCtx.createImageData(size, size);
+    const source = painting.basePixels;
+    const width = painting.baseCanvas.width;
+    const height = painting.baseCanvas.height;
+    const ring = Math.max(3, radius * 1.35);
+    const directions = [[1,0],[-1,0],[0,1],[0,-1],[.707,.707],[-.707,.707],[.707,-.707],[-.707,-.707]];
+    for (let py = 0; py < size; py += 1) for (let px = 0; px < size; px += 1) {
+      const dx = px + .5 - radius; const dy = py + .5 - radius;
+      const distance = Math.hypot(dx, dy);
+      if (distance > radius) continue;
+      let red = 0; let green = 0; let blue = 0; let alpha = 0; let count = 0;
+      directions.forEach(([vx, vy]) => {
+        const sx = clamp(Math.round(centerX + dx + vx * ring), 0, width - 1);
+        const sy = clamp(Math.round(centerY + dy + vy * ring), 0, height - 1);
+        const offset = (sy * width + sx) * 4;
+        if (source[offset + 3] === 0) return;
+        red += source[offset]; green += source[offset + 1]; blue += source[offset + 2]; alpha += source[offset + 3]; count += 1;
+      });
+      if (!count) continue;
+      const feather = clamp((radius - distance) / Math.max(1, radius * .22), 0, 1);
+      const offset = (py * size + px) * 4;
+      image.data[offset] = red / count;
+      image.data[offset + 1] = green / count;
+      image.data[offset + 2] = blue / count;
+      image.data[offset + 3] = alpha / count * feather;
+    }
+    patchCtx.putImageData(image, 0, 0);
+    painting.canvas.getContext('2d').drawImage(patch, centerX - radius, centerY - radius);
+  };
+
+  const drawHealingSegment = (painting, point) => {
+    const scaleX = painting.canvas.width / painting.layer.width;
+    const scaleY = painting.canvas.height / painting.layer.height;
+    const radius = Math.max(2, brushSize * .5 * (scaleX + scaleY) / 2);
+    const startX = painting.last.x * scaleX; const startY = painting.last.y * scaleY;
+    const endX = point.x * scaleX; const endY = point.y * scaleY;
+    const distance = Math.hypot(endX - startX, endY - startY);
+    const steps = Math.max(1, Math.ceil(distance / Math.max(2, radius * .5)));
+    for (let step = 1; step <= steps; step += 1) {
+      const ratio = step / steps;
+      drawHealingStamp(painting, startX + (endX - startX) * ratio, startY + (endY - startY) * ratio, radius);
     }
     painting.last = point;
   };
@@ -3988,6 +4165,196 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     window.addEventListener('mouseup', finish);
   };
 
+  const pointFromClient = (clientX, clientY) => {
+    const container = stageRef.current?.container();
+    if (!container) return null;
+    const bounds = container.getBoundingClientRect();
+    return { x: (clientX - bounds.left) / zoom, y: (clientY - bounds.top) / zoom };
+  };
+
+  const beginQuickSelection = async (event) => {
+    if (event.evt.button !== 0) return;
+    event.evt.preventDefault();
+    const templatePoint = pointFromClient(event.evt.clientX, event.evt.clientY);
+    const layer = selectedIds.length === 1 ? template.layers.find((item) => item.id === selectedIds[0] && item.visible) : null;
+    if (!templatePoint || !layer) return;
+    if (!pointInLayer(templatePoint.x, templatePoint.y, layer)) return;
+    const token = ++selectionTokenRef.current;
+    const source = layer.id === gifFrameLayerId && gifFrameSource ? gifFrameSource : layer.src;
+    const isolated = await renderIsolatedLayer(layer, source, null, null, null);
+    if (token !== selectionTokenRef.current) return;
+    const maxAnalysisSide = 720;
+    const analysisScale = Math.min(1, maxAnalysisSide / Math.max(1, layer.width, layer.height));
+    const width = Math.max(1, Math.round(layer.width * analysisScale));
+    const height = Math.max(1, Math.round(layer.height * analysisScale));
+    const analysis = document.createElement('canvas');
+    analysis.width = width; analysis.height = height;
+    const ctx = analysis.getContext('2d');
+    ctx.drawImage(isolated.canvas, -isolated.insets.left * analysisScale, -isolated.insets.top * analysisScale, isolated.logicalWidth * analysisScale, isolated.logicalHeight * analysisScale);
+    const image = ctx.getImageData(0, 0, width, height);
+    const data = image.data;
+    const local = layerLocalPoint(layer, templatePoint);
+    const startX = clamp(Math.round(local.x * analysisScale), 0, width - 1);
+    const startY = clamp(Math.round(local.y * analysisScale), 0, height - 1);
+    const startOffset = (startY * width + startX) * 4;
+    if (data[startOffset + 3] < 8) return;
+    const target = [data[startOffset], data[startOffset + 1], data[startOffset + 2], data[startOffset + 3]];
+    const tolerance = Math.min(110, 34 + brushSize * .32);
+    const toleranceSquared = tolerance * tolerance * 3;
+    const visited = new Uint8Array(width * height);
+    const queued = new Uint8Array(width * height);
+    const selectedMask = new Uint8Array(width * height);
+    const stack = new Int32Array(width * height);
+    let stackSize = 0;
+    const seedIndex = startY * width + startX;
+    stack[stackSize++] = seedIndex;
+    queued[seedIndex] = 1;
+    const queue = (next) => { if (!queued[next]) { queued[next] = 1; stack[stackSize++] = next; } };
+    while (stackSize) {
+      const index = stack[--stackSize];
+      if (visited[index]) continue;
+      visited[index] = 1;
+      const offset = index * 4;
+      const alpha = data[offset + 3];
+      const dr = data[offset] - target[0]; const dg = data[offset + 1] - target[1]; const db = data[offset + 2] - target[2];
+      if (alpha < 8 || dr * dr + dg * dg + db * db > toleranceSquared || Math.abs(alpha - target[3]) > tolerance) continue;
+      selectedMask[index] = 255;
+      const x = index % width; const y = Math.floor(index / width);
+      if (x > 0) queue(index - 1);
+      if (x + 1 < width) queue(index + 1);
+      if (y > 0) queue(index - width);
+      if (y + 1 < height) queue(index + width);
+    }
+    const smallMask = document.createElement('canvas');
+    smallMask.width = width; smallMask.height = height;
+    const maskCtx = smallMask.getContext('2d');
+    const maskImage = maskCtx.createImageData(width, height);
+    for (let index = 0; index < selectedMask.length; index += 1) {
+      if (!selectedMask[index]) continue;
+      const offset = index * 4;
+      maskImage.data[offset] = 67; maskImage.data[offset + 1] = 132; maskImage.data[offset + 2] = 255; maskImage.data[offset + 3] = 255;
+    }
+    maskCtx.putImageData(maskImage, 0, 0);
+    const bounds = editorLayerBounds(layer);
+    const selection = { x: Math.floor(bounds.left), y: Math.floor(bounds.top), width: Math.max(1, Math.ceil(bounds.right) - Math.floor(bounds.left)), height: Math.max(1, Math.ceil(bounds.bottom) - Math.floor(bounds.top)), kind: 'quick', layerId: layer.id };
+    const globalMask = document.createElement('canvas');
+    globalMask.width = selection.width; globalMask.height = selection.height;
+    const globalCtx = globalMask.getContext('2d');
+    if (marquee?.kind === 'quick' && marquee.layerId === layer.id && marquee.maskSrc && marquee.x === selection.x && marquee.y === selection.y && marquee.width === selection.width && marquee.height === selection.height) {
+      const previousMask = await loadImage(marquee.maskSrc);
+      globalCtx.drawImage(previousMask, 0, 0, globalMask.width, globalMask.height);
+    }
+    globalCtx.save();
+    globalCtx.translate(-selection.x, -selection.y);
+    globalCtx.translate(layer.x + layer.width / 2, layer.y + layer.height / 2);
+    globalCtx.rotate((Number(layer.rotation) || 0) * Math.PI / 180);
+    globalCtx.translate(-layer.width / 2, -layer.height / 2);
+    globalCtx.drawImage(smallMask, 0, 0, width, height, 0, 0, layer.width, layer.height);
+    globalCtx.restore();
+    setMarquee({ ...selection, maskSrc: globalMask.toDataURL('image/png') });
+  };
+
+  const buildMagneticSnapper = async () => {
+    const layer = selectedIds.length === 1 ? template.layers.find((item) => item.id === selectedIds[0] && item.visible) : null;
+    if (!layer) return (point) => point;
+    const source = layer.id === gifFrameLayerId && gifFrameSource ? gifFrameSource : layer.src;
+    const isolated = await renderIsolatedLayer(layer, source, null, null, null);
+    const analysisScale = Math.min(1, 640 / Math.max(1, layer.width, layer.height));
+    const width = Math.max(1, Math.round(layer.width * analysisScale));
+    const height = Math.max(1, Math.round(layer.height * analysisScale));
+    const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(isolated.canvas, -isolated.insets.left * analysisScale, -isolated.insets.top * analysisScale, isolated.logicalWidth * analysisScale, isolated.logicalHeight * analysisScale);
+    const data = ctx.getImageData(0, 0, width, height).data;
+    const luminance = (x, y) => {
+      const px = clamp(x, 0, width - 1); const py = clamp(y, 0, height - 1); const offset = (py * width + px) * 4;
+      return data[offset] * .299 + data[offset + 1] * .587 + data[offset + 2] * .114 + data[offset + 3] * .35;
+    };
+    return (point) => {
+      const local = layerLocalPoint(layer, point);
+      const centerX = Math.round(local.x * analysisScale); const centerY = Math.round(local.y * analysisScale);
+      if (centerX < 0 || centerY < 0 || centerX >= width || centerY >= height) return point;
+      const search = Math.max(4, Math.min(14, Math.round(brushSize * analysisScale * .25)));
+      let best = { x: centerX, y: centerY, score: -1 };
+      for (let y = centerY - search; y <= centerY + search; y += 1) for (let x = centerX - search; x <= centerX + search; x += 1) {
+        if (x <= 0 || y <= 0 || x >= width - 1 || y >= height - 1) continue;
+        const score = Math.abs(luminance(x + 1, y) - luminance(x - 1, y)) + Math.abs(luminance(x, y + 1) - luminance(x, y - 1));
+        if (score > best.score) best = { x, y, score };
+      }
+      return layerTemplatePoint(layer, { x: best.x / analysisScale, y: best.y / analysisScale });
+    };
+  };
+
+  const beginLasso = async (event) => {
+    if (event.evt.button !== 0) return;
+    event.evt.preventDefault();
+    const initial = pointFromClient(event.evt.clientX, event.evt.clientY);
+    if (!initial) return;
+    if (lassoMode === 'polygon') {
+      const points = lassoDraft?.mode === 'polygon' ? [...lassoDraft.points] : [];
+      if (points.length >= 3 && Math.hypot(points[0].x - initial.x, points[0].y - initial.y) <= 10 / zoom) {
+        setMarquee(selectionFromPoints(points, 'polygon-lasso'));
+        setLassoDraft(null);
+      } else {
+        points.push(initial);
+        setLassoDraft({ mode: 'polygon', points, hover: initial });
+      }
+      return;
+    }
+    const token = ++selectionTokenRef.current;
+    const snap = lassoMode === 'magnetic' ? await buildMagneticSnapper() : (point) => point;
+    if (token !== selectionTokenRef.current) return;
+    const first = snap(initial);
+    const drag = { points: [first], current: first, mode: lassoMode };
+    marqueeRef.current = drag;
+    setLassoDraft({ mode: lassoMode, points: [...drag.points], hover: first });
+    const update = (mouseEvent) => {
+      const currentDrag = marqueeRef.current;
+      if (!currentDrag) return;
+      const raw = pointFromClient(mouseEvent.clientX, mouseEvent.clientY);
+      if (!raw) return;
+      const point = snap(raw);
+      const previous = currentDrag.points.at(-1);
+      if (previous && Math.hypot(point.x - previous.x, point.y - previous.y) < Math.max(1, 2.5 / zoom)) return;
+      currentDrag.points.push(point);
+      currentDrag.current = point;
+      setLassoDraft({ mode: currentDrag.mode, points: [...currentDrag.points], hover: point });
+    };
+    const cleanup = () => {
+      window.removeEventListener('mousemove', update);
+      window.removeEventListener('mouseup', finish);
+      if (marqueeTrackingRef.current === cleanup) marqueeTrackingRef.current = null;
+    };
+    const finish = (mouseEvent) => {
+      update(mouseEvent);
+      const currentDrag = marqueeRef.current;
+      marqueeRef.current = null;
+      cleanup();
+      if (currentDrag?.points.length >= 3) setMarquee(selectionFromPoints(currentDrag.points, currentDrag.mode === 'magnetic' ? 'magnetic-lasso' : 'freehand-lasso'));
+      setLassoDraft(null);
+    };
+    marqueeTrackingRef.current?.();
+    marqueeTrackingRef.current = cleanup;
+    window.addEventListener('mousemove', update);
+    window.addEventListener('mouseup', finish);
+  };
+
+  const updatePolygonLassoHover = (event) => {
+    if (tool !== 'lasso' || lassoMode !== 'polygon' || !lassoDraft?.points?.length) return;
+    const nativeEvent = event.evt || event;
+    const point = pointFromClient(nativeEvent.clientX, nativeEvent.clientY);
+    if (point) setLassoDraft((current) => current ? { ...current, hover: point } : current);
+  };
+
+  const completePolygonLasso = (event) => {
+    if (tool !== 'lasso' || lassoMode !== 'polygon' || !lassoDraft?.points?.length) return false;
+    event?.evt?.preventDefault?.();
+    const points = [...lassoDraft.points];
+    if (points.length >= 3) setMarquee(selectionFromPoints(points, 'polygon-lasso'));
+    setLassoDraft(null);
+    return true;
+  };
+
   useEffect(() => {
     if (tool !== 'marquee' || !marqueeStartRequest || lastMarqueeStartRequestRef.current === marqueeStartRequest) return;
     lastMarqueeStartRequestRef.current = marqueeStartRequest;
@@ -3999,7 +4366,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     const right = marquee.x + marquee.width; const bottom = marquee.y + marquee.height;
     const intersecting = template.layers.filter((layer) => {
       if (!layer.visible) return false;
-      const bounds = layerBounds(layer);
+      const bounds = editorLayerBounds(layer);
       return bounds.right > marquee.x && bounds.bottom > marquee.y && bounds.left < right && bounds.top < bottom;
     }).map((layer) => layer.id);
     return selectedIds.length ? selectedIds.filter((id) => intersecting.includes(id)) : intersecting;
@@ -4014,7 +4381,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   };
 
   const beginPaint = async (event) => {
-    if (!['brush', 'mosaic', 'fill', 'eraser', 'picker'].includes(tool)) return false;
+    if (!['brush', 'mosaic', 'heal', 'fill', 'eraser', 'picker'].includes(tool)) return false;
     event.evt.preventDefault();
     const stage = stageRef.current;
     const pointer = stage?.getPointerPosition();
@@ -4042,11 +4409,21 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
       const canvas = await ensurePaintSurface(layer, 'mosaic');
       const baseCanvas = await ensureMosaicBase(layer);
       if (pointerToken !== paintPointerRef.current) return true;
-      const basePixels = baseCanvas.getContext('2d').getImageData(0, 0, baseCanvas.width, baseCanvas.height).data;
-      const painting = { layer, canvas, baseCanvas, basePixels, mode: 'mosaic', surfaceKind: 'mosaic', last: local };
+      const blurredCanvas = createBlurredBase(baseCanvas);
+      const painting = { layer, canvas, baseCanvas, blurredCanvas, mode: 'mosaic', surfaceKind: 'mosaic', last: local };
       paintingRef.current = painting;
       drawMosaicSegment(painting, { x: local.x + .01, y: local.y + .01 });
       setPaintPreview({ id: layer.id, canvas, kind: 'mosaic', revision: 1 });
+      return true;
+    }
+    if (effectiveTool === 'heal') {
+      const canvas = await ensurePaintSurface(layer, 'paint');
+      const healingBase = await ensureHealingBase(layer);
+      if (pointerToken !== paintPointerRef.current) return true;
+      const painting = { layer, canvas, baseCanvas: healingBase.canvas, basePixels: healingBase.pixels, mode: 'heal', surfaceKind: 'paint', last: local };
+      paintingRef.current = painting;
+      drawHealingSegment(painting, { x: local.x + .01, y: local.y + .01 });
+      setPaintPreview({ id: layer.id, canvas, kind: 'paint', revision: 1 });
       return true;
     }
     const canvas = await ensurePaintSurface(layer, surfaceKind);
@@ -4072,6 +4449,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     const local = layerLocalPoint(painting.layer, { x: pointer.x / zoom, y: pointer.y / zoom });
     const point = { x: clamp(local.x, 0, painting.layer.width), y: clamp(local.y, 0, painting.layer.height) };
     if (painting.mode === 'mosaic') drawMosaicSegment(painting, point);
+    else if (painting.mode === 'heal') drawHealingSegment(painting, point);
     else drawPaintSegment(painting, point);
     setPaintPreview((current) => ({ id: painting.layer.id, canvas: painting.canvas, kind: painting.surfaceKind, revision: (current?.revision || 0) + 1 }));
   };
@@ -4117,18 +4495,23 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
 
   return <><Stage ref={stageRef} width={template.width * zoom} height={template.height * zoom} scaleX={zoom} scaleY={zoom}
     onWheel={(event) => event.target.stopDrag?.()}
-    onDblClick={handleLayerDoubleClick}
-    onDblTap={handleLayerDoubleClick}
+    onDblClick={(event) => { if (!completePolygonLasso(event)) handleLayerDoubleClick(event); }}
+    onDblTap={(event) => { if (!completePolygonLasso(event)) handleLayerDoubleClick(event); }}
     onMouseDown={(event) => {
       if (tool === 'marquee') { beginMarquee(event); return; }
+      if (tool === 'quick-select') { beginQuickSelection(event); return; }
+      if (tool === 'lasso') { beginLasso(event); return; }
       if (tool === 'text') return;
       if (tool !== 'select') { beginPaint(event); return; }
       trRef.current?.rotationSnaps(event.evt.shiftKey || shiftPressed ? ROTATION_SNAPS : []);
       if (event.target === event.target.getStage() || event.target.name() === 'editor-background') { clearSelection(); onPanStart(event); }
     }}
-    onMouseMove={['brush', 'mosaic', 'fill', 'eraser', 'picker'].includes(tool) ? movePaint : undefined}
-    onMouseUp={['brush', 'mosaic', 'fill', 'eraser', 'picker'].includes(tool) ? finishPaint : undefined}
-    onContextMenu={(event) => { if (tool === 'marquee') openMarqueeContextMenu(event); }}
+    onMouseMove={(event) => {
+      if (tool === 'lasso' && lassoMode === 'polygon') updatePolygonLassoHover(event);
+      if (['brush', 'mosaic', 'heal', 'fill', 'eraser', 'picker'].includes(tool)) movePaint(event);
+    }}
+    onMouseUp={['brush', 'mosaic', 'heal', 'fill', 'eraser', 'picker'].includes(tool) ? finishPaint : undefined}
+    onContextMenu={(event) => { if (['marquee', 'quick-select', 'lasso'].includes(tool)) openMarqueeContextMenu(event); }}
   >
     <Layer>
       <Rect name="editor-background" width={template.width} height={template.height} fill="#fff"/>
@@ -4152,12 +4535,28 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
       })}
       {groupHitAreas.filter((group) => group.groupId === selectedGroupId).map((group) => renderGroupHitArea(group, true))}
       {tool === 'select' && !selectedGroupId && selectedIds.map((id) => template.layers.find((layer) => layer.id === id)).filter((layer) => layer && !layer.locked && layer.visible && layer.id !== textEditingId && isLayerVisibleAtFrame(layer, gifFrameIndex)).map((layer) => <Rect key={`selected-hit-${layer.id}`} x={layer.x + layer.width / 2} y={layer.y + layer.height / 2} offsetX={layer.width / 2} offsetY={layer.height / 2} width={layer.width} height={layer.height} rotation={layer.rotation || 0} fill="rgba(0,0,0,0.001)" draggable listening onMouseDown={(event) => { event.cancelBubble = true; startDrag(layer); }} onTouchStart={(event) => { event.cancelBubble = true; startDrag(layer); }} onClick={(event) => { event.cancelBubble = true; selectLayer(layer.id, event.evt); }} onTap={(event) => { event.cancelBubble = true; selectLayer(layer.id, event.evt); }} onContextMenu={(event) => { event.cancelBubble = true; onLayerContextMenu(layer.id, event.evt); }} onDblClick={handleLayerDoubleClick} onDblTap={handleLayerDoubleClick} onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)}/>) }{template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
-      {tool === 'marquee' && template.layers.filter((layer) => selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`marquee-selected-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
+      {['marquee', 'quick-select', 'lasso'].includes(tool) && template.layers.filter((layer) => selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`marquee-selected-${layer.id}`} x={layer.x + layer.width / 2} y={layer.y + layer.height / 2} offsetX={layer.width / 2} offsetY={layer.height / 2} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
+      {tool === 'lasso' && lassoDraft?.points?.length > 0 && <Line
+        points={[...lassoDraft.points, ...(lassoDraft.hover ? [lassoDraft.hover] : [])].flatMap((point) => [point.x, point.y])}
+        closed={lassoDraft.mode !== 'polygon'} stroke="#4384ff" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>}
       {guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94b37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }
       <Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} keepRatio={selectedIds.length === 1 && aspectRatioLockedOf(template.layers.find((item) => item.id === selectedIds[0]))} enabledAnchors={selectedIds.length === 1 && aspectRatioLockedOf(template.layers.find((item) => item.id === selectedIds[0])) ? ['top-left','top-right','bottom-left','bottom-right'] : ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/>
       {selectedPolygon && <Group x={selectedPolygon.x} y={selectedPolygon.y} rotation={selectedPolygon.rotation || 0}>{polygonPointsOf(selectedPolygon).map((point, index) => <KonvaCircle key={`polygon-handle-${selectedPolygon.id}-${index}`} x={point.x * selectedPolygon.width} y={point.y * selectedPolygon.height} radius={6 / zoom} fill="#fff" stroke="#e24b35" strokeWidth={1.5 / zoom} draggable onMouseDown={(event) => { event.cancelBubble = true; }} onDragMove={(event) => { event.cancelBubble = true; event.target.position({ x: clamp(event.target.x(), 0, selectedPolygon.width), y: clamp(event.target.y(), 0, selectedPolygon.height) }); }} onDragEnd={(event) => { event.cancelBubble = true; const next = { x: clamp(event.target.x() / selectedPolygon.width, 0, 1), y: clamp(event.target.y() / selectedPolygon.height, 0, 1) }; updateLayer(selectedPolygon.id, { polygonPoints: polygonPointsOf(selectedPolygon).map((item, itemIndex) => itemIndex === index ? next : item) }); }} />)}</Group>}
     </Layer>
-  </Stage>{tool === 'marquee' && marquee && <div className="marquee-selection-overlay" style={{ left: marquee.x * zoom, top: marquee.y * zoom, width: marquee.width * zoom, height: marquee.height * zoom }} onMouseDown={(event) => beginMarquee({ evt: event.nativeEvent })} onContextMenu={openMarqueeContextMenu}/>}</>;
+  </Stage>{['marquee', 'quick-select', 'lasso'].includes(tool) && marquee && <div
+    className={`marquee-selection-overlay ${marquee.points ? 'selection-path-overlay' : ''} ${marquee.maskSrc ? 'selection-mask-overlay' : ''}`}
+    style={{ left: marquee.x * zoom, top: marquee.y * zoom, width: marquee.width * zoom, height: marquee.height * zoom }}
+    onMouseDown={(event) => {
+      const wrapped = { evt: event.nativeEvent };
+      if (tool === 'marquee') beginMarquee(wrapped);
+      else if (tool === 'quick-select') beginQuickSelection(wrapped);
+      else beginLasso(wrapped);
+    }}
+    onDoubleClick={(event) => completePolygonLasso({ evt: event.nativeEvent })}
+    onContextMenu={openMarqueeContextMenu}>
+      {marquee.points && <svg viewBox={`0 0 ${marquee.width} ${marquee.height}`} preserveAspectRatio="none"><polygon points={marquee.points.map((point) => `${point.x - marquee.x},${point.y - marquee.y}`).join(' ')} /></svg>}
+      {marquee.maskSrc && <img className="selection-mask-preview" src={marquee.maskSrc} alt="" draggable={false}/>}
+    </div>}</>;
 }
 
 function useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, mosaicSource, revision) {
