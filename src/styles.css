@@ -484,14 +484,15 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .crop-zoom-field output { text-align: right; color: var(--ink); font-size: 10px; }
 .use-text-layers { margin-top: 18px; padding-top: 13px; border-top: 1px solid var(--line); }
 .use-text-layer-list { display: flex; flex-direction: column; gap: 9px; }
-.use-text-layer-field { position: relative; display: grid; grid-template-columns: 72px minmax(0,1fr) auto; align-items: start; gap: 7px; }
+.use-text-layer-field { min-width: 0; display: grid; grid-template-columns: 72px minmax(0,1fr); align-items: start; gap: 7px; }
 .use-text-layer-field > .use-text-layer-name { min-width: 0; height: 34px; display: flex; align-items: center; overflow: hidden; color: var(--muted); font-size: 9px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.use-text-layer-field > textarea, .batch-text-row textarea { width: 100%; min-height: 34px; resize: vertical; padding: 7px 9px; border: 1px solid var(--line); border-radius: 5px; outline: 0; background: var(--surface); color: var(--ink); font: inherit; font-size: 11px; line-height: 1.45; }
+.use-text-input-wrap { position: relative; min-width: 0; }
+.use-text-input-wrap > textarea, .batch-text-row textarea { width: 100%; min-height: 34px; resize: vertical; padding: 7px 9px; border: 1px solid var(--line); border-radius: 5px; outline: 0; background: var(--surface); color: var(--ink); font: inherit; font-size: 11px; line-height: 1.45; }
 .use-text-layer-field textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
-.batch-text-control { position: relative; }
-.batch-text-trigger { min-width: 38px; height: 34px; padding: 0 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--ink); font-size: 10px; font-weight: 700; cursor: pointer; }
-.batch-text-trigger:hover, .batch-text-trigger.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
-.batch-text-popover { position: absolute; z-index: 80; top: calc(100% + 6px); right: 0; width: min(360px, calc(100vw - 32px)); max-height: 360px; overflow: auto; padding: 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); box-shadow: 0 14px 34px rgba(22,20,17,.2); }
+.batch-text-control { position: absolute; z-index: 3; right: -7px; bottom: -7px; }
+.batch-text-trigger { min-width: 21px; height: 21px; padding: 0 5px; border: 2px solid var(--surface); border-radius: 999px; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 9px; font-weight: 800; line-height: 1; box-shadow: 0 2px 7px rgba(0,0,0,.24); cursor: pointer; }
+.batch-text-trigger:hover, .batch-text-trigger.active { background: color-mix(in srgb, var(--accent) 82%, #000); color: #fff; transform: translateY(-1px); }
+.batch-text-popover { position: fixed; z-index: 900; overflow: auto; overscroll-behavior: contain; padding: 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); color: var(--ink); box-shadow: 0 14px 34px rgba(22,20,17,.24); }
 .batch-text-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
 .batch-text-heading strong { font-size: 11px; }
 .batch-text-heading span { color: var(--muted); font-size: 9px; }

@@ -4473,7 +4473,7 @@ function pointInLayer(x, y, layer) {
   return nx * nx + ny * ny <= 1;
 }
 
-function UseStage({ composition, slotSources, slotSourceLists = {}, slotTransforms, selectedId, setSelectedId, updateLayer, cropModeId, setCropModeId, updatePhotoTransform, onRequestSlot, zoom, pan, panning, onPanStart, transparent, lockAspectRatio, textEditingId, textSelection, onEditText, onTextChange, onTextSelectionChange, onTextDone }) {
+function UseStage({ composition, slotSources, slotSourceLists = {}, slotTransforms, selectedId, setSelectedId, updateLayer, cropModeId, setCropModeId, updatePhotoTransform, onRequestSlot, zoom, pan, panning, onPanStart, transparent, textEditingId, textSelection, onEditText, onTextChange, onTextSelectionChange, onTextDone }) {
   const hostRef = useRef();
   const transformerRef = useRef();
   const nodeRefs = useRef({});
@@ -4510,19 +4510,19 @@ function UseStage({ composition, slotSources, slotSourceLists = {}, slotTransfor
   const moveSlotDrag = (layer, event) => {
     const drag = dragRef.current;
     if (!drag || drag.id !== layer.id) return;
-    let position = { x: event.target.x(), y: event.target.y() };
+    let position = { x: event.target.x() - layer.width / 2, y: event.target.y() - layer.height / 2 };
     if (event.evt.shiftKey) {
       const snapped = snapLayerPosition(layer, position, composition, 10 / scale, [layer.id]);
       position = { x: snapped.x, y: snapped.y };
       setGuides(snapped.guides);
     } else if (guides.length) setGuides([]);
-    event.target.position(position);
+    event.target.position({ x: position.x + layer.width / 2, y: position.y + layer.height / 2 });
   };
   const finishSlotDrag = (layer, event) => {
     moveSlotDrag(layer, event);
     const drag = dragRef.current;
     if (!drag || drag.id !== layer.id) return;
-    updateLayer(layer.id, { x: Math.round(event.target.x()), y: Math.round(event.target.y()) });
+    updateLayer(layer.id, { x: Math.round(event.target.x() - layer.width / 2), y: Math.round(event.target.y() - layer.height / 2) });
     dragRef.current = null;
     setGuides([]);
   };
@@ -4589,11 +4589,9 @@ function UseStage({ composition, slotSources, slotSourceLists = {}, slotTransfor
           <Transformer
             ref={transformerRef}
             rotateEnabled={false}
-            keepRatio={lockAspectRatio}
+            keepRatio
             flipEnabled={false}
-            enabledAnchors={lockAspectRatio
-              ? ['top-left','top-right','bottom-left','bottom-right']
-              : ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']}
+            enabledAnchors={['top-left','top-right','bottom-left','bottom-right']}
             borderStroke="#e24b35"
             anchorFill="#fff"
             anchorStroke="#e24b35"
@@ -4665,11 +4663,11 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   const [groupRosterChoice, setGroupRosterChoice] = useState(null);
   const [groupRosterBusy, setGroupRosterBusy] = useState(false);
   const [textBatchOpenId, setTextBatchOpenId] = useState(null);
+  const [textBatchPopoverStyle, setTextBatchPopoverStyle] = useState({});
   const templateHasGif = template.layers.some((layer) => isGifSource(layer.src));
   const [exportFormat, setExportFormat] = useState(() => templateHasGif ? 'gif' : 'png');
   const [exportScale, setExportScale] = useState(1);
   const [transparent, setTransparent] = useState(false);
-  const [lockAspectRatio, setLockAspectRatio] = useState(true);
   const input = useRef();
   const pendingSlot = useRef(null);
   const pendingAppend = useRef(false);
@@ -4679,6 +4677,11 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   const slotGalleryRef = useRef();
   const textBatchRef = useRef();
   const groupRosterInput = useRef();
+  useEffect(() => {
+    const closeBatchPopover = () => setTextBatchOpenId(null);
+    window.addEventListener('resize', closeBatchPopover);
+    return () => window.removeEventListener('resize', closeBatchPopover);
+  }, []);
   const slots = composition.layers.filter(isReplaceableSlot);
   const textLayers = composition.layers.filter((layer) => layer.type === 'text' && !layer.textLocked);
   const editableTextLayers = textLayers;
@@ -5048,7 +5051,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       const imported = downloads
         .map((download, index) => ({ download, row: rows[index] }))
         .filter(({ download }) => Boolean(download?.dataUrl));
-      const importedRows = imported.map(({ row }) => row);
+      const textRows = rows;
 
       if (imported.length || (textField !== 'none' && editableTextLayers.length)) {
         commitSession((previous) => {
@@ -5084,10 +5087,10 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
             });
           }
 
-          if (textField !== 'none' && editableTextLayers.length && importedRows.length) {
+          if (textField !== 'none' && editableTextLayers.length && textRows.length) {
             if (editableTextLayers.length === 1) {
               const targetId = editableTextLayers[0].id;
-              const values = importedRows.map((row) => String(row[textField] ?? ''));
+              const values = textRows.map((row) => String(row[textField] ?? ''));
               next.textValueLists[targetId] = values;
               next.composition = {
                 ...previous.composition,
@@ -5100,8 +5103,8 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
                 ...previous.composition,
                 layers: previous.composition.layers.map((layer) => {
                   const textIndex = editableTextLayers.findIndex((candidate) => candidate.id === layer.id);
-                  if (textIndex < 0 || textIndex >= importedRows.length) return layer;
-                  const value = String(importedRows[textIndex][textField] ?? '');
+                  if (textIndex < 0 || textIndex >= textRows.length) return layer;
+                  const value = String(textRows[textIndex][textField] ?? '');
                   next.textValueLists[layer.id] = [value];
                   return fitTextLayerToContent({ ...layer, ...updateTextContent(layer, value) });
                 })
@@ -5116,7 +5119,8 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       const failed = downloads.filter((download) => !download?.dataUrl);
       if (!imported.length) {
         const detail = failed[0]?.error ? '：' + failed[0].error : '';
-        notify('群名单中的头像均下载失败' + detail, 'error');
+        const textStatus = textField !== 'none' && editableTextLayers.length ? '，文本已完成替换' : '';
+        notify('群名单中的头像均下载失败' + detail + textStatus, 'error');
       } else if (failed.length) {
         notify('已导入 ' + imported.length + ' 张头像，另有 ' + failed.length + ' 张下载失败', 'error');
       } else {
@@ -5322,6 +5326,28 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     };
   }, [copyAgain, nudgeSelectedPhoto, pasteClipboardImage, redo, selectedId, slotGalleryId, tryBack, undo]);
 
+  const toggleTextBatchPopover = (event, layerId) => {
+    event.stopPropagation();
+    if (textBatchOpenId === layerId) {
+      setTextBatchOpenId(null);
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const margin = 12;
+    const gap = 6;
+    const width = Math.max(220, Math.min(360, window.innerWidth - margin * 2));
+    const left = Math.min(Math.max(margin, rect.right - width), window.innerWidth - width - margin);
+    const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - gap - margin);
+    const spaceAbove = Math.max(0, rect.top - gap - margin);
+    const openAbove = spaceBelow < 220 && spaceAbove > spaceBelow;
+    const availableHeight = openAbove ? spaceAbove : spaceBelow;
+    const maxHeight = Math.max(120, Math.min(360, availableHeight));
+    setTextBatchPopoverStyle(openAbove
+      ? { left, width, bottom: window.innerHeight - rect.top + gap, top: 'auto', maxHeight }
+      : { left, width, top: rect.bottom + gap, bottom: 'auto', maxHeight });
+    setTextBatchOpenId(layerId);
+  };
+
   const resetCrop = () => { if (cropModeId) updatePhotoTransform(cropModeId, { zoom: 1, offsetX: 0, offsetY: 0 }); };
 
   const dropOnSlot = (event) => {
@@ -5428,14 +5454,33 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
             </div>;
           })}
         </div>
-        <label className="check-row" title="开启后，拖动照片图层的边角会按原始宽高比例缩放，避免图片被横向或纵向拉伸变形；关闭后可自由改变宽度和高度。"><input type="checkbox" checked={lockAspectRatio} onChange={(event) => setLockAspectRatio(event.target.checked)}/><span>锁定照片宽高比</span></label>
         {cropLayer && slotSources[cropLayer.id] && <div className="crop-controls"><div className="crop-controls-heading"><strong><Crop size={16}/>裁切照片</strong><IconButton label="完成裁切" onClick={() => setCropModeId(null)}><Check size={16}/></IconButton></div><label className="crop-zoom-field"><span>缩放</span><input type="range" min="1" max="5" step="0.05" value={cropTransform.zoom} onChange={(event) => updatePhotoTransform(cropLayer.id, { zoom: Number(event.target.value) })}/><output>{Math.round(cropTransform.zoom * 100)}%</output></label><button className="wide-property-button" onClick={resetCrop}><RotateCcw size={16}/>重置裁切</button></div>}
         <input ref={input} hidden type="file" accept="image/*" multiple onChange={(event) => { const files = Array.from(event.target.files || []); if (files.length) { if (files.length > 1 || pendingAppend.current) acceptInitialFiles(files, pendingSlot.current, pendingAppend.current); else acceptFile(files[0], pendingSlot.current); } event.target.value = ''; pendingSlot.current = null; pendingAppend.current = false; }}/>
-        {textLayers.length > 0 && <div className="use-text-layers"><div className="slot-list-heading"><strong>文字图层</strong><span>{textLayers.length}</span></div><div className="use-text-layer-list">{textLayers.map((layer) => {
-          const values = Array.isArray(textValueLists[layer.id]) && textValueLists[layer.id].length ? textValueLists[layer.id] : [String(layer.text || '')];
-          const open = textBatchOpenId === layer.id;
-          return <div key={layer.id} className="use-text-layer-field"><span className="use-text-layer-name" title={layer.name}>{layer.name}</span><textarea value={layer.text || ''} rows={Math.max(1, String(layer.text || '').split('\n').length)} onFocus={() => { finishTextEditing(); setSelectedId(layer.id); setCropModeId(null); }} onChange={(event) => updateTextLayerById(layer.id, event.target.value)}/><div ref={open ? textBatchRef : undefined} className="batch-text-control"><button type="button" className={open ? 'batch-text-trigger active' : 'batch-text-trigger'} title="为批量图片或 GIF 的每轮生成设置不同文字" onClick={(event) => { event.stopPropagation(); setTextBatchOpenId((current) => current === layer.id ? null : layer.id); }}>+{values.length}</button>{open && <div className="batch-text-popover" onPointerDown={(event) => event.stopPropagation()}><div className="batch-text-heading"><strong>批次文本</strong><span>不足时使用第 1 条</span></div><div className="batch-text-list">{values.map((value, index) => <div className="batch-text-row" key={index}><span>{index + 1}</span><textarea value={value} rows={Math.max(1, String(value).split('\n').length)} onChange={(event) => replaceTextValues(layer.id, values.map((item, itemIndex) => itemIndex === index ? event.target.value : item))}/><button type="button" title="删除此条" disabled={values.length <= 1} onClick={() => replaceTextValues(layer.id, values.filter((_, itemIndex) => itemIndex !== index))}><X size={14}/></button></div>)}</div><button type="button" className="batch-text-add" onClick={() => replaceTextValues(layer.id, [...values, ''])}>+ 添加一条</button></div>}</div></div>;
-        })}</div></div>}
+        {textLayers.length > 0 && <div className="use-text-layers">
+          <div className="slot-list-heading"><strong>文字图层</strong><span>{textLayers.length}</span></div>
+          <div className="use-text-layer-list">{textLayers.map((layer) => {
+            const values = Array.isArray(textValueLists[layer.id]) && textValueLists[layer.id].length ? textValueLists[layer.id] : [String(layer.text || '')];
+            const open = textBatchOpenId === layer.id;
+            return <div key={layer.id} className="use-text-layer-field">
+              <span className="use-text-layer-name" title={layer.name}>{layer.name}</span>
+              <div className="use-text-input-wrap">
+                <textarea value={layer.text || ''} rows={Math.max(1, String(layer.text || '').split('\n').length)} onFocus={() => { finishTextEditing(); setSelectedId(layer.id); setCropModeId(null); }} onChange={(event) => updateTextLayerById(layer.id, event.target.value)}/>
+                <div ref={open ? textBatchRef : undefined} className="batch-text-control">
+                  <button type="button" className={open ? 'batch-text-trigger active' : 'batch-text-trigger'} title="为批量图片或 GIF 的每轮生成设置不同文字" onClick={(event) => toggleTextBatchPopover(event, layer.id)}>{values.length > 1 ? '+' + values.length : '+'}</button>
+                  {open && <div className="batch-text-popover" style={textBatchPopoverStyle} onPointerDown={(event) => event.stopPropagation()}>
+                    <div className="batch-text-heading"><strong>批次文本</strong><span>不足时使用第 1 条</span></div>
+                    <div className="batch-text-list">{values.map((value, index) => <div className="batch-text-row" key={index}>
+                      <span>{index + 1}</span>
+                      <textarea value={value} rows={Math.max(1, String(value).split('\n').length)} onChange={(event) => replaceTextValues(layer.id, values.map((item, itemIndex) => itemIndex === index ? event.target.value : item))}/>
+                      <button type="button" title="删除此条" disabled={values.length <= 1} onClick={() => replaceTextValues(layer.id, values.filter((_, itemIndex) => itemIndex !== index))}><X size={14}/></button>
+                    </div>)}</div>
+                    <button type="button" className="batch-text-add" onClick={() => replaceTextValues(layer.id, [...values, ''])}>+ 添加一条</button>
+                  </div>}
+                </div>
+              </div>
+            </div>;
+          })}</div>
+        </div>}
         <div className="export-settings"><div className="slot-list-heading"><strong>导出设置</strong></div><div className="export-setting-row"><label><span>格式</span><select value={exportFormat} onChange={(event) => { const value = event.target.value; setExportFormat(value); if (value === 'jpg') setTransparent(false); }}><option value="png">PNG</option><option value="jpg">JPEG</option><option value="webp">WebP</option><option value="gif">GIF 动图</option></select></label><label title={exportScaleHint}><span title={exportScaleHint}>倍率</span><select title={exportScaleHint} value={exportScale} onChange={(event) => setExportScale(Number(event.target.value))}><option value="1" title={exportScaleHint}>1x</option><option value="2" title={exportScaleHint}>2x</option><option value="3" title={exportScaleHint}>3x</option></select></label></div><label className="check-row"><input type="checkbox" disabled={exportFormat === 'jpg'} checked={transparent} onChange={(event) => setTransparent(event.target.checked)}/><span>透明画布背景</span></label></div>
         <button type="button" className="secondary-button group-roster-import-button" title="选择 xlsx 群名单，按“工号”列下载成员头像，并可按工号、中文名、英文名或昵称依次替换文字图层。" disabled={groupRosterBusy} onClick={() => groupRosterInput.current?.click()}><Upload size={16}/>{groupRosterBusy ? '正在导入群名单（xlsx）' : '导入群名单（xlsx）'}</button>
         <input ref={groupRosterInput} className="hidden-input" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) chooseGroupRosterFile(file); }}/>
@@ -5443,7 +5488,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       <section className="result-area">
         <div className="result-heading"><div><p className="eyebrow">第 2 步</p><h2>生成结果</h2></div><div className="result-heading-actions"><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>{result && <div className="result-actions"><button className="primary-button" onClick={copyAgain}>{copied ? <Check size={17}/> : <Copy size={17}/>}{exportFormat === 'gif' ? '复制 GIF' : '复制图片'}</button></div>}</div></div>
         <div className="result-stage has-result" onWheel={handleResultWheel} onContextMenu={openContextMenu} onDragStart={(event) => event.preventDefault()} onDragOver={(event) => { if (Array.from(event.dataTransfer.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropOnSlot}>
-          <UseStage composition={composition} slotSources={slotSources} slotSourceLists={slotSourceLists} slotTransforms={slotTransforms} selectedId={selectedId} setSelectedId={setSelectedId} updateLayer={updateLayer} cropModeId={cropModeId} setCropModeId={setCropModeId} updatePhotoTransform={updatePhotoTransform} onRequestSlot={requestSlotImage} zoom={zoom} pan={pan} panning={panning} onPanStart={beginPan} transparent={transparent} lockAspectRatio={lockAspectRatio} textEditingId={textEditingId} textSelection={textSelection} onEditText={editTextLayer} onTextChange={updateTextLayer} onTextSelectionChange={setTextSelection} onTextDone={finishTextEditing}/>
+          <UseStage composition={composition} slotSources={slotSources} slotSourceLists={slotSourceLists} slotTransforms={slotTransforms} selectedId={selectedId} setSelectedId={setSelectedId} updateLayer={updateLayer} cropModeId={cropModeId} setCropModeId={setCropModeId} updatePhotoTransform={updatePhotoTransform} onRequestSlot={requestSlotImage} zoom={zoom} pan={pan} panning={panning} onPanStart={beginPan} transparent={transparent} textEditingId={textEditingId} textSelection={textSelection} onEditText={editTextLayer} onTextChange={updateTextLayer} onTextSelectionChange={setTextSelection} onTextDone={finishTextEditing}/>
         </div>
       </section>
     </div>
