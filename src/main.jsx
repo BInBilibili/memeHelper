@@ -817,7 +817,7 @@ async function drawEraseMask(ctx, layer) {
 }
 
 function layerEffectInsets(layer) {
-  const border = borderWidthOf(layer);
+  const border = borderPositionOf(layer) === 'outer' ? borderWidthOf(layer) : 0;
   if (layer.type !== 'text') return { left: border, top: border, right: border, bottom: border };
   const text = String(layer.text || '');
   const stroke = Math.max(...Array.from({ length: text.length || 1 }, (_, index) => textStyleAt(layer, Math.min(index, Math.max(0, text.length - 1))).strokeWidth));
@@ -834,6 +834,10 @@ function layerEffectInsets(layer) {
 
 function borderWidthOf(layer) {
   return Math.max(0, Number(layer.borderWidth) || 0);
+}
+
+function borderPositionOf(layer) {
+  return layer?.borderPosition === 'inner' ? 'inner' : 'outer';
 }
 
 const LAYER_BLEND_MODES = [
@@ -875,7 +879,10 @@ function aspectRatioLockedOf(layer) {
 }
 
 function drawLayerBorder(ctx, layer) {
-  const borderWidth = borderWidthOf(layer);
+  const requestedWidth = borderWidthOf(layer);
+  if (!requestedWidth) return;
+  const inner = borderPositionOf(layer) === 'inner';
+  const borderWidth = inner ? Math.min(requestedWidth, Math.max(0, Math.min(layer.width, layer.height))) : requestedWidth;
   if (!borderWidth) return;
   const multiCount = Math.max(0, Number(layer.multiPhotoCount) || 0);
   if (layer.type === 'slot' && multiPhotoLayoutOf(layer) !== 'none' && multiCount > 1) {
@@ -892,13 +899,16 @@ function drawLayerBorder(ctx, layer) {
   ctx.lineWidth = borderWidth;
   ctx.lineJoin = 'round';
   if (layer.type === 'slot') {
-    const scaleX = layer.width > 0 ? (layer.width + borderWidth) / layer.width : 1;
-    const scaleY = layer.height > 0 ? (layer.height + borderWidth) / layer.height : 1;
+    const delta = inner ? -borderWidth : borderWidth;
+    const scaleX = layer.width > 0 ? Math.max(0, layer.width + delta) / layer.width : 1;
+    const scaleY = layer.height > 0 ? Math.max(0, layer.height + delta) / layer.height : 1;
     ctx.translate(layer.width / 2, layer.height / 2);
     ctx.scale(scaleX, scaleY);
     ctx.translate(-layer.width / 2, -layer.height / 2);
     traceLayerShape(ctx, layer);
     ctx.stroke();
+  } else if (inner) {
+    ctx.strokeRect(borderWidth / 2, borderWidth / 2, Math.max(0, layer.width - borderWidth), Math.max(0, layer.height - borderWidth));
   } else {
     ctx.strokeRect(-borderWidth / 2, -borderWidth / 2, layer.width + borderWidth, layer.height + borderWidth);
   }
@@ -1139,6 +1149,25 @@ async function renderAnimatedTemplate(template, replacements = {}, photoTransfor
   return desktop.encodeGifFrames(outputFrames, null);
 }
 
+function batchTextAt(values, index, fallback = '') {
+  if (Array.isArray(values) && index < values.length) return String(values[index] ?? '');
+  if (Array.isArray(values) && values.length) return String(values[0] ?? '');
+  return String(fallback ?? '');
+}
+
+function compositionForBatchIndex(composition, textValueLists = {}, index = 0) {
+  if (!composition?.layers?.length) return composition;
+  let changed = false;
+  const layers = composition.layers.map((layer) => {
+    if (layer.type !== 'text' || !Array.isArray(textValueLists[layer.id])) return layer;
+    const text = batchTextAt(textValueLists[layer.id], index, layer.text);
+    if (text === String(layer.text || '')) return layer;
+    changed = true;
+    return fitTextLayerToContent({ ...layer, ...updateTextContent(layer, text) });
+  });
+  return changed ? { ...composition, layers } : composition;
+}
+
 async function renderAnimatedBatchTemplate(template, slotId, sources = [], replacements = {}, photoTransforms = {}, options = {}) {
   const usableSources = sources.filter(Boolean);
   if (!slotId || !usableSources.length) {
@@ -1148,8 +1177,9 @@ async function renderAnimatedBatchTemplate(template, slotId, sources = [], repla
   for (let index = 0; index < usableSources.length; index += 1) {
     if (options.signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
     const source = usableSources[index];
+    const batchTemplate = compositionForBatchIndex(template, options.textValueLists, index);
     const dataUrl = await renderAnimatedTemplate(
-      template,
+      batchTemplate,
       { ...replacements, [slotId]: source },
       { ...photoTransforms, [slotId]: photoTransforms[slotId] || { zoom: 1, offsetX: 0, offsetY: 0 } },
       options
@@ -4133,21 +4163,26 @@ function useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseS
 }
 
 function LayerBorderShape({ layer }) {
-  const borderWidth = Math.min(borderWidthOf(layer), Math.max(0, Math.min(layer.width, layer.height)));
+  const requestedWidth = borderWidthOf(layer);
+  const inner = borderPositionOf(layer) === 'inner';
+  const borderWidth = inner ? Math.min(requestedWidth, Math.max(0, Math.min(layer.width, layer.height))) : requestedWidth;
   if (!borderWidth) return null;
   const multiCount = Math.max(0, Number(layer.multiPhotoCount) || 0);
   if (layer.type === 'slot' && multiPhotoLayoutOf(layer) !== 'none' && multiCount > 1) {
     return <>{multiPhotoCells(layer, multiCount).map((cell, index) => <Group key={`${layer.id}-border-${index}`} x={cell.x} y={cell.y}><LayerBorderShape layer={{ ...layer, width: cell.width, height: cell.height, multiPhotoCount: 1, multiPhotoCellWidth: undefined, multiPhotoCellHeight: undefined }}/></Group>)}</>;
   }
-  const inset = borderWidth / 2;
+  const inset = inner ? borderWidth / 2 : -borderWidth / 2;
+  const delta = inner ? -borderWidth : borderWidth;
+  const width = Math.max(0, layer.width + delta);
+  const height = Math.max(0, layer.height + delta);
   const props = { stroke: layer.borderColor || '#000000', strokeWidth: borderWidth, lineJoin: 'round', listening: false };
-  if (layer.type !== 'slot') return <Rect x={inset} y={inset} width={Math.max(0, layer.width - borderWidth)} height={Math.max(0, layer.height - borderWidth)} {...props}/>;
-  if (shapeOf(layer) === 'circle') return <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={Math.max(0, (layer.width - borderWidth) / 2)} radiusY={Math.max(0, (layer.height - borderWidth) / 2)} {...props}/>;
+  if (layer.type !== 'slot') return <Rect x={inset} y={inset} width={width} height={height} {...props}/>;
+  if (shapeOf(layer) === 'circle') return <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={width / 2} radiusY={height / 2} {...props}/>;
   if (shapeOf(layer) === 'polygon') {
-    const points = polygonPointsOf(layer).flatMap((point) => [inset + point.x * Math.max(0, layer.width - borderWidth), inset + point.y * Math.max(0, layer.height - borderWidth)]);
+    const points = polygonPointsOf(layer).flatMap((point) => [inset + point.x * width, inset + point.y * height]);
     return <Line points={points} closed {...props}/>;
   }
-  return <Rect x={inset} y={inset} width={Math.max(0, layer.width - borderWidth)} height={Math.max(0, layer.height - borderWidth)} cornerRadius={shapeOf(layer) === 'rounded' ? Math.max(0, cornerRadiusOf(layer) - inset) : 0} {...props}/>;
+  return <Rect x={inset} y={inset} width={width} height={height} cornerRadius={shapeOf(layer) === 'rounded' ? Math.max(0, cornerRadiusOf(layer) - inset) : 0} {...props}/>;
 }
 
 function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, selected = false, source, sources, paintSource, eraseSource, mosaicSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
@@ -4167,7 +4202,7 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
     Object.assign(common, { onDragStart, onDragMove, onDragEnd: onDragEnd || ((event) => onChange({ x: Math.round(event.target.x() - layer.width / 2), y: Math.round(event.target.y() - layer.height / 2) })) });
     if (onTransformEnd !== false) common.onTransformEnd = onTransformEnd || ((event) => { const node = event.target; const sx = node.scaleX(), sy = node.scaleY(); const width = Math.max(10, Math.round(node.width() * sx)); const height = Math.max(10, Math.round(node.height() * sy)); node.scaleX(1); node.scaleY(1); onChange({ x: Math.round(node.x() - width / 2), y: Math.round(node.y() - height / 2), width, height, rotation: Math.round(node.rotation()) }); });
   }
-  if (maskedResult && !cropMode) return <Group {...common}><KonvaImage image={maskedResult.canvas} x={-maskedResult.insets.left} y={-maskedResult.insets.top} width={maskedResult.logicalWidth} height={maskedResult.logicalHeight}/><LayerBorderShape layer={layer}/></Group>;
+  if (maskedResult && !cropMode) return <Group {...common}><KonvaImage image={maskedResult.canvas} x={-maskedResult.insets.left} y={-maskedResult.insets.top} width={maskedResult.logicalWidth} height={maskedResult.logicalHeight}/></Group>;
   if (layer.type === 'text') {
     return <Group {...common}>
       <Rect width={layer.width} height={layer.height} fill={layer.background || 'rgba(0,0,0,.001)'}/>
@@ -4375,7 +4410,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
     {isGifSource(layer.src) && gifTimeline?.frames?.length ? <div className="property-section"><h4>GIF 帧设置</h4><div className="gif-frame-property"><img src={gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl} alt="当前 GIF 帧"/><div><strong>第 {gifTimeline.frameIndex + 1} 帧{gifTimeline.selectedIndexes?.length > 1 ? ` · 已选 ${gifTimeline.selectedIndexes.length} 帧` : ''}</strong><NumberField label="播放时间" suffix="ms" value={Math.max(20, Number(gifTimeline.frames[gifTimeline.frameIndex]?.delayMs) || 100)} min={20} max={60000} presets={false} menuActions={[{ label: '应用到所有帧', onSelect: () => onGifFrameDelay?.(gifTimeline.frameIndex, Math.max(20, Number(gifTimeline.frames[gifTimeline.frameIndex]?.delayMs) || 100), true) }]} onChange={(value) => onGifFrameDelay?.(gifTimeline.frameIndex, value)}/></div></div></div> : null}
     {gifFrameCount > 0 && !isGifSource(layer.src) ? <div className="property-section"><h4>出现帧</h4><div ref={frameMenuRef} className="frame-visibility-control"><input value={layer.visibleFrames || ''} placeholder="留空表示所有帧均显示" onChange={(event) => update({ visibleFrames: event.target.value })}/><button type="button" title="选择帧" onClick={() => setFrameMenuOpen((open) => !open)}>+</button>{frameMenuOpen && <div className="frame-visibility-menu">{Array.from({ length: gifFrameCount }, (_, index) => index + 1).map((frame) => <button type="button" key={frame} className={visibleFrameValues.includes(frame) ? 'active' : ''} onClick={() => toggleVisibleFrame(frame)}>{frame}</button>)}</div>}</div></div> : null}
     {layer.type === 'text' && <>
-      <div className="property-section text-content-section"><h4>文字内容</h4><textarea value={layer.text || ''} onPointerDown={onBeginTextInteraction} onFocus={onBeginTextInteraction} onChange={(event) => { onBeginTextInteraction?.(); updateText(event.target.value); onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }); }} onSelect={(event) => onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}/><label className="check-row text-lock-row"><input type="checkbox" checked={Boolean(layer.textLocked)} onChange={(event) => update({ textLocked: event.target.checked })}/><span>锁定文本</span></label></div>
+      <div className="property-section text-content-section"><h4>文字内容</h4><textarea value={layer.text || ''} onPointerDown={onBeginTextInteraction} onFocus={onBeginTextInteraction} onChange={(event) => { onBeginTextInteraction?.(); updateText(event.target.value); onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }); }} onSelect={(event) => onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}/><label className="check-row text-lock-row"><input type="checkbox" checked={Boolean(layer.textLocked)} onChange={(event) => update({ textLocked: event.target.checked })}/><span>禁用替换文本</span></label></div>
       <div className="property-section"><h4>字体{textSelection && textSelection.start !== textSelection.end ? ' · 已选 ' + Math.abs(textSelection.end - textSelection.start) + ' 字' : ''}</h4><select className="property-select" value={activeTextStyle.fontFamily} onChange={(event) => updateTextStyle({ fontFamily: event.target.value })}><option value="Microsoft YaHei">微软雅黑</option><option value="SimHei">黑体</option><option value="SimSun">宋体</option><option value="KaiTi">楷体</option><option value="Arial">Arial</option><option value="Segoe UI">Segoe UI</option></select><div className="text-format-row"><div><span>字号</span><NumericInput min={TEXT_SIZE_MIN} max={TEXT_SIZE_MAX} presets={FONT_SIZE_PRESETS} value={activeTextStyle.fontSize} onCommit={(fontSize) => updateTextStyle({ fontSize })}/></div><input className="color-swatch" type="color" title="文字颜色" value={activeTextStyle.fill} onChange={(event) => updateTextStyle({ fill: event.target.value })}/></div><NumberField label="间距" value={activeTextStyle.lineHeight} min={0} max={20} step={0.05} integer={false} presets={LINE_HEIGHT_PRESETS} onChange={(lineHeight) => updateTextStyle({ lineHeight })}/><label className="check-row" title="内容超出文本框时自动缩小字号；关闭后保持设定字号，超出部分可能被裁切。"><input type="checkbox" checked={Boolean(layer.autoFit)} onChange={(event) => update({ autoFit: event.target.checked })}/><span>文字自动适配文本框</span></label><div className="format-buttons"><button type="button" title="加粗" className={fontTokenSet.has('bold') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleFont('bold')}><Bold size={17}/></button><button type="button" title="斜体" className={fontTokenSet.has('italic') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleFont('italic')}><Italic size={17}/></button><button type="button" title="下划线" className={decorationTokenSet.has('underline') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleDecoration('underline')}><Underline size={17}/></button><button type="button" title="删除线" className={decorationTokenSet.has('line-through') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleDecoration('line-through')}><Strikethrough size={17}/></button></div><div className="format-buttons align-buttons"><button title="左对齐" className={layer.align === 'left' ? 'active' : ''} onClick={() => update({ align: 'left' })}><AlignLeft size={17}/></button><button title="居中" className={layer.align === 'center' ? 'active' : ''} onClick={() => update({ align: 'center' })}><AlignCenter size={17}/></button><button title="右对齐" className={layer.align === 'right' ? 'active' : ''} onClick={() => update({ align: 'right' })}><AlignRight size={17}/></button></div></div>
       <div className="property-section"><h4>文字效果</h4><div className="effect-grid"><label><span>外描边</span><input type="color" value={activeTextStyle.stroke} onChange={(event) => updateTextStyle({ stroke: event.target.value })}/></label><NumberField label="外描边宽度" value={activeTextStyle.strokeWidth} min={0} max={30} presets={EFFECT_SIZE_PRESETS} onChange={(strokeWidth) => updateTextStyle({ strokeWidth })}/><label><span>背景</span><input type="color" value={layer.background || '#ffffff'} onChange={(event) => update({ background: event.target.value })}/></label><NumberField label="背景内边距" value={layer.backgroundPadding || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(backgroundPadding) => update({ backgroundPadding })}/></div><button className="wide-property-button subtle" onClick={() => update({ background: layer.background ? '' : '#ffffff' })}>{layer.background ? '移除文字背景' : '启用文字背景'}</button><label className="check-row"><input type="checkbox" checked={Boolean(layer.shadowEnabled)} onChange={(event) => update({ shadowEnabled: event.target.checked })}/><span>启用文字阴影</span></label>{layer.shadowEnabled && <div className="effect-grid"><label><span>阴影颜色</span><input type="color" value={layer.shadowColor || '#000000'} onChange={(event) => update({ shadowColor: event.target.value })}/></label><NumberField label="模糊" value={layer.shadowBlur || 0} min={0} max={50} presets={EFFECT_SIZE_PRESETS} onChange={(shadowBlur) => update({ shadowBlur })}/><NumberField label="水平偏移" value={layer.shadowOffsetX || 0} onChange={(shadowOffsetX) => update({ shadowOffsetX })}/><NumberField label="垂直偏移" value={layer.shadowOffsetY || 0} onChange={(shadowOffsetY) => update({ shadowOffsetY })}/></div>}</div>
     </>}
@@ -4384,7 +4419,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
     </div>
     <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} presets={false} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} presets={false} onChange={(y) => update({ y })}/></div><div className="rotation-inline-row"><div className="rotation-inline-control"><h4>旋转</h4><div className="rotation-inline-input"><NumericInput value={Number(layer.rotation) || 0} min={-360} max={360} presets={ROTATION_PRESETS} onCommit={(rotation) => update({ rotation })}/></div></div><input className="range" type="range" min="-180" max="180" value={Number(layer.rotation) || 0} onChange={(event) => { const rotation = Number(event.target.value); update({ rotation: rotationShiftRef.current ? Math.round(rotation / 45) * 45 : rotation }); }}/></div></div>
     <div className="property-section"><div className="property-heading-row"><h4>尺寸</h4><button type="button" className={`aspect-lock-button ${aspectRatioLockedOf(layer) ? 'active' : ''}`} title={aspectRatioLockedOf(layer) ? '取消锁定宽高比' : '锁定宽高比'} onClick={() => update({ aspectRatioLocked: !aspectRatioLockedOf(layer) })}>{aspectRatioLockedOf(layer) ? <Lock size={13}/> : <Unlock size={13}/>}<span>宽高比</span></button></div><div className="property-grid"><NumberField label="宽" value={layer.width} min={10} presets={SIZE_PRESETS} onChange={(width) => updateDimension('width', width)}/><NumberField label="高" value={layer.height} min={10} presets={SIZE_PRESETS} onChange={(height) => updateDimension('height', height)}/></div></div>
-    <div className="property-section"><h4>边框</h4><div className="border-controls"><label><span>颜色</span><input type="color" value={layer.borderColor || '#000000'} onChange={(event) => update({ borderColor: event.target.value })}/></label><NumberField label="大小" value={layer.borderWidth || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(borderWidth) => update({ borderWidth })}/></div></div>
+    <div className="property-section"><h4>边框</h4><div className="border-controls"><label><span>颜色</span><input type="color" value={layer.borderColor || '#000000'} onChange={(event) => update({ borderColor: event.target.value })}/></label><label><span>类型</span><select className="property-select" value={borderPositionOf(layer)} onChange={(event) => update({ borderPosition: event.target.value })}><option value="outer">外边框</option><option value="inner">内边框</option></select></label><NumberField label="大小" value={layer.borderWidth || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(borderWidth) => update({ borderWidth })}/></div></div>
     {layer.type === 'slot' && <>
       <div className="property-section"><h4>槽位形状</h4><div className="shape-segmented four"><button className={shapeOf(layer) === 'rect' ? 'active' : ''} onClick={() => update({ shape: 'rect' })}>矩形</button><button className={shapeOf(layer) === 'circle' ? 'active' : ''} onClick={() => update({ shape: 'circle' })}>圆形</button><button className={shapeOf(layer) === 'rounded' ? 'active' : ''} onClick={() => update({ shape: 'rounded', cornerRadius: layer.cornerRadius ?? 36 })}>圆角</button><button className={shapeOf(layer) === 'polygon' ? 'active' : ''} onClick={() => update({ shape: 'polygon', polygonSides: layer.polygonSides || 5, polygonPoints: polygonPointsOf(layer) })}>多边形</button></div>{shapeOf(layer) === 'rounded' && <div className="rounded-radius-control"><NumberField label="圆角半径" value={layer.cornerRadius ?? 36} min={0} max={Math.floor(Math.min(layer.width, layer.height) / 2)} presets={[0, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128]} onChange={(cornerRadius) => update({ cornerRadius })}/></div>}{shapeOf(layer) === 'polygon' && <div className="polygon-controls"><NumberField label="边数" value={layer.polygonSides || 5} min={POLYGON_MIN_SIDES} max={POLYGON_MAX_SIDES} presets={[3, 4, 5, 6, 8, 10, 12, 16]} onChange={(polygonSides) => update({ polygonSides, polygonPoints: regularPolygonPoints(polygonSides) })}/>{polygonPointsOf(layer).map((point, index) => <label key={index} className="polygon-radius"><span>顶点 {index + 1}</span><input type="range" min="10" max="100" value={polygonRadiusPercent(point)} onChange={(event) => update({ polygonPoints: polygonPointsOf(layer).map((item, itemIndex) => itemIndex === index ? polygonPointAtRadius(item, Number(event.target.value)) : item) })}/><output>{polygonRadiusPercent(point)}%</output></label>)}</div>}</div>
       <div className="property-section slot-fill-section"><h4>照片 / 颜色填充</h4>
@@ -4393,8 +4428,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
           <label className="check-row replacement-disable-row" title="禁用后，使用模板时不再要求添加照片；槽位保持透明，但颜色填充和边框仍会显示。"><input type="checkbox" disabled={colorFilled} checked={Boolean(layer.replacementDisabled)} onChange={(event) => { setBindingMenuOpen(false); setMultiPhotoMenuOpen(false); update({ replacementDisabled: event.target.checked }); }}/><span>禁用替换照片</span></label>
           <div className="slot-option-heading"><strong>照片适配</strong>{colorFilled && <small>颜色填充已启用</small>}</div>
           <div className="segmented"><button disabled={disabledReplacement || colorFilled} className={layer.fit === 'cover' ? 'active' : ''} onClick={() => update({ fit: 'cover' })}>裁切铺满</button><button disabled={disabledReplacement || colorFilled} className={layer.fit === 'fill' ? 'active' : ''} onClick={() => update({ fit: 'fill' })}>拉伸填满</button></div>
-          <div ref={bindingMenuRef} className={`property-dropdown slot-inline-field slot-binding-field ${disabledReplacement || colorFilled ? 'disabled' : ''}`}><strong>绑定图层</strong><button type="button" className="property-dropdown-trigger" disabled={disabledReplacement || colorFilled} aria-expanded={bindingMenuOpen} onClick={() => setBindingMenuOpen((open) => !open)}><span>{boundLayerName}</span><ChevronDown size={14}/></button>{bindingMenuOpen && !disabledReplacement && !colorFilled && <div className="property-dropdown-menu"><button type="button" className={!layer.boundLayerId ? 'active' : ''} onClick={() => { update({ boundLayerId: undefined }); setBindingMenuOpen(false); }}>不绑定</button>{bindingCandidates.map((candidate) => <button type="button" key={candidate.id} className={layer.boundLayerId === candidate.id ? 'active' : ''} onClick={() => { update({ boundLayerId: candidate.id }); setBindingMenuOpen(false); }}>{candidate.name}</button>)}</div>}</div>
-          {bindingActive && <p className="property-note">使用模板时跟随绑定的可替换图层，不会单独显示在可替换图层列表中。</p>}
+          <div ref={bindingMenuRef} className={`property-dropdown slot-inline-field slot-binding-field ${disabledReplacement || colorFilled ? 'disabled' : ''}`} title="使用模板时跟随绑定的可替换图层，不会单独显示在可替换图层列表中。"><strong>绑定图层</strong><button type="button" className="property-dropdown-trigger" disabled={disabledReplacement || colorFilled} aria-expanded={bindingMenuOpen} onClick={() => setBindingMenuOpen((open) => !open)}><span>{boundLayerName}</span><ChevronDown size={14}/></button>{bindingMenuOpen && !disabledReplacement && !colorFilled && <div className="property-dropdown-menu"><button type="button" className={!layer.boundLayerId ? 'active' : ''} onClick={() => { update({ boundLayerId: undefined }); setBindingMenuOpen(false); }}>不绑定</button>{bindingCandidates.map((candidate) => <button type="button" key={candidate.id} className={layer.boundLayerId === candidate.id ? 'active' : ''} onClick={() => { update({ boundLayerId: candidate.id }); setBindingMenuOpen(false); }}>{candidate.name}</button>)}</div>}</div>
           <div ref={multiPhotoMenuRef} className={`property-dropdown slot-inline-field multi-photo-layout-field ${disabledReplacement || colorFilled || bindingActive ? 'disabled' : ''}`}><strong>多图排列</strong><button type="button" className="property-dropdown-trigger" disabled={disabledReplacement || colorFilled || bindingActive} aria-expanded={multiPhotoMenuOpen} onClick={() => setMultiPhotoMenuOpen((open) => !open)}><span>{multiPhotoLayoutLabel(layer) || '无'}</span><ChevronDown size={14}/></button>{multiPhotoMenuOpen && !disabledReplacement && !colorFilled && !bindingActive && <div className="property-dropdown-menu">{MULTI_PHOTO_LAYOUT_OPTIONS.map((option) => <button type="button" key={option.value} className={multiPhotoLayoutOf(layer) === option.value ? 'active' : ''} onClick={() => { update({ multiPhotoLayout: option.value }); setMultiPhotoMenuOpen(false); }}>{option.label}</button>)}</div>}</div>
           {multiPhotoLayoutOf(layer) === 'grid' && <label className={`multi-photo-columns ${disabledReplacement || colorFilled || bindingActive ? 'disabled' : ''}`}><strong>每行最多</strong><NumericInput className="multi-photo-count-input" disabled={disabledReplacement || colorFilled || bindingActive} min={1} max={12} presets={[1,2,3,4,5,6,7,8,9,10,11,12]} value={Number(layer.multiPhotoColumns) || 2} onCommit={(value) => update({ multiPhotoColumns: value })}/><span>张</span></label>}
         </div>
@@ -4588,7 +4622,8 @@ function createUseSession(template) {
     slotNames: {},
     slotSourceLists: {},
     slotNameLists: {},
-    slotTransforms: {}
+    slotTransforms: {},
+    textValueLists: {}
   };
 }
 
@@ -4606,6 +4641,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   const { composition, slotSources, slotNames, slotTransforms } = session;
   const slotSourceLists = session.slotSourceLists || {};
   const slotNameLists = session.slotNameLists || {};
+  const textValueLists = session.textValueLists || {};
   const [result, setResult] = useState('');
   const [copied, setCopied] = useState(false);
   const {
@@ -4628,6 +4664,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   const [topMenu, setTopMenu] = useState(false);
   const [groupRosterChoice, setGroupRosterChoice] = useState(null);
   const [groupRosterBusy, setGroupRosterBusy] = useState(false);
+  const [textBatchOpenId, setTextBatchOpenId] = useState(null);
   const templateHasGif = template.layers.some((layer) => isGifSource(layer.src));
   const [exportFormat, setExportFormat] = useState(() => templateHasGif ? 'gif' : 'png');
   const [exportScale, setExportScale] = useState(1);
@@ -4640,6 +4677,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
   const renderRequest = useRef(0);
   const topMenuRef = useRef();
   const slotGalleryRef = useRef();
+  const textBatchRef = useRef();
   const groupRosterInput = useRef();
   const slots = composition.layers.filter(isReplaceableSlot);
   const textLayers = composition.layers.filter((layer) => layer.type === 'text' && !layer.textLocked);
@@ -4674,16 +4712,39 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     setTextEditingId(id);
     setTextSelection({ id, start: 0, end: String(layer.text || '').length });
   }, [composition.layers]);
-  const updateTextLayerById = useCallback((id, text) => {
+  const replaceTextValues = useCallback((id, values) => {
+    const normalized = Array.isArray(values) && values.length
+      ? values.map((value) => String(value ?? ''))
+      : [''];
     commitSession((previous) => ({
       ...previous,
+      textValueLists: { ...(previous.textValueLists || {}), [id]: normalized },
       composition: {
         ...previous.composition,
         layers: previous.composition.layers.map((layer) => layer.id === id
-          ? fitTextLayerToContent({ ...layer, ...updateTextContent(layer, text) })
+          ? fitTextLayerToContent({ ...layer, ...updateTextContent(layer, normalized[0]) })
           : layer)
       }
     }));
+  }, [commitSession]);
+  const updateTextLayerById = useCallback((id, text) => {
+    commitSession((previous) => {
+      const layer = previous.composition.layers.find((item) => item.id === id);
+      const existing = previous.textValueLists?.[id];
+      const nextValues = Array.isArray(existing) && existing.length
+        ? [String(text), ...existing.slice(1)]
+        : [String(text)];
+      return {
+        ...previous,
+        textValueLists: { ...(previous.textValueLists || {}), [id]: nextValues },
+        composition: {
+          ...previous.composition,
+          layers: previous.composition.layers.map((item) => item.id === id
+            ? fitTextLayerToContent({ ...item, ...updateTextContent(item, text) })
+            : item)
+        }
+      };
+    });
   }, [commitSession]);
   const updateTextLayer = useCallback((text) => {
     if (textEditingId) updateTextLayerById(textEditingId, text);
@@ -4835,18 +4896,39 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     });
   }, [commitSession, template]);
 
-  const pasteClipboardImage = useCallback(async (targetId, append = false) => {
+  const replaceSlotSourceAt = useCallback((slotId, index, dataUrl, name = '') => {
+    commitSession((previous) => {
+      const currentSources = previous.slotSourceLists?.[slotId] || (previous.slotSources[slotId] ? [previous.slotSources[slotId]] : []);
+      const currentNames = previous.slotNameLists?.[slotId] || (previous.slotNames[slotId] ? [previous.slotNames[slotId]] : []);
+      if (!Number.isInteger(index) || index < 0 || index >= currentSources.length || !dataUrl) return previous;
+      const nextSources = [...currentSources];
+      const nextNames = [...currentNames];
+      nextSources[index] = dataUrl;
+      nextNames[index] = name;
+      return {
+        ...previous,
+        slotSources: { ...previous.slotSources, [slotId]: nextSources[0] },
+        slotNames: { ...previous.slotNames, [slotId]: nextNames[0] || '' },
+        slotSourceLists: { ...(previous.slotSourceLists || {}), [slotId]: nextSources },
+        slotNameLists: { ...(previous.slotNameLists || {}), [slotId]: nextNames }
+      };
+    });
+    setSelectedId(slotId);
+  }, [commitSession]);
+
+  const pasteClipboardImage = useCallback(async (targetId, append = false, replaceIndex = null) => {
     const slotId = targetId || selectedId || composition.layers.find(isReplaceableSlot)?.id;
     if (!slotId) return notify('模板中没有可替换照片图层', 'error');
     try {
       const dataUrl = await desktop.readClipboardImage();
       if (!dataUrl) return notify('剪贴板中没有图片', 'error');
-      if (append) replaceSlotSources(slotId, [dataUrl], ['剪贴板图片'], true);
+      if (Number.isInteger(replaceIndex)) replaceSlotSourceAt(slotId, replaceIndex, dataUrl, '剪贴板图片');
+      else if (append) replaceSlotSources(slotId, [dataUrl], ['剪贴板图片'], true);
       else replaceSlotSource(slotId, dataUrl, '剪贴板图片');
     } catch (error) {
       notify(`读取剪贴板失败：${error?.message || error}`, 'error');
     }
-  }, [composition.layers, notify, replaceSlotSource, replaceSlotSources, selectedId]);
+  }, [composition.layers, notify, replaceSlotSource, replaceSlotSourceAt, replaceSlotSources, selectedId]);
 
   const nudgeSelectedPhoto = useCallback((key, distance) => {
     const layer = composition.layers.find((item) => item.id === selectedId && item.type === 'slot');
@@ -4966,72 +5048,86 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       const imported = downloads
         .map((download, index) => ({ download, row: rows[index] }))
         .filter(({ download }) => Boolean(download?.dataUrl));
+      const importedRows = imported.map(({ row }) => row);
 
-      if (imported.length) {
-        if (slots.length === 1) {
-          replaceSlotSources(
-            slots[0].id,
-            imported.map(({ download }) => download.dataUrl),
-            imported.map(({ row }) => `${row.workerId}.jpg`),
-            false
-          );
-        } else {
-          const distributed = imported.slice(0, slots.length);
-          commitSession((previous) => {
-            const next = {
-              ...previous,
-              slotSources: { ...previous.slotSources },
-              slotNames: { ...previous.slotNames },
-              slotSourceLists: { ...(previous.slotSourceLists || {}) },
-              slotNameLists: { ...(previous.slotNameLists || {}) },
-              slotTransforms: { ...previous.slotTransforms }
-            };
-            distributed.forEach(({ download, row }, index) => {
+      if (imported.length || (textField !== 'none' && editableTextLayers.length)) {
+        commitSession((previous) => {
+          const next = {
+            ...previous,
+            slotSources: { ...previous.slotSources },
+            slotNames: { ...previous.slotNames },
+            slotSourceLists: { ...(previous.slotSourceLists || {}) },
+            slotNameLists: { ...(previous.slotNameLists || {}) },
+            slotTransforms: { ...previous.slotTransforms },
+            textValueLists: { ...(previous.textValueLists || {}) },
+            composition: previous.composition
+          };
+
+          if (imported.length && slots.length === 1) {
+            const slotId = slots[0].id;
+            const sources = imported.map(({ download }) => download.dataUrl);
+            const names = imported.map(({ row }) => String(row.workerId) + '.jpg');
+            next.slotSources[slotId] = sources[0];
+            next.slotNames[slotId] = names[0];
+            next.slotSourceLists[slotId] = sources;
+            next.slotNameLists[slotId] = names;
+            next.slotTransforms[slotId] = { zoom: 1, offsetX: 0, offsetY: 0 };
+          } else if (imported.length) {
+            imported.slice(0, slots.length).forEach(({ download, row }, index) => {
               const slotId = slots[index].id;
+              const name = String(row.workerId) + '.jpg';
               next.slotSources[slotId] = download.dataUrl;
-              next.slotNames[slotId] = `${row.workerId}.jpg`;
+              next.slotNames[slotId] = name;
               next.slotSourceLists[slotId] = [download.dataUrl];
-              next.slotNameLists[slotId] = [`${row.workerId}.jpg`];
+              next.slotNameLists[slotId] = [name];
               next.slotTransforms[slotId] = { zoom: 1, offsetX: 0, offsetY: 0 };
             });
-            return next;
-          });
-          setSelectedId(distributed.length ? slots[distributed.length - 1].id : null);
-        }
-      }
-
-      if (textField !== 'none' && editableTextLayers.length) {
-        commitSession((previous) => ({
-          ...previous,
-          composition: {
-            ...previous.composition,
-            layers: previous.composition.layers.map((layer) => {
-              const textIndex = editableTextLayers.findIndex((candidate) => candidate.id === layer.id);
-              if (textIndex < 0 || textIndex >= rows.length) return layer;
-              return fitTextLayerToContent({
-                ...layer,
-                ...updateTextContent(layer, String(rows[textIndex][textField] ?? ''))
-              });
-            })
           }
-        }));
+
+          if (textField !== 'none' && editableTextLayers.length && importedRows.length) {
+            if (editableTextLayers.length === 1) {
+              const targetId = editableTextLayers[0].id;
+              const values = importedRows.map((row) => String(row[textField] ?? ''));
+              next.textValueLists[targetId] = values;
+              next.composition = {
+                ...previous.composition,
+                layers: previous.composition.layers.map((layer) => layer.id === targetId
+                  ? fitTextLayerToContent({ ...layer, ...updateTextContent(layer, values[0] ?? '') })
+                  : layer)
+              };
+            } else {
+              next.composition = {
+                ...previous.composition,
+                layers: previous.composition.layers.map((layer) => {
+                  const textIndex = editableTextLayers.findIndex((candidate) => candidate.id === layer.id);
+                  if (textIndex < 0 || textIndex >= importedRows.length) return layer;
+                  const value = String(importedRows[textIndex][textField] ?? '');
+                  next.textValueLists[layer.id] = [value];
+                  return fitTextLayerToContent({ ...layer, ...updateTextContent(layer, value) });
+                })
+              };
+            }
+          }
+          return next;
+        });
+        if (imported.length) setSelectedId(slots[Math.min(imported.length, slots.length) - 1]?.id || null);
       }
 
       const failed = downloads.filter((download) => !download?.dataUrl);
       if (!imported.length) {
-        const detail = failed[0]?.error ? `：${failed[0].error}` : '';
-        notify(`群名单中的头像均下载失败${detail}`, 'error');
+        const detail = failed[0]?.error ? '：' + failed[0].error : '';
+        notify('群名单中的头像均下载失败' + detail, 'error');
       } else if (failed.length) {
-        notify(`已导入 ${imported.length} 张头像，另有 ${failed.length} 张下载失败`, 'error');
+        notify('已导入 ' + imported.length + ' 张头像，另有 ' + failed.length + ' 张下载失败', 'error');
       } else {
-        notify(`已从群名单导入 ${imported.length} 张头像`);
+        notify('已从群名单导入 ' + imported.length + ' 张头像');
       }
     } catch (error) {
-      notify(`导入群名单失败：${error?.message || error}`, 'error');
+      notify('导入群名单失败：' + (error?.message || error), 'error');
     } finally {
       setGroupRosterBusy(false);
     }
-  }, [commitSession, editableTextLayers, groupRosterBusy, notify, replaceSlotSources, slots]);
+  }, [commitSession, editableTextLayers, groupRosterBusy, notify, slots]);
 
   const chooseGroupRosterFile = useCallback(async (file) => {
     if (!file) return;
@@ -5097,14 +5193,15 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
         mime: outputMime,
          signal: job?.controller.signal,
          onFrameProgress: job ? (value) => updateExport(job, 8 + value * 58, `正在生成 GIF（${Math.round(value * 100)}%）`) : undefined,
-         onBatchProgress: job ? (value) => updateExport(job, 8 + value * 58, `正在合成 GIF（${Math.round(value * 100)}%）`) : undefined
+         onBatchProgress: job ? (value) => updateExport(job, 8 + value * 58, `正在合成 GIF（${Math.round(value * 100)}%）`) : undefined,
+         textValueLists
       })
       : await renderOutput(composition, renderReplacements, slotTransforms, { scale: exportScale, transparent, mime: outputMime, signal: job?.controller.signal });
     if (job && isExportCancelled(job)) return '';
     if (job) updateExport(job, 68, '正在准备复制');
     setResult(dataUrl);
     return dataUrl;
-  }, [batchSlot, batchSources, composition, exportScale, isExportCancelled, outputMime, renderOutput, renderReplacements, slotSources, slotTransforms, transparent, updateExport]);
+  }, [batchSlot, batchSources, composition, exportScale, isExportCancelled, outputMime, renderOutput, renderReplacements, slotSources, slotTransforms, textValueLists, transparent, updateExport]);
 
   const copyAgain = useCallback(async () => {
     const job = beginExport(outputMime === 'image/gif' ? '正在导出 GIF' : '正在导出图片');
@@ -5115,8 +5212,9 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
         const outputs = [];
         for (let index = 0; index < batchSources.length; index += 1) {
           if (isExportCancelled(job)) return;
+          const batchComposition = compositionForBatchIndex(composition, textValueLists, index);
           outputs.push(await renderOutput(
-            composition,
+            batchComposition,
              { ...renderReplacements, [batchSlot.id]: batchSources[index] },
             slotTransforms,
             { scale: exportScale, transparent, mime: outputMime, signal: job.controller.signal }
@@ -5138,7 +5236,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       if (!dataUrl || isExportCancelled(job)) return;
       const clipboardDataUrl = outputMime === 'image/png'
         ? undefined
-         : await renderTemplate(composition, renderReplacements, slotTransforms, { scale: exportScale, transparent, mime: 'image/png', signal: job.controller.signal });
+        : await renderTemplate(compositionForBatchIndex(composition, textValueLists, 0), renderReplacements, slotTransforms, { scale: exportScale, transparent, mime: 'image/png', signal: job.controller.signal });
       if (isExportCancelled(job)) return;
       updateExport(job, 88, '正在复制到剪贴板');
       await desktop.copyImage(dataUrl, clipboardDataUrl);
@@ -5156,7 +5254,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     } finally {
       finishExport(job);
     }
-  }, [batchSlot, batchSources, beginExport, composition, currentResult, exportScale, finishExport, isExportCancelled, notify, outputMime, renderOutput, renderReplacements, slotSources, slotTransforms, transparent, updateExport]);
+  }, [batchSlot, batchSources, beginExport, composition, currentResult, exportScale, finishExport, isExportCancelled, notify, outputMime, renderOutput, renderReplacements, slotSources, slotTransforms, textValueLists, transparent, updateExport]);
 
   const resetUse = useCallback(() => {
     commitSession(createUseSession(template));
@@ -5212,6 +5310,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       setSlotContextMenu(null);
       if (!topMenuRef.current?.contains(event.target)) setTopMenu(false);
       if (!slotGalleryRef.current?.contains(event.target)) setSlotGalleryId(null);
+      if (!textBatchRef.current?.contains(event.target)) setTextBatchOpenId(null);
     };
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('copy', handleCopy);
@@ -5274,13 +5373,14 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     setContextMenu({ x: Math.min(event.clientX, window.innerWidth - 166), y: Math.min(event.clientY, window.innerHeight - 52) });
   };
 
-  const openSlotContextMenu = (event, slotId) => {
+  const openSlotContextMenu = (event, slotId, index = null) => {
     event.preventDefault();
     event.stopPropagation();
     setSelectedId(slotId);
     setContextMenu(null);
     setSlotContextMenu({
       id: slotId,
+      index,
       x: Math.min(event.clientX, window.innerWidth - 166),
       y: Math.max(6, Math.min(event.clientY, window.innerHeight - 90))
     });
@@ -5318,10 +5418,10 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
                   : <ImagePlus size={16}/>}
               </button>
               {source && <IconButton label={cropModeId === layer.id ? '退出裁切' : '裁切照片'} className={cropModeId === layer.id ? 'active slot-crop-button' : 'slot-crop-button'} onClick={() => { setSelectedId(layer.id); setCropModeId((current) => current === layer.id ? null : layer.id); }}><Crop size={16}/></IconButton>}
-              {galleryOpen && <div ref={slotGalleryRef} className="slot-gallery-popover" role="dialog" tabIndex={-1} aria-label={`${layer.name} 已选择的照片`} onPointerDown={(event) => event.stopPropagation()} onDragOver={(event) => { const hasFiles = Array.from(event.dataTransfer?.types || []).includes('Files') || Array.from(event.dataTransfer?.items || []).some((item) => item.kind === 'file'); if (!hasFiles) return; event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'; setSlotDropId(layer.id); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setSlotDropId((current) => current === layer.id ? null : current); }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); setSlotDropId(null); const files = Array.from(event.dataTransfer?.files || []).filter((file) => isImageFileLike(file)); if (files.length) acceptInitialFiles(files, layer.id, true); }}>
+              {galleryOpen && <div ref={slotGalleryRef} className="slot-gallery-popover" role="dialog" tabIndex={-1} aria-label={`${layer.name} 已选择的照片`} onPointerDown={(event) => event.stopPropagation()} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setSlotContextMenu(null); }} onDragOver={(event) => { const hasFiles = Array.from(event.dataTransfer?.types || []).includes('Files') || Array.from(event.dataTransfer?.items || []).some((item) => item.kind === 'file'); if (!hasFiles) return; event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'; setSlotDropId(layer.id); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setSlotDropId((current) => current === layer.id ? null : current); }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); setSlotDropId(null); const files = Array.from(event.dataTransfer?.files || []).filter((file) => isImageFileLike(file)); if (files.length) acceptInitialFiles(files, layer.id, true); }}>
                 <div className="slot-gallery-heading"><div><strong>已选择的照片</strong><span>{gallerySources.length} 张</span></div><IconButton label="收起" onClick={() => setSlotGalleryId(null)}><ChevronUp size={17}/></IconButton></div>
                 <div className="slot-gallery-grid">
-                  {gallerySources.map((gallerySource, index) => <div className="slot-gallery-item" key={`${gallerySource.slice(-32)}-${index}`} title={galleryNames[index] || `第 ${index + 1} 张`}><img src={gallerySource} alt={galleryNames[index] || ''}/><button type="button" aria-label={`移除第 ${index + 1} 张图片`} onClick={() => removeSlotSourceAt(layer.id, index)}><X size={13}/></button></div>)}
+                  {gallerySources.map((gallerySource, index) => <div className="slot-gallery-item" key={`${gallerySource.slice(-32)}-${index}`} title={galleryNames[index] || `第 ${index + 1} 张`} onContextMenu={(event) => openSlotContextMenu(event, layer.id, index)}><img src={gallerySource} alt={galleryNames[index] || ''}/><button type="button" aria-label={`移除第 ${index + 1} 张图片`} onClick={() => removeSlotSourceAt(layer.id, index)}><X size={13}/></button></div>)}
                   <button type="button" className="slot-gallery-add" title="追加图片" onClick={() => requestSlotImage(layer.id, true)}><Plus size={22}/></button>
                 </div>
               </div>}
@@ -5331,7 +5431,11 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
         <label className="check-row" title="开启后，拖动照片图层的边角会按原始宽高比例缩放，避免图片被横向或纵向拉伸变形；关闭后可自由改变宽度和高度。"><input type="checkbox" checked={lockAspectRatio} onChange={(event) => setLockAspectRatio(event.target.checked)}/><span>锁定照片宽高比</span></label>
         {cropLayer && slotSources[cropLayer.id] && <div className="crop-controls"><div className="crop-controls-heading"><strong><Crop size={16}/>裁切照片</strong><IconButton label="完成裁切" onClick={() => setCropModeId(null)}><Check size={16}/></IconButton></div><label className="crop-zoom-field"><span>缩放</span><input type="range" min="1" max="5" step="0.05" value={cropTransform.zoom} onChange={(event) => updatePhotoTransform(cropLayer.id, { zoom: Number(event.target.value) })}/><output>{Math.round(cropTransform.zoom * 100)}%</output></label><button className="wide-property-button" onClick={resetCrop}><RotateCcw size={16}/>重置裁切</button></div>}
         <input ref={input} hidden type="file" accept="image/*" multiple onChange={(event) => { const files = Array.from(event.target.files || []); if (files.length) { if (files.length > 1 || pendingAppend.current) acceptInitialFiles(files, pendingSlot.current, pendingAppend.current); else acceptFile(files[0], pendingSlot.current); } event.target.value = ''; pendingSlot.current = null; pendingAppend.current = false; }}/>
-        {textLayers.length > 0 && <div className="use-text-layers"><div className="slot-list-heading"><strong>文字图层</strong><span>{textLayers.length}</span></div><div className="use-text-layer-list">{textLayers.map((layer) => <label key={layer.id} className="use-text-layer-field"><span>{layer.name}</span><textarea value={layer.text || ''} rows={Math.max(2, String(layer.text || '').split('\n').length)} onFocus={() => { finishTextEditing(); setSelectedId(layer.id); setCropModeId(null); }} onChange={(event) => updateTextLayerById(layer.id, event.target.value)}/></label>)}</div></div>}
+        {textLayers.length > 0 && <div className="use-text-layers"><div className="slot-list-heading"><strong>文字图层</strong><span>{textLayers.length}</span></div><div className="use-text-layer-list">{textLayers.map((layer) => {
+          const values = Array.isArray(textValueLists[layer.id]) && textValueLists[layer.id].length ? textValueLists[layer.id] : [String(layer.text || '')];
+          const open = textBatchOpenId === layer.id;
+          return <div key={layer.id} className="use-text-layer-field"><span className="use-text-layer-name" title={layer.name}>{layer.name}</span><textarea value={layer.text || ''} rows={Math.max(1, String(layer.text || '').split('\n').length)} onFocus={() => { finishTextEditing(); setSelectedId(layer.id); setCropModeId(null); }} onChange={(event) => updateTextLayerById(layer.id, event.target.value)}/><div ref={open ? textBatchRef : undefined} className="batch-text-control"><button type="button" className={open ? 'batch-text-trigger active' : 'batch-text-trigger'} title="为批量图片或 GIF 的每轮生成设置不同文字" onClick={(event) => { event.stopPropagation(); setTextBatchOpenId((current) => current === layer.id ? null : layer.id); }}>+{values.length}</button>{open && <div className="batch-text-popover" onPointerDown={(event) => event.stopPropagation()}><div className="batch-text-heading"><strong>批次文本</strong><span>不足时使用第 1 条</span></div><div className="batch-text-list">{values.map((value, index) => <div className="batch-text-row" key={index}><span>{index + 1}</span><textarea value={value} rows={Math.max(1, String(value).split('\n').length)} onChange={(event) => replaceTextValues(layer.id, values.map((item, itemIndex) => itemIndex === index ? event.target.value : item))}/><button type="button" title="删除此条" disabled={values.length <= 1} onClick={() => replaceTextValues(layer.id, values.filter((_, itemIndex) => itemIndex !== index))}><X size={14}/></button></div>)}</div><button type="button" className="batch-text-add" onClick={() => replaceTextValues(layer.id, [...values, ''])}>+ 添加一条</button></div>}</div></div>;
+        })}</div></div>}
         <div className="export-settings"><div className="slot-list-heading"><strong>导出设置</strong></div><div className="export-setting-row"><label><span>格式</span><select value={exportFormat} onChange={(event) => { const value = event.target.value; setExportFormat(value); if (value === 'jpg') setTransparent(false); }}><option value="png">PNG</option><option value="jpg">JPEG</option><option value="webp">WebP</option><option value="gif">GIF 动图</option></select></label><label title={exportScaleHint}><span title={exportScaleHint}>倍率</span><select title={exportScaleHint} value={exportScale} onChange={(event) => setExportScale(Number(event.target.value))}><option value="1" title={exportScaleHint}>1x</option><option value="2" title={exportScaleHint}>2x</option><option value="3" title={exportScaleHint}>3x</option></select></label></div><label className="check-row"><input type="checkbox" disabled={exportFormat === 'jpg'} checked={transparent} onChange={(event) => setTransparent(event.target.checked)}/><span>透明画布背景</span></label></div>
         <button type="button" className="secondary-button group-roster-import-button" title="选择 xlsx 群名单，按“工号”列下载成员头像，并可按工号、中文名、英文名或昵称依次替换文字图层。" disabled={groupRosterBusy} onClick={() => groupRosterInput.current?.click()}><Upload size={16}/>{groupRosterBusy ? '正在导入群名单（xlsx）' : '导入群名单（xlsx）'}</button>
         <input ref={groupRosterInput} className="hidden-input" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) chooseGroupRosterFile(file); }}/>
@@ -5346,7 +5450,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     {groupRosterChoice && <div className="group-roster-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) setGroupRosterChoice(null); }}>
       <div className="group-roster-dialog" role="dialog" aria-modal="true" aria-labelledby="group-roster-title">
         <div className="group-roster-heading"><div><strong id="group-roster-title">是否替换文本？</strong><span>{groupRosterChoice.fileName}</span></div><IconButton label="取消" onClick={() => setGroupRosterChoice(null)}><X size={17}/></IconButton></div>
-        <p>选择 Excel 第一行中的字段，将按从上到下的顺序替换可编辑文字图层。锁定文本的图层不会被修改。</p>
+        <p>选择 Excel 第一行中的字段，将按从上到下的顺序替换可编辑文字图层。禁用替换文本的图层不会被修改。</p>
         <div className="group-roster-options">
            {[['workerId', '工号'], ['chineseName', '中文名'], ['englishName', '英文名'], ['nickname', '昵称'], ['none', '否']].map(([value, label]) => <button type="button" key={value} className={value === 'none' ? 'secondary-button' : 'primary-button'} onClick={() => importGroupRosterRows(groupRosterChoice.rows, value)}>{label}</button>)}
         </div>
@@ -5355,7 +5459,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     {groupRosterBusy && <div className="group-roster-busy" role="status" aria-live="polite"><div><RefreshCw size={20}/><strong>正在导入群名单</strong><span>正在下载成员头像，请稍候…</span></div></div>}
     {contextMenu && <div className="result-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setContextMenu(null); copyAgain(); }}><Copy size={16}/>{exportFormat === 'gif' ? '复制 GIF' : '复制图片'}</button></div>}
     <ExportProgressOverlay progress={exportProgress} onCancel={cancelExport}/>
-    {slotContextMenu && <div className="result-context-menu" style={{ left: slotContextMenu.x, top: slotContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); pasteClipboardImage(slotId); }}><Clipboard size={16}/>粘贴图片</button><button className="danger" disabled={!slotSources[slotContextMenu.id]} onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); removeSlotSource(slotId); }}><Trash2 size={16}/>删除图片</button></div>}
+    {slotContextMenu && <div className="result-context-menu" style={{ left: slotContextMenu.x, top: slotContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { const { id: slotId, index } = slotContextMenu; setSlotContextMenu(null); pasteClipboardImage(slotId, false, index); }}><Clipboard size={16}/>粘贴图片</button><button className="danger" disabled={Number.isInteger(slotContextMenu.index) ? !(slotSourceLists[slotContextMenu.id] || [slotSources[slotContextMenu.id]]).filter(Boolean)[slotContextMenu.index] : !slotSources[slotContextMenu.id]} onClick={() => { const { id: slotId, index } = slotContextMenu; setSlotContextMenu(null); if (Number.isInteger(index)) removeSlotSourceAt(slotId, index); else removeSlotSource(slotId); }}><Trash2 size={16}/>删除图片</button></div>}
   </main>;
 }
 
