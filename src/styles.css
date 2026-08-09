@@ -310,7 +310,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .brush-size .numeric-input > input { min-width: 0; width: 44px; height: 25px; padding: 0 22px 0 3px; border: 1px solid var(--line); border-radius: 3px; font-size: 8px; text-align: center; }
 .brush-size .numeric-preset-toggle { width: 20px; }
 .brush-size input[type="range"] { min-width: 0; width: 18px; height: 54px; margin: 0; accent-color: var(--accent); writing-mode: vertical-lr; direction: rtl; }
-.eraser-tool-wrap, .lasso-tool-wrap { position: relative; }
+.eraser-tool-wrap, .lasso-tool-wrap, .mosaic-tool-wrap { position: relative; }
 .tool-menu-wrap::after { content: ""; position: absolute; right: 3px; bottom: 3px; z-index: 1; width: 0; height: 0; border-top: 4px solid transparent; border-left: 4px solid transparent; border-right: 4px solid currentColor; pointer-events: none; }
 .eraser-mode-menu.lasso-mode-menu { width: 142px; }
 .eraser-mode-menu { position: absolute; z-index: 20; left: 36px; top: 0; width: 116px; padding: 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); box-shadow: 0 8px 22px rgba(25,23,20,.16); }

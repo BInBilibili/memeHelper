@@ -957,7 +957,7 @@ function drawLayerBorder(ctx, layer) {
   ctx.restore();
 }
 
-async function renderIsolatedLayer(layer, source, photoTransform, paintSource, eraseSource, scale = 1, mosaicSource = null) {
+async function renderIsolatedLayer(layer, source, photoTransform, paintSource, eraseSource, scale = 1, mosaicSource = null, mosaicMaskSource = null, healSource = null, healMaskSource = null) {
   const insets = layerEffectInsets(layer);
   const logicalWidth = layer.width + insets.left + insets.right;
   const logicalHeight = layer.height + insets.top + insets.bottom;
@@ -995,14 +995,30 @@ async function renderIsolatedLayer(layer, source, photoTransform, paintSource, e
   }
   if (paintSource) ctx.drawImage(paintSource, 0, 0, layer.width, layer.height);
   else await drawPaintOverlay(ctx, layer);
-  if (mosaicSource) ctx.drawImage(mosaicSource, 0, 0, layer.width, layer.height);
-  else await drawMosaicOverlay(ctx, layer);
+  const resolvedMosaic = mosaicSource || (layer.mosaicSrc ? await loadImage(layer.mosaicSrc) : null);
+  const resolvedMosaicMask = mosaicMaskSource || (layer.mosaicMaskSrc ? await loadImage(layer.mosaicMaskSrc) : null);
+  if (resolvedMosaicMask) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.drawImage(resolvedMosaicMask, 0, 0, layer.width, layer.height);
+    ctx.restore();
+    if (resolvedMosaic) ctx.drawImage(resolvedMosaic, 0, 0, layer.width, layer.height);
+  } else if (resolvedMosaic) ctx.drawImage(resolvedMosaic, 0, 0, layer.width, layer.height);
   if (eraseSource) {
     ctx.save();
     ctx.globalCompositeOperation = 'destination-out';
     ctx.drawImage(eraseSource, 0, 0, layer.width, layer.height);
     ctx.restore();
   } else await drawEraseMask(ctx, layer);
+  const resolvedHeal = healSource || (layer.healSrc ? await loadImage(layer.healSrc) : null);
+  const resolvedHealMask = healMaskSource || (layer.healMaskSrc ? await loadImage(layer.healMaskSrc) : null);
+  if (resolvedHealMask) {
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.drawImage(resolvedHealMask, 0, 0, layer.width, layer.height);
+    ctx.restore();
+    if (resolvedHeal) ctx.drawImage(resolvedHeal, 0, 0, layer.width, layer.height);
+  }
   if (shapeClipped) ctx.restore();
   drawLayerBorder(ctx, layer);
   return { canvas, insets, logicalWidth, logicalHeight };
@@ -1039,7 +1055,7 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
       ? (Array.isArray(replacement) ? replacement.filter(Boolean) : replacement ? [replacement] : [])
       : [];
     const src = layer.type === 'slot' ? (layer.slotFill ? '' : (replacementSources[0] || (layer.replacementDisabled ? '' : layer.src))) : layer.src;
-    if (layer.eraseSrc) {
+    if (layer.eraseSrc || layer.mosaicMaskSrc || layer.healMaskSrc) {
       const isolated = await renderIsolatedLayer(layer, layer.type === 'slot' ? replacement : src, photoTransforms[layer.id], null, null, scale);
       ctx.drawImage(isolated.canvas, -isolated.insets.left, -isolated.insets.top, isolated.logicalWidth, isolated.logicalHeight);
       ctx.restore();
@@ -2031,6 +2047,8 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
   const [brushSize, setBrushSize] = useState(18);
   const [eraserMode, setEraserMode] = useState('paint');
   const [eraserMenu, setEraserMenu] = useState(false);
+  const [mosaicMode, setMosaicMode] = useState('pixel');
+  const [mosaicMenu, setMosaicMenu] = useState(false);
   const [lassoMode, setLassoMode] = useState('freehand');
   const [lassoMenu, setLassoMenu] = useState(false);
   const [toolPointer, setToolPointer] = useState(null);
@@ -2045,6 +2063,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
   const [shapeMenu, setShapeMenu] = useState(false);
   const [layerMenu, setLayerMenu] = useState(null);
   const [marqueeStartRequest, setMarqueeStartRequest] = useState(null);
+  const [selectionClearRequest, setSelectionClearRequest] = useState(0);
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set(
     Object.entries(draft.groupMeta || {})
       .filter(([, meta]) => meta?.collapsed)
@@ -2582,6 +2601,12 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
         event.preventDefault(); redoDraft();
         return;
       }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd' && !event.shiftKey && !event.altKey && !event.repeat && !isTextEditingTarget(event.target)) {
+        event.preventDefault();
+        setLayerMenu(null);
+        setSelectionClearRequest((value) => value + 1);
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && !isTextEditingTarget(event.target)) {
         if (event.key.toLowerCase() === 'c' && selectedIds.length) {
           const nativeSelection = window.getSelection?.();
@@ -2619,7 +2644,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
         } else tryBack();
       }
     };
-    const closeMenus = () => { setShapeMenu(false); setLayerMenu(null); setFixedLayerMenu(false); setEraserMenu(false); setLassoMenu(false); setTextMenu(false); };
+    const closeMenus = () => { setShapeMenu(false); setLayerMenu(null); setFixedLayerMenu(false); setEraserMenu(false); setMosaicMenu(false); setLassoMenu(false); setTextMenu(false); };
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('pointerdown', closeMenus);
     return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('pointerdown', closeMenus); };
@@ -3241,11 +3266,11 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
     : <strong onDoubleClick={(event) => beginLayerNameEdit(event, kind, id, value)}>{value}</strong>;
   useEffect(() => () => layerReorderRef.current?.cleanup?.(), []);
   const bakeStaticLayerEdits = async (layer) => {
-    if (layer.type !== 'static' || !layer.src || !(layer.paintSrc || layer.mosaicSrc || layer.eraseSrc)) return layer;
+    if (layer.type !== 'static' || !layer.src || !(layer.paintSrc || layer.mosaicSrc || layer.mosaicMaskSrc || layer.eraseSrc || layer.healSrc || layer.healMaskSrc)) return layer;
     const sourceImage = await loadImage(layer.src);
     const sourceScale = Math.max(1, (sourceImage.width || layer.width) / Math.max(1, layer.width), (sourceImage.height || layer.height) / Math.max(1, layer.height));
     const isolated = await renderIsolatedLayer(layer, layer.src, null, null, null, Math.min(4, sourceScale));
-    const { paintSrc, mosaicSrc, eraseSrc, ...base } = layer;
+    const { paintSrc, mosaicSrc, mosaicMaskSrc, eraseSrc, healSrc, healMaskSrc, ...base } = layer;
     return { ...base, src: isolated.canvas.toDataURL('image/png') };
   };
   const save = async () => {
@@ -3428,7 +3453,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
             <IconButton label="快速选择工具：根据相近颜色选择连续区域" className={activeTool === 'quick-select' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('quick-select')}><ScanSearch size={17}/></IconButton>
             <div className="tool-menu-wrap lasso-tool-wrap"><IconButton label={lassoMode === 'polygon' ? '多边形套索工具' : lassoMode === 'magnetic' ? '磁性套索工具' : '套索工具'} className={activeTool === 'lasso' ? 'active' : ''} onClick={() => setActiveTool('lasso')} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setLassoMenu(true); }}><Lasso size={17}/></IconButton>{lassoMenu && <div className="eraser-mode-menu lasso-mode-menu" onPointerDown={(event) => event.stopPropagation()}><button className={lassoMode === 'freehand' ? 'active' : ''} onClick={() => { setLassoMode('freehand'); setLassoMenu(false); setActiveTool('lasso'); }}>套索工具</button><button className={lassoMode === 'polygon' ? 'active' : ''} onClick={() => { setLassoMode('polygon'); setLassoMenu(false); setActiveTool('lasso'); }}>多边形套索工具</button><button className={lassoMode === 'magnetic' ? 'active' : ''} onClick={() => { setLassoMode('magnetic'); setLassoMenu(false); setActiveTool('lasso'); }}>磁性套索工具</button></div>}</div>
             <IconButton label="画笔（按住 Alt 临时取色）" className={activeTool === 'brush' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('brush')}><Pencil size={17}/></IconButton>
-            <IconButton label="高斯模糊（效果不可叠加）" className={activeTool === 'mosaic' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('mosaic')}><Blend size={17}/></IconButton>
+            <div className="tool-menu-wrap mosaic-tool-wrap"><IconButton label={mosaicMode === 'blur' ? '高斯模糊（效果不可叠加）' : '像素马赛克（效果不可叠加）'} className={activeTool === 'mosaic' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('mosaic')} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setMosaicMenu(true); }}>{mosaicMode === 'blur' ? <Blend size={17}/> : <Grid2X2 size={17}/>}</IconButton>{mosaicMenu && <div className="eraser-mode-menu mosaic-mode-menu" onPointerDown={(event) => event.stopPropagation()}><button className={mosaicMode === 'pixel' ? 'active' : ''} onClick={() => { setMosaicMode('pixel'); setMosaicMenu(false); setActiveTool('mosaic'); }}>像素马赛克</button><button className={mosaicMode === 'blur' ? 'active' : ''} onClick={() => { setMosaicMode('blur'); setMosaicMenu(false); setActiveTool('mosaic'); }}>高斯模糊</button></div>}</div>
             <IconButton label="污点修复工具（内容识别）" className={activeTool === 'heal' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('heal')}><Bandage size={17}/></IconButton>
             <IconButton label="填充当前图层" className={activeTool === 'fill' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('fill')}><PaintBucket size={17}/></IconButton>
             <div className="tool-menu-wrap eraser-tool-wrap"><IconButton label={'橡皮擦：' + (eraserMode === 'paint' ? '仅擦除画笔' : eraserMode === 'magic' ? '魔法橡皮擦' : '擦除图层')} className={activeTool === 'eraser' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('eraser')} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setEraserMenu(true); }}><Eraser size={17}/></IconButton>{eraserMenu && <div className="eraser-mode-menu" onPointerDown={(event) => event.stopPropagation()}><button className={eraserMode === 'paint' ? 'active' : ''} onClick={() => { setEraserMode('paint'); setEraserMenu(false); setActiveTool('eraser'); }}>仅擦除画笔</button><button className={eraserMode === 'layer' ? 'active' : ''} onClick={() => { setEraserMode('layer'); setEraserMenu(false); setActiveTool('eraser'); }}>擦除图层</button><button className={eraserMode === 'magic' ? 'active' : ''} onClick={() => { setEraserMode('magic'); setEraserMenu(false); setActiveTool('eraser'); }}>魔法橡皮擦</button></div>}</div>
@@ -3437,7 +3462,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
             <label className="brush-size" title={activeTool === 'eraser' && eraserMode === 'magic' ? '魔法橡皮擦颜色容差' : '画笔、模糊、修复和橡皮擦大小'}><NumericInput aria-label={activeTool === 'eraser' && eraserMode === 'magic' ? '颜色容差' : '画笔大小'} min={1} max={160} presets={[1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 160]} value={brushSize} onCommit={setBrushSize}/><input type="range" min="1" max="160" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))}/></label>
           </div></div>
           <div className="canvas-scroll-surface" style={{ width: `max(100%, ${Math.max(0, draft.width * zoom) + 160}px)`, height: `max(100%, ${Math.max(0, draft.height * zoom) + 160}px)` }}><div ref={stageHostRef} className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}>
-            <EditorStage gifFrameIndex={timelineGifLayer ? gifTimeline.frameIndex + 1 : null} gifFrameLayerId={timelineGifLayer?.id || null} gifFrameSource={timelineGifLayer?.id === gifTimeline.layerId ? gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl : null} template={draft} selectedIds={selectedIds} selectedGroupId={selectedGroupId} selectLayer={selectLayer} selectGroup={selectGroup} clearSelection={clearSelection} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onGroupContextMenu={openGroupMenu} onMarqueeContextMenu={openMarqueeMenu} marqueeStartRequest={marqueeStartRequest} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} eraserMode={eraserMode} lassoMode={lassoMode} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, patch) => updateLayer(id, patch)} onPickColor={setPaintColor} zoom={zoom}/>
+            <EditorStage gifFrameIndex={timelineGifLayer ? gifTimeline.frameIndex + 1 : null} gifFrameLayerId={timelineGifLayer?.id || null} gifFrameSource={timelineGifLayer?.id === gifTimeline.layerId ? gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl : null} template={draft} selectedIds={selectedIds} selectedGroupId={selectedGroupId} selectLayer={selectLayer} selectGroup={selectGroup} clearSelection={clearSelection} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onGroupContextMenu={openGroupMenu} onMarqueeContextMenu={openMarqueeMenu} marqueeStartRequest={marqueeStartRequest} selectionClearRequest={selectionClearRequest} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} eraserMode={eraserMode} mosaicMode={mosaicMode} lassoMode={lassoMode} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, patch) => updateLayer(id, patch)} onPickColor={setPaintColor} zoom={zoom}/>
             {selectedOutsideLayers.map((layer) => { const preview = outsideDragPreview?.ids.includes(layer.id) ? outsideDragPreview : null; return <div key={`outside-outline-${layer.id}`} className="outside-layer-outline" style={{ left: (layer.x + (preview?.dx || 0)) * zoom, top: (layer.y + (preview?.dy || 0)) * zoom, width: layer.width * zoom, height: layer.height * zoom, transform: `rotate(${layer.rotation || 0}deg)` }}/>; }) }
             {textEditingId && draft.layers.find((layer) => layer.id === textEditingId && layer.type === 'text') && <RichTextOverlay
               layer={draft.layers.find((layer) => layer.id === textEditingId)}
@@ -3797,7 +3822,7 @@ function floodFillCanvas(canvas, x, y, color) {
   ctx.putImageData(image, 0, 0);
 }
 
-function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, selectGroup, clearSelection, updateLayer, updateLayers, onLayerContextMenu, onGroupContextMenu, onMarqueeContextMenu, marqueeStartRequest, onPanStart, onEditText, textEditingId, tool, eraserMode, lassoMode, paintColor, brushSize, onPaintCommit, onPickColor, zoom, gifFrameLayerId, gifFrameSource, gifFrameIndex }) {
+function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, selectGroup, clearSelection, updateLayer, updateLayers, onLayerContextMenu, onGroupContextMenu, onMarqueeContextMenu, marqueeStartRequest, selectionClearRequest, onPanStart, onEditText, textEditingId, tool, eraserMode, mosaicMode, lassoMode, paintColor, brushSize, onPaintCommit, onPickColor, zoom, gifFrameLayerId, gifFrameSource, gifFrameIndex }) {
   const stageRef = useRef();
   const trRef = useRef();
   const nodeRefs = useRef({});
@@ -3806,9 +3831,13 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   const paintSurfacesRef = useRef({});
   const eraseSurfacesRef = useRef({});
   const mosaicSurfacesRef = useRef({});
+  const mosaicMaskSurfacesRef = useRef({});
   const mosaicBaseRef = useRef({});
+  const healSurfacesRef = useRef({});
+  const healMaskSurfacesRef = useRef({});
   const healingBaseRef = useRef({});
   const selectionTokenRef = useRef(0);
+  const quickSelectionSessionRef = useRef(null);
   const magicEraseTokenRef = useRef(0);
   const paintingRef = useRef(null);
   const paintPointerRef = useRef(0);
@@ -3821,6 +3850,22 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   const marqueeTrackingRef = useRef(null);
   const lastMarqueeStartRequestRef = useRef(null);
   const [shiftPressed, setShiftPressed] = useState(false);
+
+  const clearPixelSelection = useCallback(() => {
+    selectionTokenRef.current += 1;
+    quickSelectionSessionRef.current?.cleanup?.();
+    quickSelectionSessionRef.current = null;
+    marqueeTrackingRef.current?.();
+    marqueeTrackingRef.current = null;
+    marqueeRef.current = null;
+    setMarquee(null);
+    setLassoDraft(null);
+  }, []);
+
+  useEffect(() => {
+    if (!selectionClearRequest) return;
+    clearPixelSelection();
+  }, [selectionClearRequest, clearPixelSelection]);
 
   useEffect(() => {
     const nodes = tool === 'select' ? selectedIds
@@ -4038,8 +4083,8 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   };
 
   const ensurePaintSurface = async (layer, kind = 'paint') => {
-    const source = kind === 'erase' ? layer.eraseSrc : kind === 'mosaic' ? layer.mosaicSrc : layer.paintSrc;
-    const surfaces = kind === 'erase' ? eraseSurfacesRef : kind === 'mosaic' ? mosaicSurfacesRef : paintSurfacesRef;
+    const source = kind === 'erase' ? layer.eraseSrc : kind === 'mosaic' ? layer.mosaicSrc : kind === 'mosaic-mask' ? layer.mosaicMaskSrc : kind === 'heal' ? layer.healSrc : kind === 'heal-mask' ? layer.healMaskSrc : layer.paintSrc;
+    const surfaces = kind === 'erase' ? eraseSurfacesRef : kind === 'mosaic' ? mosaicSurfacesRef : kind === 'mosaic-mask' ? mosaicMaskSurfacesRef : kind === 'heal' ? healSurfacesRef : kind === 'heal-mask' ? healMaskSurfacesRef : paintSurfacesRef;
     const key = `${source || ''}|${Math.round(layer.width)}x${Math.round(layer.height)}`;
     const cached = surfaces.current[layer.id];
     if (cached?.key === key) return cached.canvas;
@@ -4055,15 +4100,32 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   };
 
   const ensureMosaicBase = async (layer) => {
-    const baseLayer = { ...layer, mosaicSrc: undefined };
-    const key = JSON.stringify(baseLayer);
+    const baseLayer = { ...layer, mosaicSrc: undefined, mosaicMaskSrc: undefined };
+    const frameSource = layer.id === gifFrameLayerId && gifFrameSource ? gifFrameSource : baseLayer.src;
+    const key = JSON.stringify({ ...baseLayer, src: frameSource });
     if (mosaicBaseRef.current.key === key) return mosaicBaseRef.current.canvas;
-    const isolated = await renderIsolatedLayer(baseLayer, baseLayer.src, null, null, null);
+    const isolated = await renderIsolatedLayer(baseLayer, frameSource, null, null, null);
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(layer.width));
     canvas.height = Math.max(1, Math.round(layer.height));
     canvas.getContext('2d').drawImage(isolated.canvas, -isolated.insets.left, -isolated.insets.top, isolated.logicalWidth, isolated.logicalHeight);
     mosaicBaseRef.current = { key, canvas };
+    return canvas;
+  };
+
+  const createPixelatedBase = (baseCanvas) => {
+    const blockSize = Math.max(3, Math.round(brushSize * .2));
+    const small = document.createElement('canvas');
+    small.width = Math.max(1, Math.ceil(baseCanvas.width / blockSize));
+    small.height = Math.max(1, Math.ceil(baseCanvas.height / blockSize));
+    const smallCtx = small.getContext('2d');
+    smallCtx.imageSmoothingEnabled = true;
+    smallCtx.drawImage(baseCanvas, 0, 0, small.width, small.height);
+    const canvas = document.createElement('canvas');
+    canvas.width = baseCanvas.width; canvas.height = baseCanvas.height;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(small, 0, 0, small.width, small.height, 0, 0, canvas.width, canvas.height);
     return canvas;
   };
 
@@ -4095,10 +4157,10 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   };
 
   const ensureHealingBase = async (layer) => {
-    const baseLayer = { ...layer, paintSrc: undefined };
-    const key = JSON.stringify(baseLayer);
+    const frameSource = layer.id === gifFrameLayerId && gifFrameSource ? gifFrameSource : layer.src;
+    const key = JSON.stringify({ ...layer, src: frameSource });
     if (healingBaseRef.current.key === key) return healingBaseRef.current;
-    const isolated = await renderIsolatedLayer(baseLayer, baseLayer.src, null, null, null);
+    const isolated = await renderIsolatedLayer(layer, frameSource, null, null, null);
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(layer.width));
     canvas.height = Math.max(1, Math.round(layer.height));
@@ -4128,11 +4190,12 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
 
   const drawMosaicSegment = (painting, point) => {
     const ctx = painting.canvas.getContext('2d');
+    const maskCtx = painting.maskCanvas.getContext('2d');
     const scaleX = painting.canvas.width / painting.layer.width;
     const scaleY = painting.canvas.height / painting.layer.height;
     const radius = Math.max(3, brushSize * .5 * (scaleX + scaleY) / 2);
     const distance = Math.hypot(point.x - painting.last.x, point.y - painting.last.y) * Math.max(scaleX, scaleY);
-    const steps = Math.max(1, Math.ceil(distance / Math.max(2, radius * .45)));
+    const steps = Math.max(1, Math.ceil(distance / Math.max(2, radius * .4)));
     for (let step = 1; step <= steps; step += 1) {
       const ratio = step / steps;
       const x = (painting.last.x + (point.x - painting.last.x) * ratio) * scaleX;
@@ -4141,45 +4204,98 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
       ctx.beginPath();
       ctx.arc(x, y, radius, 0, Math.PI * 2);
       ctx.clip();
-      ctx.drawImage(painting.blurredCanvas, 0, 0, painting.canvas.width, painting.canvas.height);
+      ctx.clearRect(x - radius - 2, y - radius - 2, radius * 2 + 4, radius * 2 + 4);
+      ctx.drawImage(painting.effectCanvas, 0, 0, painting.canvas.width, painting.canvas.height);
       ctx.restore();
+      maskCtx.save();
+      maskCtx.beginPath();
+      maskCtx.arc(x, y, radius, 0, Math.PI * 2);
+      maskCtx.clip();
+      maskCtx.clearRect(x - radius - 2, y - radius - 2, radius * 2 + 4, radius * 2 + 4);
+      maskCtx.fillStyle = '#ffffff';
+      maskCtx.beginPath();
+      maskCtx.arc(x, y, radius, 0, Math.PI * 2);
+      maskCtx.fill();
+      maskCtx.restore();
     }
     painting.last = point;
   };
 
-  const drawHealingStamp = (painting, centerX, centerY, radius) => {
-    const size = Math.max(3, Math.ceil(radius * 2));
-    const patch = document.createElement('canvas');
-    patch.width = size; patch.height = size;
-    const patchCtx = patch.getContext('2d');
-    const image = patchCtx.createImageData(size, size);
-    const source = painting.basePixels;
-    const width = painting.baseCanvas.width;
-    const height = painting.baseCanvas.height;
-    const ring = Math.max(3, radius * 1.35);
-    const directions = [[1,0],[-1,0],[0,1],[0,-1],[.707,.707],[-.707,.707],[.707,-.707],[-.707,-.707]];
-    for (let py = 0; py < size; py += 1) for (let px = 0; px < size; px += 1) {
-      const dx = px + .5 - radius; const dy = py + .5 - radius;
-      const distance = Math.hypot(dx, dy);
-      if (distance > radius) continue;
-      let red = 0; let green = 0; let blue = 0; let alpha = 0; let count = 0;
-      directions.forEach(([vx, vy]) => {
-        const sx = clamp(Math.round(centerX + dx + vx * ring), 0, width - 1);
-        const sy = clamp(Math.round(centerY + dy + vy * ring), 0, height - 1);
-        const offset = (sy * width + sx) * 4;
-        if (source[offset + 3] === 0) return;
-        red += source[offset]; green += source[offset + 1]; blue += source[offset + 2]; alpha += source[offset + 3]; count += 1;
-      });
-      if (!count) continue;
-      const feather = clamp((radius - distance) / Math.max(1, radius * .22), 0, 1);
-      const offset = (py * size + px) * 4;
-      image.data[offset] = red / count;
-      image.data[offset + 1] = green / count;
-      image.data[offset + 2] = blue / count;
-      image.data[offset + 3] = alpha / count * feather;
+  const healingRingStats = (pixels, width, height, centerX, centerY, radius) => {
+    const samples = [];
+    let red = 0; let green = 0; let blue = 0; let alpha = 0;
+    const ringRadius = Math.max(2, radius * .92);
+    for (let index = 0; index < 32; index += 1) {
+      const angle = index / 32 * Math.PI * 2;
+      const x = clamp(Math.round(centerX + Math.cos(angle) * ringRadius), 0, width - 1);
+      const y = clamp(Math.round(centerY + Math.sin(angle) * ringRadius), 0, height - 1);
+      const offset = (y * width + x) * 4;
+      const sample = [pixels[offset], pixels[offset + 1], pixels[offset + 2], pixels[offset + 3]];
+      samples.push(sample);
+      red += sample[0]; green += sample[1]; blue += sample[2]; alpha += sample[3];
     }
-    patchCtx.putImageData(image, 0, 0);
-    painting.canvas.getContext('2d').drawImage(patch, centerX - radius, centerY - radius);
+    return { samples, mean: [red / samples.length, green / samples.length, blue / samples.length, alpha / samples.length] };
+  };
+
+  const findHealingSource = (pixels, width, height, centerX, centerY, radius) => {
+    const target = healingRingStats(pixels, width, height, centerX, centerY, radius);
+    let best = null;
+    const distances = [1.8, 2.5, 3.2, 4];
+    distances.forEach((distanceFactor) => {
+      for (let direction = 0; direction < 20; direction += 1) {
+        const angle = direction / 20 * Math.PI * 2;
+        const candidateX = Math.round(centerX + Math.cos(angle) * radius * distanceFactor);
+        const candidateY = Math.round(centerY + Math.sin(angle) * radius * distanceFactor);
+        if (candidateX - radius < 0 || candidateY - radius < 0 || candidateX + radius >= width || candidateY + radius >= height) continue;
+        const candidate = healingRingStats(pixels, width, height, candidateX, candidateY, radius);
+        let score = 0;
+        for (let index = 0; index < target.samples.length; index += 1) {
+          const targetSample = target.samples[index]; const sourceSample = candidate.samples[index];
+          const red = (targetSample[0] - target.mean[0]) - (sourceSample[0] - candidate.mean[0]);
+          const green = (targetSample[1] - target.mean[1]) - (sourceSample[1] - candidate.mean[1]);
+          const blue = (targetSample[2] - target.mean[2]) - (sourceSample[2] - candidate.mean[2]);
+          const alpha = targetSample[3] - sourceSample[3];
+          score += red * red + green * green + blue * blue + alpha * alpha * .35;
+        }
+        score += distanceFactor * radius * 12;
+        if (!best || score < best.score) best = { score, offsetX: candidateX - centerX, offsetY: candidateY - centerY, sourceMean: candidate.mean, targetMean: target.mean };
+      }
+    });
+    if (best) return best;
+    const fallbackX = clamp(Math.round(centerX + radius * 1.8), Math.ceil(radius), Math.max(Math.ceil(radius), width - Math.ceil(radius) - 1));
+    const fallbackY = clamp(Math.round(centerY), Math.ceil(radius), Math.max(Math.ceil(radius), height - Math.ceil(radius) - 1));
+    const fallback = healingRingStats(pixels, width, height, fallbackX, fallbackY, radius);
+    return { offsetX: fallbackX - centerX, offsetY: fallbackY - centerY, sourceMean: fallback.mean, targetMean: target.mean };
+  };
+
+  const drawHealingStamp = (painting, centerX, centerY, radius) => {
+    const diameter = Math.max(3, Math.ceil(radius * 2 + 2));
+    const left = Math.floor(centerX - diameter / 2); const top = Math.floor(centerY - diameter / 2);
+    const patch = document.createElement('canvas'); patch.width = diameter; patch.height = diameter;
+    const maskPatch = document.createElement('canvas'); maskPatch.width = diameter; maskPatch.height = diameter;
+    const patchCtx = patch.getContext('2d'); const maskPatchCtx = maskPatch.getContext('2d');
+    const image = patchCtx.createImageData(diameter, diameter); const maskImage = maskPatchCtx.createImageData(diameter, diameter);
+    const source = painting.basePixels; const width = painting.baseCanvas.width; const height = painting.baseCanvas.height;
+    const correction = [0, 1, 2].map((channel) => clamp(painting.healSource.targetMean[channel] - painting.healSource.sourceMean[channel], -72, 72));
+    for (let py = 0; py < diameter; py += 1) for (let px = 0; px < diameter; px += 1) {
+      const targetX = left + px; const targetY = top + py;
+      const dx = targetX + .5 - centerX; const dy = targetY + .5 - centerY;
+      const distance = Math.hypot(dx, dy);
+      if (distance > radius || targetX < 0 || targetY < 0 || targetX >= width || targetY >= height) continue;
+      const sourceX = clamp(Math.round(targetX + painting.healSource.offsetX), 0, width - 1);
+      const sourceY = clamp(Math.round(targetY + painting.healSource.offsetY), 0, height - 1);
+      const sourceOffset = (sourceY * width + sourceX) * 4; const offset = (py * diameter + px) * 4;
+      const feather = clamp((radius - distance) / Math.max(1, radius * .2), 0, 1);
+      image.data[offset] = clamp(source[sourceOffset] + correction[0], 0, 255);
+      image.data[offset + 1] = clamp(source[sourceOffset + 1] + correction[1], 0, 255);
+      image.data[offset + 2] = clamp(source[sourceOffset + 2] + correction[2], 0, 255);
+      image.data[offset + 3] = source[sourceOffset + 3] * feather;
+      maskImage.data[offset] = 255; maskImage.data[offset + 1] = 255; maskImage.data[offset + 2] = 255; maskImage.data[offset + 3] = 255 * feather;
+    }
+    patchCtx.putImageData(image, 0, 0); maskPatchCtx.putImageData(maskImage, 0, 0);
+    const effectCtx = painting.canvas.getContext('2d'); const maskCtx = painting.maskCanvas.getContext('2d');
+    effectCtx.save(); effectCtx.beginPath(); effectCtx.arc(centerX, centerY, radius, 0, Math.PI * 2); effectCtx.clip(); effectCtx.clearRect(left - 1, top - 1, diameter + 2, diameter + 2); effectCtx.drawImage(patch, left, top); effectCtx.restore();
+    maskCtx.save(); maskCtx.beginPath(); maskCtx.arc(centerX, centerY, radius, 0, Math.PI * 2); maskCtx.clip(); maskCtx.clearRect(left - 1, top - 1, diameter + 2, diameter + 2); maskCtx.drawImage(maskPatch, left, top); maskCtx.restore();
   };
 
   const drawHealingSegment = (painting, point) => {
@@ -4189,7 +4305,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     const startX = painting.last.x * scaleX; const startY = painting.last.y * scaleY;
     const endX = point.x * scaleX; const endY = point.y * scaleY;
     const distance = Math.hypot(endX - startX, endY - startY);
-    const steps = Math.max(1, Math.ceil(distance / Math.max(2, radius * .5)));
+    const steps = Math.max(1, Math.ceil(distance / Math.max(2, radius * .32)));
     for (let step = 1; step <= steps; step += 1) {
       const ratio = step / steps;
       drawHealingStamp(painting, startX + (endX - startX) * ratio, startY + (endY - startY) * ratio, radius);
@@ -4244,14 +4360,19 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   const beginQuickSelection = async (event) => {
     if (event.evt.button !== 0) return;
     event.evt.preventDefault();
-    const templatePoint = pointFromClient(event.evt.clientX, event.evt.clientY);
+    const initialPoint = pointFromClient(event.evt.clientX, event.evt.clientY);
     const layer = selectedIds.length === 1 ? template.layers.find((item) => item.id === selectedIds[0] && item.visible) : null;
-    if (!templatePoint || !layer) return;
-    if (!pointInLayer(templatePoint.x, templatePoint.y, layer)) return;
+    if (!initialPoint || !layer || !pointInLayer(initialPoint.x, initialPoint.y, layer)) return;
     const token = ++selectionTokenRef.current;
+    marqueeTrackingRef.current?.();
+    let releasedBeforeReady = null;
+    const detectEarlyRelease = (mouseEvent) => { releasedBeforeReady = { x: mouseEvent.clientX, y: mouseEvent.clientY }; };
+    window.addEventListener('mouseup', detectEarlyRelease, { once: true });
     const source = layer.id === gifFrameLayerId && gifFrameSource ? gifFrameSource : layer.src;
-    const isolated = await renderIsolatedLayer(layer, source, null, null, null);
-    if (token !== selectionTokenRef.current) return;
+    let isolated;
+    try { isolated = await renderIsolatedLayer(layer, source, null, null, null); }
+    catch { window.removeEventListener('mouseup', detectEarlyRelease); return; }
+    if (token !== selectionTokenRef.current) { window.removeEventListener('mouseup', detectEarlyRelease); return; }
     const maxAnalysisSide = 720;
     const analysisScale = Math.min(1, maxAnalysisSide / Math.max(1, layer.width, layer.height));
     const width = Math.max(1, Math.round(layer.width * analysisScale));
@@ -4260,50 +4381,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     analysis.width = width; analysis.height = height;
     const ctx = analysis.getContext('2d');
     ctx.drawImage(isolated.canvas, -isolated.insets.left * analysisScale, -isolated.insets.top * analysisScale, isolated.logicalWidth * analysisScale, isolated.logicalHeight * analysisScale);
-    const image = ctx.getImageData(0, 0, width, height);
-    const data = image.data;
-    const local = layerLocalPoint(layer, templatePoint);
-    const startX = clamp(Math.round(local.x * analysisScale), 0, width - 1);
-    const startY = clamp(Math.round(local.y * analysisScale), 0, height - 1);
-    const startOffset = (startY * width + startX) * 4;
-    if (data[startOffset + 3] < 8) return;
-    const target = [data[startOffset], data[startOffset + 1], data[startOffset + 2], data[startOffset + 3]];
-    const tolerance = Math.min(110, 34 + brushSize * .32);
-    const toleranceSquared = tolerance * tolerance * 3;
-    const visited = new Uint8Array(width * height);
-    const queued = new Uint8Array(width * height);
-    const selectedMask = new Uint8Array(width * height);
-    const stack = new Int32Array(width * height);
-    let stackSize = 0;
-    const seedIndex = startY * width + startX;
-    stack[stackSize++] = seedIndex;
-    queued[seedIndex] = 1;
-    const queue = (next) => { if (!queued[next]) { queued[next] = 1; stack[stackSize++] = next; } };
-    while (stackSize) {
-      const index = stack[--stackSize];
-      if (visited[index]) continue;
-      visited[index] = 1;
-      const offset = index * 4;
-      const alpha = data[offset + 3];
-      const dr = data[offset] - target[0]; const dg = data[offset + 1] - target[1]; const db = data[offset + 2] - target[2];
-      if (alpha < 8 || dr * dr + dg * dg + db * db > toleranceSquared || Math.abs(alpha - target[3]) > tolerance) continue;
-      selectedMask[index] = 255;
-      const x = index % width; const y = Math.floor(index / width);
-      if (x > 0) queue(index - 1);
-      if (x + 1 < width) queue(index + 1);
-      if (y > 0) queue(index - width);
-      if (y + 1 < height) queue(index + width);
-    }
-    const smallMask = document.createElement('canvas');
-    smallMask.width = width; smallMask.height = height;
-    const maskCtx = smallMask.getContext('2d');
-    const maskImage = maskCtx.createImageData(width, height);
-    for (let index = 0; index < selectedMask.length; index += 1) {
-      if (!selectedMask[index]) continue;
-      const offset = index * 4;
-      maskImage.data[offset] = 67; maskImage.data[offset + 1] = 132; maskImage.data[offset + 2] = 255; maskImage.data[offset + 3] = 255;
-    }
-    maskCtx.putImageData(maskImage, 0, 0);
+    const data = ctx.getImageData(0, 0, width, height).data;
     const bounds = editorLayerBounds(layer);
     const selection = { x: Math.floor(bounds.left), y: Math.floor(bounds.top), width: Math.max(1, Math.ceil(bounds.right) - Math.floor(bounds.left)), height: Math.max(1, Math.ceil(bounds.bottom) - Math.floor(bounds.top)), kind: 'quick', layerId: layer.id };
     const globalMask = document.createElement('canvas');
@@ -4311,16 +4389,110 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     const globalCtx = globalMask.getContext('2d');
     if (marquee?.kind === 'quick' && marquee.layerId === layer.id && marquee.maskSrc && marquee.x === selection.x && marquee.y === selection.y && marquee.width === selection.width && marquee.height === selection.height) {
       const previousMask = await loadImage(marquee.maskSrc);
+      if (token !== selectionTokenRef.current) { window.removeEventListener('mouseup', detectEarlyRelease); return; }
       globalCtx.drawImage(previousMask, 0, 0, globalMask.width, globalMask.height);
     }
-    globalCtx.save();
-    globalCtx.translate(-selection.x, -selection.y);
-    globalCtx.translate(layer.x + layer.width / 2, layer.y + layer.height / 2);
-    globalCtx.rotate((Number(layer.rotation) || 0) * Math.PI / 180);
-    globalCtx.translate(-layer.width / 2, -layer.height / 2);
-    globalCtx.drawImage(smallMask, 0, 0, width, height, 0, 0, layer.width, layer.height);
-    globalCtx.restore();
-    setMarquee({ ...selection, maskSrc: globalMask.toDataURL('image/png') });
+    window.removeEventListener('mouseup', detectEarlyRelease);
+    const accumulated = new Uint8Array(width * height);
+    const visitMarks = new Uint32Array(width * height);
+    const stack = new Int32Array(width * height);
+    const smallMask = document.createElement('canvas');
+    smallMask.width = width; smallMask.height = height;
+    const smallMaskCtx = smallMask.getContext('2d');
+    const smallMaskImage = smallMaskCtx.createImageData(width, height);
+    let generation = 0;
+    const session = { token, timer: null, pending: null, lastClient: { x: event.evt.clientX, y: event.evt.clientY }, cleanup: null };
+    quickSelectionSessionRef.current = session;
+
+    const applyPoint = (templatePoint) => {
+      if (token !== selectionTokenRef.current || !pointInLayer(templatePoint.x, templatePoint.y, layer)) return;
+      const local = layerLocalPoint(layer, templatePoint);
+      const startX = clamp(Math.round(local.x * analysisScale), 0, width - 1);
+      const startY = clamp(Math.round(local.y * analysisScale), 0, height - 1);
+      const seedIndex = startY * width + startX;
+      if (accumulated[seedIndex]) return;
+      const startOffset = seedIndex * 4;
+      if (data[startOffset + 3] < 8) return;
+      const targetRed = data[startOffset]; const targetGreen = data[startOffset + 1]; const targetBlue = data[startOffset + 2]; const targetAlpha = data[startOffset + 3];
+      const tolerance = Math.min(110, 34 + brushSize * .32);
+      const toleranceSquared = tolerance * tolerance * 3;
+      generation += 1;
+      let stackSize = 0; let changed = false;
+      stack[stackSize++] = seedIndex;
+      visitMarks[seedIndex] = generation;
+      const queue = (index) => { if (visitMarks[index] !== generation) { visitMarks[index] = generation; stack[stackSize++] = index; } };
+      while (stackSize) {
+        const index = stack[--stackSize];
+        const offset = index * 4;
+        const alpha = data[offset + 3];
+        const red = data[offset] - targetRed; const green = data[offset + 1] - targetGreen; const blue = data[offset + 2] - targetBlue;
+        if (alpha < 8 || red * red + green * green + blue * blue > toleranceSquared || Math.abs(alpha - targetAlpha) > tolerance) continue;
+        if (!accumulated[index]) {
+          accumulated[index] = 1;
+          smallMaskImage.data[offset] = 67; smallMaskImage.data[offset + 1] = 132; smallMaskImage.data[offset + 2] = 255; smallMaskImage.data[offset + 3] = 255;
+          changed = true;
+        }
+        const x = index % width; const y = Math.floor(index / width);
+        if (x > 0) queue(index - 1);
+        if (x + 1 < width) queue(index + 1);
+        if (y > 0) queue(index - width);
+        if (y + 1 < height) queue(index + width);
+      }
+      if (!changed) return;
+      smallMaskCtx.putImageData(smallMaskImage, 0, 0);
+      globalCtx.save();
+      globalCtx.translate(-selection.x, -selection.y);
+      globalCtx.translate(layer.x + layer.width / 2, layer.y + layer.height / 2);
+      globalCtx.rotate((Number(layer.rotation) || 0) * Math.PI / 180);
+      globalCtx.translate(-layer.width / 2, -layer.height / 2);
+      globalCtx.drawImage(smallMask, 0, 0, width, height, 0, 0, layer.width, layer.height);
+      globalCtx.restore();
+      setMarquee({ ...selection, maskSrc: globalMask.toDataURL('image/png') });
+    };
+
+    const queueClientPoint = (clientX, clientY, immediate = false) => {
+      session.pending = { x: clientX, y: clientY };
+      if (session.timer && !immediate) return;
+      if (session.timer) { clearTimeout(session.timer); session.timer = null; }
+      const run = () => {
+        session.timer = null;
+        const client = session.pending;
+        session.pending = null;
+        const point = client ? pointFromClient(client.x, client.y) : null;
+        if (point) applyPoint(point);
+      };
+      if (immediate) run();
+      else session.timer = setTimeout(run, 40);
+    };
+    const update = (mouseEvent) => {
+      const distance = Math.hypot(mouseEvent.clientX - session.lastClient.x, mouseEvent.clientY - session.lastClient.y);
+      if (distance < 6) return;
+      session.lastClient = { x: mouseEvent.clientX, y: mouseEvent.clientY };
+      queueClientPoint(mouseEvent.clientX, mouseEvent.clientY);
+    };
+    const cleanup = () => {
+      window.removeEventListener('mousemove', update);
+      window.removeEventListener('mouseup', finish);
+      if (session.timer) clearTimeout(session.timer);
+      session.timer = null;
+      if (marqueeTrackingRef.current === cleanup) marqueeTrackingRef.current = null;
+      if (quickSelectionSessionRef.current === session) quickSelectionSessionRef.current = null;
+    };
+    const finish = (mouseEvent) => {
+      queueClientPoint(mouseEvent.clientX, mouseEvent.clientY, true);
+      cleanup();
+    };
+    session.cleanup = cleanup;
+    applyPoint(initialPoint);
+    if (releasedBeforeReady) {
+      const releasedPoint = pointFromClient(releasedBeforeReady.x, releasedBeforeReady.y);
+      if (releasedPoint) applyPoint(releasedPoint);
+      quickSelectionSessionRef.current = null;
+      return;
+    }
+    marqueeTrackingRef.current = cleanup;
+    window.addEventListener('mousemove', update);
+    window.addEventListener('mouseup', finish);
   };
 
   const buildMagneticSnapper = async () => {
@@ -4535,23 +4707,29 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     const surfaceKind = mode === 'erase-layer' ? 'erase' : 'paint';
     if (effectiveTool === 'mosaic') {
       const canvas = await ensurePaintSurface(layer, 'mosaic');
+      const maskCanvas = await ensurePaintSurface(layer, 'mosaic-mask');
       const baseCanvas = await ensureMosaicBase(layer);
       if (pointerToken !== paintPointerRef.current) return true;
-      const blurredCanvas = createBlurredBase(baseCanvas);
-      const painting = { layer, canvas, baseCanvas, blurredCanvas, mode: 'mosaic', surfaceKind: 'mosaic', last: local };
+      const effectCanvas = mosaicMode === 'blur' ? createBlurredBase(baseCanvas) : createPixelatedBase(baseCanvas);
+      const painting = { layer, canvas, maskCanvas, baseCanvas, effectCanvas, mode: 'mosaic', surfaceKind: 'mosaic', last: local };
       paintingRef.current = painting;
       drawMosaicSegment(painting, { x: local.x + .01, y: local.y + .01 });
-      setPaintPreview({ id: layer.id, canvas, kind: 'mosaic', revision: 1 });
+      setPaintPreview({ id: layer.id, canvas, maskCanvas, kind: 'mosaic', revision: 1 });
       return true;
     }
     if (effectiveTool === 'heal') {
-      const canvas = await ensurePaintSurface(layer, 'paint');
+      const canvas = await ensurePaintSurface(layer, 'heal');
+      const maskCanvas = await ensurePaintSurface(layer, 'heal-mask');
       const healingBase = await ensureHealingBase(layer);
       if (pointerToken !== paintPointerRef.current) return true;
-      const painting = { layer, canvas, baseCanvas: healingBase.canvas, basePixels: healingBase.pixels, mode: 'heal', surfaceKind: 'paint', last: local };
+      const scaleX = healingBase.canvas.width / Math.max(1, layer.width); const scaleY = healingBase.canvas.height / Math.max(1, layer.height);
+      const centerX = local.x * scaleX; const centerY = local.y * scaleY;
+      const radius = Math.max(2, brushSize * .5 * (scaleX + scaleY) / 2);
+      const healSource = findHealingSource(healingBase.pixels, healingBase.canvas.width, healingBase.canvas.height, centerX, centerY, radius);
+      const painting = { layer, canvas, maskCanvas, baseCanvas: healingBase.canvas, basePixels: healingBase.pixels, healSource, mode: 'heal', surfaceKind: 'heal', last: local };
       paintingRef.current = painting;
       drawHealingSegment(painting, { x: local.x + .01, y: local.y + .01 });
-      setPaintPreview({ id: layer.id, canvas, kind: 'paint', revision: 1 });
+      setPaintPreview({ id: layer.id, canvas, maskCanvas, kind: 'heal', revision: 1 });
       return true;
     }
     const canvas = await ensurePaintSurface(layer, surfaceKind);
@@ -4579,7 +4757,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     if (painting.mode === 'mosaic') drawMosaicSegment(painting, point);
     else if (painting.mode === 'heal') drawHealingSegment(painting, point);
     else drawPaintSegment(painting, point);
-    setPaintPreview((current) => ({ id: painting.layer.id, canvas: painting.canvas, kind: painting.surfaceKind, revision: (current?.revision || 0) + 1 }));
+    setPaintPreview((current) => ({ id: painting.layer.id, canvas: painting.canvas, maskCanvas: painting.maskCanvas || null, kind: painting.surfaceKind, revision: (current?.revision || 0) + 1 }));
   };
 
   const finishPaint = () => {
@@ -4588,9 +4766,19 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     if (!painting) return;
     paintingRef.current = null;
     const source = painting.canvas.toDataURL('image/png');
-    const surfaces = painting.surfaceKind === 'erase' ? eraseSurfacesRef : painting.surfaceKind === 'mosaic' ? mosaicSurfacesRef : paintSurfacesRef;
-    surfaces.current[painting.layer.id] = { key: `${source}|${Math.round(painting.layer.width)}x${Math.round(painting.layer.height)}`, canvas: painting.canvas };
-    onPaintCommit(painting.layer.id, painting.surfaceKind === 'erase' ? { eraseSrc: source } : painting.surfaceKind === 'mosaic' ? { mosaicSrc: source } : { paintSrc: source });
+    const sizeKey = `|${Math.round(painting.layer.width)}x${Math.round(painting.layer.height)}`;
+    if (painting.surfaceKind === 'mosaic' || painting.surfaceKind === 'heal') {
+      const maskSource = painting.maskCanvas.toDataURL('image/png');
+      const surfaces = painting.surfaceKind === 'mosaic' ? mosaicSurfacesRef : healSurfacesRef;
+      const maskSurfaces = painting.surfaceKind === 'mosaic' ? mosaicMaskSurfacesRef : healMaskSurfacesRef;
+      surfaces.current[painting.layer.id] = { key: source + sizeKey, canvas: painting.canvas };
+      maskSurfaces.current[painting.layer.id] = { key: maskSource + sizeKey, canvas: painting.maskCanvas };
+      onPaintCommit(painting.layer.id, painting.surfaceKind === 'mosaic' ? { mosaicSrc: source, mosaicMaskSrc: maskSource } : { healSrc: source, healMaskSrc: maskSource });
+    } else {
+      const surfaces = painting.surfaceKind === 'erase' ? eraseSurfacesRef : paintSurfacesRef;
+      surfaces.current[painting.layer.id] = { key: source + sizeKey, canvas: painting.canvas };
+      onPaintCommit(painting.layer.id, painting.surfaceKind === 'erase' ? { eraseSrc: source } : { paintSrc: source });
+    }
     setPaintPreview(null);
   };
 
@@ -4655,6 +4843,9 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
           paintSource={paintPreview?.id === layer.id && paintPreview.kind === 'paint' ? paintPreview.canvas : null}
           eraseSource={paintPreview?.id === layer.id && paintPreview.kind === 'erase' ? paintPreview.canvas : null}
           mosaicSource={paintPreview?.id === layer.id && paintPreview.kind === 'mosaic' ? paintPreview.canvas : null}
+          mosaicMaskSource={paintPreview?.id === layer.id && paintPreview.kind === 'mosaic' ? paintPreview.maskCanvas : null}
+          healSource={paintPreview?.id === layer.id && paintPreview.kind === 'heal' ? paintPreview.canvas : null}
+          healMaskSource={paintPreview?.id === layer.id && paintPreview.kind === 'heal' ? paintPreview.maskCanvas : null}
           paintRevision={paintPreview?.id === layer.id ? paintPreview.revision : 0}
           setRef={(node) => nodeRefs.current[layer.id] = node}
           onPointerDown={(event) => { if (!selectedIds.length) { selectAfterPanRef.current = { kind: 'layer', id: layer.id, x: event.evt.clientX, y: event.evt.clientY }; onPanStart(event); return; } if (!selectedIds.includes(layer.id) && !event.evt.ctrlKey && !event.evt.metaKey && !event.evt.shiftKey) selectLayer(layer.id, event.evt); }}
@@ -4690,17 +4881,17 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     </div>}</>;
 }
 
-function useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, mosaicSource, revision) {
+function useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, mosaicSource, mosaicMaskSource, healSource, healMaskSource, revision) {
   const [result, setResult] = useState(null);
   useEffect(() => {
-    if (!layer.eraseSrc && !eraseSource) { setResult(null); return; }
+    if (!layer.eraseSrc && !eraseSource && !layer.mosaicMaskSrc && !mosaicMaskSource && !layer.healMaskSrc && !healMaskSource) { setResult(null); return; }
     let alive = true;
     (async () => {
-      const output = await renderIsolatedLayer(layer, source, photoTransform, paintSource, eraseSource, 1, mosaicSource);
+      const output = await renderIsolatedLayer(layer, source, photoTransform, paintSource, eraseSource, 1, mosaicSource, mosaicMaskSource, healSource, healMaskSource);
       if (alive) setResult(output);
     })().catch(() => { if (alive) setResult(null); });
     return () => { alive = false; };
-  }, [layer, source, photoTransform, paintSource, eraseSource, mosaicSource, revision]);
+  }, [layer, source, photoTransform, paintSource, eraseSource, mosaicSource, mosaicMaskSource, healSource, healMaskSource, revision]);
   return result;
 }
 
@@ -4727,14 +4918,20 @@ function LayerBorderShape({ layer }) {
   return <Rect x={inset} y={inset} width={width} height={height} cornerRadius={shapeOf(layer) === 'rounded' ? Math.max(0, cornerRadiusOf(layer) - inset) : 0} {...props}/>;
 }
 
-function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransform, onTransformEnd, interactive = true, selectable = interactive, selected = false, source, sources, paintSource, eraseSource, mosaicSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
+function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransform, onTransformEnd, interactive = true, selectable = interactive, selected = false, source, sources, paintSource, eraseSource, mosaicSource, mosaicMaskSource, healSource, healMaskSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
   const image = useHtmlImage(layer.type === 'slot' && layer.slotFill ? '' : (source ?? layer.src));
   const multiImages = useHtmlImages(sources || EMPTY_IMAGE_SOURCES);
   const loadedPaintImage = useHtmlImage(layer.paintSrc);
   const loadedMosaicImage = useHtmlImage(layer.mosaicSrc);
+  const loadedMosaicMaskImage = useHtmlImage(layer.mosaicMaskSrc);
+  const loadedHealImage = useHtmlImage(layer.healSrc);
+  const loadedHealMaskImage = useHtmlImage(layer.healMaskSrc);
   const paintImage = paintSource || loadedPaintImage;
   const mosaicImage = mosaicSource || loadedMosaicImage;
-  const maskedResult = useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, mosaicImage, paintRevision);
+  const mosaicMaskImage = mosaicMaskSource || loadedMosaicMaskImage;
+  const healImage = healSource || loadedHealImage;
+  const healMaskImage = healMaskSource || loadedHealMaskImage;
+  const maskedResult = useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, mosaicImage, mosaicMaskImage, healImage, healMaskImage, paintRevision);
   const crop = image && layer.fit === 'cover' ? getCoverCrop(image, layer.width, layer.height) : undefined;
   const placement = image && layer.type === 'slot' && source ? getPhotoPlacement(image, layer, photoTransform) : null;
   if (!layer.visible) return null;
