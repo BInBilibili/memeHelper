@@ -1039,7 +1039,9 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, template.width, template.height);
   }
-  const frameIndex = Number.isInteger(options.frameIndex) ? options.frameIndex : null;
+  const frameIndex = Number.isInteger(options.frameIndex)
+    ? options.frameIndex
+    : template.layers.some((layer) => isGifSource(layer.src)) ? 1 : null;
   for (const layer of template.layers) {
     if (signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
     if (!layer.visible || !isLayerVisibleAtFrame(layer, frameIndex)) continue;
@@ -5409,6 +5411,7 @@ function UseStage({ composition, slotSources, slotSourceLists = {}, slotTransfor
   const dragRef = useRef(null);
   const [hostSize, setHostSize] = useState({ width: 0, height: 0 });
   const [guides, setGuides] = useState([]);
+  const previewFrameIndex = useMemo(() => composition.layers.some((layer) => isGifSource(layer.src)) ? 1 : null, [composition.layers]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -5478,7 +5481,7 @@ function UseStage({ composition, slotSources, slotSourceLists = {}, slotTransfor
       <Stage width={composition.width * scale} height={composition.height * scale} scaleX={scale} scaleY={scale} onWheel={(event) => event.target.stopDrag?.()} onMouseDown={(event) => { if (event.target === event.target.getStage() || event.target.name() === 'result-background') { if (textEditingId) onTextDone(); setSelectedId(null); setCropModeId(null); onPanStart(event); } }}>
         <Layer>
           <Rect name="result-background" width={composition.width} height={composition.height} fill={transparent ? 'rgba(0,0,0,0)' : '#fff'}/>
-          {composition.layers.map((layer) => textEditingId === layer.id ? null : <EditorLayer
+          {composition.layers.filter((layer) => isLayerVisibleAtFrame(layer, previewFrameIndex)).map((layer) => textEditingId === layer.id ? null : <EditorLayer
             key={layer.id}
              layer={layer}
              selected={selectedId === layer.id}
@@ -5530,7 +5533,7 @@ function UseStage({ composition, slotSources, slotSourceLists = {}, slotTransfor
           />
         </Layer>
       </Stage>
-      {textEditingId && composition.layers.find((layer) => layer.id === textEditingId && layer.type === 'text' && !layer.textLocked) && <RichTextOverlay
+      {textEditingId && composition.layers.find((layer) => layer.id === textEditingId && layer.type === 'text' && !layer.textLocked && isLayerVisibleAtFrame(layer, previewFrameIndex)) && <RichTextOverlay
         layer={composition.layers.find((layer) => layer.id === textEditingId)}
         zoom={scale}
         selectionRange={textSelection?.id === textEditingId ? textSelection : null}

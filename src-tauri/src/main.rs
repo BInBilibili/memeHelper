@@ -1022,9 +1022,23 @@ fn default_gif_delay() -> u32 {
     100
 }
 
+const GIF_ALPHA_THRESHOLD: u8 = 128;
+
+fn normalize_gif_alpha(image: &mut image::RgbaImage) {
+    for pixel in image.pixels_mut() {
+        if pixel[3] < GIF_ALPHA_THRESHOLD {
+            pixel.0 = [0, 0, 0, 0];
+        } else {
+            pixel[3] = 255;
+        }
+    }
+}
+
 /// Encode PNG/JPEG/WebP frame data URLs into an animated GIF. Frames are
-/// required to share the same dimensions; the GIF encoder performs palette
-/// quantization and preserves the requested frame delays.
+/// required to share the same dimensions. GIF only supports one-bit alpha,
+/// so low-alpha edge pixels are made fully transparent before palette
+/// quantization to avoid opaque colored speckles around transparent PNGs.
+/// The requested frame delays are preserved.
 #[tauri::command]
 fn encode_gif_frames(
     frames: Vec<GifFrameInput>,
@@ -1037,9 +1051,10 @@ fn encode_gif_frames(
     let mut dimensions = None;
     for input in frames {
         let (_, bytes) = decode_image_data_url(&input.data_url)?;
-        let image = image::load_from_memory(&bytes)
+        let mut image = image::load_from_memory(&bytes)
             .map_err(|error| error.to_string())?
             .to_rgba8();
+        normalize_gif_alpha(&mut image);
         let current_dimensions = image.dimensions();
         if let Some(expected) = dimensions {
             if expected != current_dimensions {
@@ -1365,6 +1380,29 @@ mod tests {
             .expect("copied template must remain readable");
         assert_ne!(template_id(&copied), Some("same-id"));
         fs::remove_dir_all(directory).expect("test directory must be removable");
+    }
+
+    #[test]
+    fn gif_encoding_discards_low_alpha_color_noise() {
+        let mut source = image::RgbaImage::new(2, 1);
+        source.put_pixel(0, 0, image::Rgba([255, 0, 255, 1]));
+        source.put_pixel(1, 0, image::Rgba([240, 160, 32, 255]));
+        let source_url = rgba_to_png_data_url(&source).expect("source PNG must encode");
+        let gif_url = encode_gif_frames(
+            vec![GifFrameInput { data_url: source_url, delay_ms: 100 }],
+            None,
+        )
+        .expect("GIF must encode");
+        let decoded = decode_gif_frames(gif_url).expect("GIF must decode");
+        let frame_url = decoded["frames"][0]["dataUrl"]
+            .as_str()
+            .expect("decoded frame must contain a data URL");
+        let (_, frame_bytes) = decode_image_data_url(frame_url).expect("decoded PNG must parse");
+        let frame = image::load_from_memory(&frame_bytes)
+            .expect("decoded PNG must load")
+            .to_rgba8();
+        assert_eq!(frame.get_pixel(0, 0)[3], 0);
+        assert_eq!(frame.get_pixel(1, 0)[3], 255);
     }
 
     #[test]
