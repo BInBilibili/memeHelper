@@ -361,6 +361,10 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .format-buttons button:hover { border-color: #e6a092; color: var(--accent); background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface)); }
 .format-buttons button.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent); }
 .align-buttons { grid-template-columns: repeat(3, 1fr); }
+.text-alignment-controls { margin-top: 9px; display: grid; gap: 7px; }
+.text-alignment-row { display: grid; grid-template-columns: 30px minmax(0, 1fr); align-items: center; gap: 7px; }
+.text-alignment-row > span { color: var(--muted); font-size: 9px; font-weight: 700; }
+.text-alignment-row .format-buttons { margin-top: 0; }
 .property-section { margin-top: 20px; padding-top: 17px; border-top: 1px solid #ebe9e3; }
 .property-section h4 { margin: 0 0 10px; font-size: 10px; }
 .layer-composite-section { display: grid; gap: 10px; }

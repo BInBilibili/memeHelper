@@ -258,6 +258,24 @@ function textFontString(style) {
   return `${renderedTextFontStyle(style)} ${Math.max(.01, style.fontSize)}px "${style.fontFamily || 'Microsoft YaHei'}"`;
 }
 
+function textHorizontalAlignOf(layer) {
+  if (['left', 'center', 'right'].includes(layer?.horizontalAlign)) return layer.horizontalAlign;
+  if (layer?.textOrientation === 'vertical') return 'right';
+  return ['left', 'center', 'right'].includes(layer?.align) ? layer.align : 'left';
+}
+
+function textVerticalAlignOf(layer) {
+  if (['top', 'middle', 'bottom'].includes(layer?.verticalAlign)) return layer.verticalAlign;
+  if (layer?.textOrientation === 'vertical') return layer.align === 'center' ? 'middle' : layer.align === 'right' ? 'bottom' : 'top';
+  return 'top';
+}
+
+function alignedTextOffset(available, content, alignment, centerValue, endValue) {
+  if (alignment === centerValue) return Math.max(0, (available - content) / 2);
+  if (alignment === endValue) return Math.max(0, available - content);
+  return 0;
+}
+
 function measureTextLayer(layer) {
   const text = String(layer.text || '');
   const padding = Math.max(0, Number(layer.backgroundPadding) || 0);
@@ -297,7 +315,7 @@ function measureTextLayer(layer) {
 }
 
 function fitTextLayerToContent(layer) {
-  return layer.type === 'text' ? { ...layer, ...measureTextLayer(layer) } : layer;
+  return layer.type === 'text' && layer.textAutoSize !== false ? { ...layer, ...measureTextLayer(layer) } : layer;
 }
 
 function layoutStyledText(layer) {
@@ -305,15 +323,38 @@ function layoutStyledText(layer) {
   const padding = Math.max(0, Number(layer.backgroundPadding) || 0);
   const availableWidth = Math.max(1, layer.width - padding * 2);
   const availableHeight = Math.max(1, layer.height - padding * 2);
+  const horizontalAlign = textHorizontalAlignOf(layer);
+  const verticalAlign = textVerticalAlignOf(layer);
   const requestedSize = clamp(layer.fontSize ?? 48, TEXT_SIZE_MIN, TEXT_SIZE_MAX);
   const fontScale = requestedSize > 0 ? resolveTextFontSize(layer) / requestedSize : 1;
   const effectiveBaseSize = requestedSize * fontScale;
   if (layer.textOrientation === 'vertical') {
     const columns = [[]]; let offset = 0;
-    for (const character of text) { if (character === '\n') columns.push([]); else { const style = { ...textStyleAt(layer, offset) }; style.fontSize = clamp(style.fontSize * fontScale, TEXT_SIZE_MIN, TEXT_SIZE_MAX); columns.at(-1).push({ character, style }); } offset += character.length; }
-    const metrics = columns.map((glyphs) => ({ glyphs, width: Math.max(effectiveBaseSize, ...glyphs.map(({ style }) => style.fontSize * style.lineHeight)), height: glyphs.reduce((sum, { style }) => sum + style.fontSize * style.lineHeight, 0) }));
-    const runs = []; let x = layer.width - padding;
-    metrics.forEach((column) => { x -= column.width; let y = padding + (layer.align === 'center' ? Math.max(0, (availableHeight - column.height) / 2) : layer.align === 'right' ? Math.max(0, availableHeight - column.height) : 0); column.glyphs.forEach(({ character, style }) => { runs.push({ text: character, x, y, width: column.width, style, key: JSON.stringify(style), lineY: y }); y += style.fontSize * style.lineHeight; }); });
+    for (const character of text) {
+      if (character === '\n') columns.push([]);
+      else {
+        const style = { ...textStyleAt(layer, offset) };
+        style.fontSize = clamp(style.fontSize * fontScale, TEXT_SIZE_MIN, TEXT_SIZE_MAX);
+        columns.at(-1).push({ character, style });
+      }
+      offset += character.length;
+    }
+    const metrics = columns.map((glyphs) => ({
+      glyphs,
+      width: glyphs.length ? Math.max(effectiveBaseSize, ...glyphs.map(({ style }) => style.fontSize * style.lineHeight)) : effectiveBaseSize * (layer.lineHeight ?? 1.25),
+      height: glyphs.length ? glyphs.reduce((sum, { style }) => sum + style.fontSize * style.lineHeight, 0) : effectiveBaseSize * (layer.lineHeight ?? 1.25)
+    }));
+    const totalWidth = metrics.reduce((sum, column) => sum + column.width, 0);
+    const blockLeft = padding + alignedTextOffset(availableWidth, totalWidth, horizontalAlign, 'center', 'right');
+    const runs = []; let x = blockLeft + totalWidth;
+    metrics.forEach((column) => {
+      x -= column.width;
+      let y = padding + alignedTextOffset(availableHeight, column.height, verticalAlign, 'middle', 'bottom');
+      column.glyphs.forEach(({ character, style }) => {
+        runs.push({ text: character, x, y, width: column.width, style, key: JSON.stringify(style), lineY: y });
+        y += style.fontSize * style.lineHeight;
+      });
+    });
     return runs;
   }
   const canvas = document.createElement('canvas');
@@ -340,10 +381,11 @@ function layoutStyledText(layer) {
   });
   pushLine();
   const runs = [];
-  let y = padding;
+  const totalHeight = lines.reduce((sum, current) => sum + current.height, 0);
+  let y = padding + alignedTextOffset(availableHeight, totalHeight, verticalAlign, 'middle', 'bottom');
   for (const current of lines) {
     if (y >= padding + availableHeight) break;
-    let x = padding + (layer.align === 'center' ? (availableWidth - current.width) / 2 : layer.align === 'right' ? availableWidth - current.width : 0);
+    let x = padding + alignedTextOffset(availableWidth, current.width, horizontalAlign, 'center', 'right');
     current.glyphs.forEach((glyph) => {
       const previous = runs.at(-1);
       const key = JSON.stringify(glyph.style);
@@ -1417,7 +1459,7 @@ function App() {
     Promise.all([desktop.loadTemplates(), desktop.listTemplateFolders(), desktop.loadConfig(), desktop.loadEditorDrafts(), desktop.loadUseSessions()]).then(([saved, loadedFolders, loadedConfig, savedDrafts, savedUseSessions]) => {
       const localTemplates = Array.isArray(saved) ? saved : [];
       const builtInTemplates = bundledTemplates.length ? structuredClone(bundledTemplates) : starterTemplates();
-      const merged = localTemplates.length ? [...localTemplates, ...builtInTemplates] : builtInTemplates;
+      const merged = desktop.isDesktop ? localTemplates : (localTemplates.length ? [...localTemplates, ...builtInTemplates] : builtInTemplates);
       const next = merged.filter((item, index) => merged.findIndex((candidate) => candidate.id === item.id) === index);
       const drafts = savedDrafts && typeof savedDrafts === 'object' && !Array.isArray(savedDrafts) ? savedDrafts : {};
       const sessions = savedUseSessions && typeof savedUseSessions === 'object' && !Array.isArray(savedUseSessions) ? savedUseSessions : {};
@@ -1544,7 +1586,7 @@ function App() {
        const [saved, loadedFolders] = await Promise.all([desktop.loadTemplates(), desktop.listTemplateFolders()]);
       const localTemplates = Array.isArray(saved) ? saved : [];
       const builtInTemplates = bundledTemplates.length ? structuredClone(bundledTemplates) : starterTemplates();
-      const merged = localTemplates.length ? [...localTemplates, ...builtInTemplates] : builtInTemplates;
+      const merged = desktop.isDesktop ? localTemplates : (localTemplates.length ? [...localTemplates, ...builtInTemplates] : builtInTemplates);
       const next = merged.filter((item, index) => merged.findIndex((candidate) => candidate.id === item.id) === index);
       const previousIds = new Set(templates.map((item) => item.id));
       const addedCount = next.filter((item) => !previousIds.has(item.id)).length;
@@ -2711,7 +2753,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
 
   const addTextLayer = (point = null, orientation = textOrientation) => {
     const initializeCanvas = !draft.layers.length && draft.width === 0 && draft.height === 0;
-    const seed = { id: uid(), name: `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`, type: 'text', text: '输入文字', textOrientation: orientation, x: initializeCanvas ? 0 : Math.round(point?.x ?? draft.width * .18), y: initializeCanvas ? 0 : Math.round(point?.y ?? draft.height * .18), width: 1, height: 1, rotation: 0, opacity: 1, blendMode: 'source-over', aspectRatioLocked: true, visible: true, fontSize: 48, fontFamily: 'Microsoft YaHei', fontStyle: 'normal', textDecoration: '', align: 'center', fill: '#22211f', lineHeight: 1.25, autoFit: false, stroke: '#ffffff', strokeWidth: 0, shadowEnabled: false, shadowColor: '#000000', shadowBlur: 8, shadowOffsetX: 2, shadowOffsetY: 2, background: '', backgroundPadding: 8 };
+    const seed = { id: uid(), name: `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`, type: 'text', text: '输入文字', textOrientation: orientation, x: initializeCanvas ? 0 : Math.round(point?.x ?? draft.width * .18), y: initializeCanvas ? 0 : Math.round(point?.y ?? draft.height * .18), width: 1, height: 1, rotation: 0, opacity: 1, blendMode: 'source-over', aspectRatioLocked: false, visible: true, fontSize: 48, fontFamily: 'Microsoft YaHei', fontStyle: 'normal', textDecoration: '', align: 'center', horizontalAlign: 'center', verticalAlign: orientation === 'vertical' ? 'middle' : 'top', textAutoSize: true, fill: '#22211f', lineHeight: 1.25, autoFit: false, stroke: '#ffffff', strokeWidth: 0, shadowEnabled: false, shadowColor: '#000000', shadowBlur: 8, shadowOffsetX: 2, shadowOffsetY: 2, background: '', backgroundPadding: 8 };
     seed.name = `文字 ${draft.layers.filter((item) => item.type === 'text').length + 1}`;
     const layer = fitTextLayerToContent(seed);
     updateDraft((prev) => ({ ...prev, width: initializeCanvas ? layer.width : prev.width, height: initializeCanvas ? layer.height : prev.height, layers: [...prev.layers, layer] }));
@@ -3389,10 +3431,10 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
             <IconButton label="高斯模糊（效果不可叠加）" className={activeTool === 'mosaic' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('mosaic')}><Blend size={17}/></IconButton>
             <IconButton label="污点修复工具（内容识别）" className={activeTool === 'heal' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('heal')}><Bandage size={17}/></IconButton>
             <IconButton label="填充当前图层" className={activeTool === 'fill' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('fill')}><PaintBucket size={17}/></IconButton>
-            <div className="tool-menu-wrap eraser-tool-wrap"><IconButton label={'橡皮擦：' + (eraserMode === 'paint' ? '仅擦除画笔' : '擦除图层')} className={activeTool === 'eraser' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('eraser')} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setEraserMenu(true); }}><Eraser size={17}/></IconButton>{eraserMenu && <div className="eraser-mode-menu" onPointerDown={(event) => event.stopPropagation()}><button className={eraserMode === 'paint' ? 'active' : ''} onClick={() => { setEraserMode('paint'); setEraserMenu(false); setActiveTool('eraser'); }}>仅擦除画笔</button><button className={eraserMode === 'layer' ? 'active' : ''} onClick={() => { setEraserMode('layer'); setEraserMenu(false); setActiveTool('eraser'); }}>擦除图层</button></div>}</div>
+            <div className="tool-menu-wrap eraser-tool-wrap"><IconButton label={'橡皮擦：' + (eraserMode === 'paint' ? '仅擦除画笔' : eraserMode === 'magic' ? '魔法橡皮擦' : '擦除图层')} className={activeTool === 'eraser' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('eraser')} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setEraserMenu(true); }}><Eraser size={17}/></IconButton>{eraserMenu && <div className="eraser-mode-menu" onPointerDown={(event) => event.stopPropagation()}><button className={eraserMode === 'paint' ? 'active' : ''} onClick={() => { setEraserMode('paint'); setEraserMenu(false); setActiveTool('eraser'); }}>仅擦除画笔</button><button className={eraserMode === 'layer' ? 'active' : ''} onClick={() => { setEraserMode('layer'); setEraserMenu(false); setActiveTool('eraser'); }}>擦除图层</button><button className={eraserMode === 'magic' ? 'active' : ''} onClick={() => { setEraserMode('magic'); setEraserMenu(false); setActiveTool('eraser'); }}>魔法橡皮擦</button></div>}</div>
             <IconButton label="颜色选取器（可从所有图层取色）" className={activeTool === 'picker' ? 'active' : ''} onClick={() => setActiveTool('picker')}><Pipette size={17}/></IconButton>
             <input className="paint-color" type="color" aria-label="绘画颜色" title="绘画颜色" value={paintColor} onChange={(event) => setPaintColor(event.target.value)}/>
-            <label className="brush-size" title="画笔、模糊、修复和橡皮擦大小"><NumericInput aria-label="画笔大小" min={1} max={160} presets={[1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 160]} value={brushSize} onCommit={setBrushSize}/><input type="range" min="1" max="160" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))}/></label>
+            <label className="brush-size" title={activeTool === 'eraser' && eraserMode === 'magic' ? '魔法橡皮擦颜色容差' : '画笔、模糊、修复和橡皮擦大小'}><NumericInput aria-label={activeTool === 'eraser' && eraserMode === 'magic' ? '颜色容差' : '画笔大小'} min={1} max={160} presets={[1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 160]} value={brushSize} onCommit={setBrushSize}/><input type="range" min="1" max="160" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))}/></label>
           </div></div>
           <div className="canvas-scroll-surface" style={{ width: `max(100%, ${Math.max(0, draft.width * zoom) + 160}px)`, height: `max(100%, ${Math.max(0, draft.height * zoom) + 160}px)` }}><div ref={stageHostRef} className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}>
             <EditorStage gifFrameIndex={timelineGifLayer ? gifTimeline.frameIndex + 1 : null} gifFrameLayerId={timelineGifLayer?.id || null} gifFrameSource={timelineGifLayer?.id === gifTimeline.layerId ? gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl : null} template={draft} selectedIds={selectedIds} selectedGroupId={selectedGroupId} selectLayer={selectLayer} selectGroup={selectGroup} clearSelection={clearSelection} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onGroupContextMenu={openGroupMenu} onMarqueeContextMenu={openMarqueeMenu} marqueeStartRequest={marqueeStartRequest} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} eraserMode={eraserMode} lassoMode={lassoMode} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, patch) => updateLayer(id, patch)} onPickColor={setPaintColor} zoom={zoom}/>
@@ -3407,9 +3449,9 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
             />}
           </div></div>
           {toolPointer && !['select', 'marquee', 'lasso'].includes(activeTool) && !panning && (
-            ['brush', 'mosaic', 'heal', 'quick-select', 'eraser'].includes(activeTool) && !(activeTool === 'brush' && toolPointer.altKey)
+            (['brush', 'mosaic', 'heal', 'quick-select'].includes(activeTool) || (activeTool === 'eraser' && eraserMode !== 'magic')) && !(activeTool === 'brush' && toolPointer.altKey)
               ? <div className="tool-cursor brush-preview" style={{ left: toolPointer.x, top: toolPointer.y, width: Math.max(3, brushSize * zoom), height: Math.max(3, brushSize * zoom) }}/>
-              : <div className={`tool-cursor ${activeTool === 'text' ? 'text-tool-cursor' : ''}`} style={{ left: toolPointer.x, top: toolPointer.y }}>{activeTool === 'text' ? <span aria-hidden="true">T</span> : activeTool === 'picker' || (activeTool === 'brush' && toolPointer.altKey) ? <Pipette size={19}/> : <PaintBucket size={19}/>}</div>
+              : <div className={`tool-cursor ${activeTool === 'text' ? 'text-tool-cursor' : ''}`} style={{ left: toolPointer.x, top: toolPointer.y }}>{activeTool === 'text' ? <span aria-hidden="true">T</span> : activeTool === 'picker' || (activeTool === 'brush' && toolPointer.altKey) ? <Pipette size={19}/> : activeTool === 'eraser' && eraserMode === 'magic' ? <Sparkles size={19}/> : <PaintBucket size={19}/>}</div>
           )}
         </div>
       </section>
@@ -3509,7 +3551,7 @@ function RichTextOverlay({ layer, zoom, selectionRange, onChange, onSelectionCha
   const selectionRef = useRef({ start: 0, end: String(layer.text || '').length });
   const overlayBaseSize = baseTextStyle(layer).fontSize;
   const overlayFontScale = overlayBaseSize > 0 ? resolveTextFontSize(layer) / overlayBaseSize : 1;
-  const renderSignature = JSON.stringify({ text: layer.text || '', runs: layer.textRuns || [], base: baseTextStyle(layer), selectionRange, zoom, layout: { width: layer.width, height: layer.height, textOrientation: layer.textOrientation, autoFit: layer.autoFit, backgroundPadding: layer.backgroundPadding, shadowEnabled: layer.shadowEnabled, shadowColor: layer.shadowColor, shadowBlur: layer.shadowBlur, shadowOffsetX: layer.shadowOffsetX, shadowOffsetY: layer.shadowOffsetY } });
+  const renderSignature = JSON.stringify({ text: layer.text || '', runs: layer.textRuns || [], base: baseTextStyle(layer), selectionRange, zoom, layout: { width: layer.width, height: layer.height, textOrientation: layer.textOrientation, horizontalAlign: textHorizontalAlignOf(layer), verticalAlign: textVerticalAlignOf(layer), autoFit: layer.autoFit, backgroundPadding: layer.backgroundPadding, shadowEnabled: layer.shadowEnabled, shadowColor: layer.shadowColor, shadowBlur: layer.shadowBlur, shadowOffsetX: layer.shadowOffsetX, shadowOffsetY: layer.shadowOffsetY } });
   useLayoutEffect(() => {
     const editor = editorRef.current;
     if (!editor || composingRef.current) return;
@@ -3576,7 +3618,12 @@ function RichTextOverlay({ layer, zoom, selectionRange, onChange, onSelectionCha
       transform: `rotate(${layer.rotation || 0}deg)`,
       opacity: layerOpacityOf(layer),
       mixBlendMode: layerCssBlendModeOf(layer),
-      textAlign: layer.align || 'left',
+      textAlign: layer.textOrientation === 'vertical'
+        ? ({ top: 'start', middle: 'center', bottom: 'end' }[textVerticalAlignOf(layer)])
+        : textHorizontalAlignOf(layer),
+      alignContent: layer.textOrientation === 'vertical'
+        ? ({ left: 'end', center: 'center', right: 'start' }[textHorizontalAlignOf(layer)])
+        : ({ top: 'start', middle: 'center', bottom: 'end' }[textVerticalAlignOf(layer)]),
       writingMode: layer.textOrientation === 'vertical' ? 'vertical-rl' : 'horizontal-tb',
       textOrientation: layer.textOrientation === 'vertical' ? 'upright' : 'mixed',
       lineHeight: 'normal',
@@ -3762,12 +3809,14 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   const mosaicBaseRef = useRef({});
   const healingBaseRef = useRef({});
   const selectionTokenRef = useRef(0);
+  const magicEraseTokenRef = useRef(0);
   const paintingRef = useRef(null);
   const paintPointerRef = useRef(0);
   const [paintPreview, setPaintPreview] = useState(null);
   const [guides, setGuides] = useState([]);
   const [marquee, setMarquee] = useState(null);
   const [lassoDraft, setLassoDraft] = useState(null);
+  const [textTransformPreview, setTextTransformPreview] = useState({});
   const marqueeRef = useRef(null);
   const marqueeTrackingRef = useRef(null);
   const lastMarqueeStartRequestRef = useRef(null);
@@ -3808,6 +3857,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
 
   useEffect(() => {
     selectionTokenRef.current += 1;
+    magicEraseTokenRef.current += 1;
     if (!['marquee', 'quick-select', 'lasso'].includes(tool)) {
       marqueeTrackingRef.current?.();
       marqueeTrackingRef.current = null;
@@ -3864,7 +3914,6 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     drag.ids.forEach((id) => {
       const node = nodeRefs.current[id];
       if (!node) return;
-      if (id === layer.id && !event.evt.shiftKey) return;
       node.position({ x: drag.positions[id].cx + dx, y: drag.positions[id].cy + dy });
     });
   };
@@ -3954,6 +4003,24 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     onDragEnd={(event) => finishGroupDrag(group, event)}
   />;
 
+  const previewTextTransform = (layer, event) => {
+    if (layer.type !== 'text' || layer.locked) return;
+    const node = event.target;
+    const width = Math.max(10, Math.round(node.width() * Math.abs(node.scaleX())));
+    const height = Math.max(10, Math.round(node.height() * Math.abs(node.scaleY())));
+    const centerX = node.x(); const centerY = node.y();
+    const resized = Math.abs(width - layer.width) >= 1 || Math.abs(height - layer.height) >= 1;
+    const patch = {
+      x: Math.round(centerX - width / 2), y: Math.round(centerY - height / 2),
+      width, height, rotation: Math.round(node.rotation()),
+      ...(resized ? { textAutoSize: false, autoFit: false } : {})
+    };
+    node.setAttrs({ width, height, offsetX: width / 2, offsetY: height / 2, scaleX: 1, scaleY: 1 });
+    trRef.current?.forceUpdate();
+    node.getLayer()?.batchDraw();
+    setTextTransformPreview((current) => ({ ...current, [layer.id]: patch }));
+  };
+
   const finishTransform = () => {
     const patches = {};
     selectedIds.forEach((id) => {
@@ -3961,10 +4028,12 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
       const node = nodeRefs.current[id];
       if (!node || layer?.locked) return;
       const sx = node.scaleX(); const sy = node.scaleY();
-      const width = Math.max(10, Math.round(node.width() * sx)); const height = Math.max(10, Math.round(node.height() * sy));
-      patches[id] = { x: Math.round(node.x() - width / 2), y: Math.round(node.y() - height / 2), width, height, rotation: Math.round(node.rotation()) };
+      const width = Math.max(10, Math.round(node.width() * Math.abs(sx))); const height = Math.max(10, Math.round(node.height() * Math.abs(sy)));
+      const resized = Math.abs(width - layer.width) >= 1 || Math.abs(height - layer.height) >= 1;
+      patches[id] = { x: Math.round(node.x() - width / 2), y: Math.round(node.y() - height / 2), width, height, rotation: Math.round(node.rotation()), ...(layer.type === 'text' && resized ? { textAutoSize: false, autoFit: false } : {}) };
       node.scaleX(1); node.scaleY(1);
     });
+    setTextTransformPreview({});
     if (Object.keys(patches).length) updateLayers(patches);
   };
 
@@ -4380,6 +4449,61 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     if (ids.length) onMarqueeContextMenu(ids, marquee, nativeEvent);
   };
 
+  const magicEraseAt = async (layer, local) => {
+    const token = ++magicEraseTokenRef.current;
+    const source = layer.id === gifFrameLayerId && gifFrameSource ? gifFrameSource : layer.src;
+    const isolated = await renderIsolatedLayer(layer, source, null, null, null);
+    if (token !== magicEraseTokenRef.current) return;
+    const width = Math.max(1, Math.round(layer.width));
+    const height = Math.max(1, Math.round(layer.height));
+    const rendered = document.createElement('canvas');
+    rendered.width = width; rendered.height = height;
+    const renderedCtx = rendered.getContext('2d');
+    renderedCtx.drawImage(isolated.canvas, -isolated.insets.left, -isolated.insets.top, isolated.logicalWidth, isolated.logicalHeight);
+    const image = renderedCtx.getImageData(0, 0, width, height);
+    const data = image.data;
+    const startX = clamp(Math.round(local.x * width / Math.max(1, layer.width)), 0, width - 1);
+    const startY = clamp(Math.round(local.y * height / Math.max(1, layer.height)), 0, height - 1);
+    const seed = startY * width + startX;
+    const seedOffset = seed * 4;
+    if (data[seedOffset + 3] < 4) return;
+    const target = [data[seedOffset], data[seedOffset + 1], data[seedOffset + 2], data[seedOffset + 3]];
+    const tolerance = Math.min(180, Math.max(4, 18 + brushSize * .9));
+    const toleranceSquared = tolerance * tolerance * 3;
+    const queued = new Uint8Array(width * height);
+    const selectedPixels = new Uint8Array(width * height);
+    const stack = new Int32Array(width * height);
+    let stackSize = 0;
+    stack[stackSize++] = seed; queued[seed] = 1;
+    const queue = (index) => { if (!queued[index]) { queued[index] = 1; stack[stackSize++] = index; } };
+    while (stackSize) {
+      const index = stack[--stackSize];
+      const offset = index * 4;
+      const alpha = data[offset + 3];
+      const red = data[offset] - target[0]; const green = data[offset + 1] - target[1]; const blue = data[offset + 2] - target[2];
+      if (alpha < 4 || red * red + green * green + blue * blue > toleranceSquared || Math.abs(alpha - target[3]) > tolerance) continue;
+      selectedPixels[index] = 1;
+      const x = index % width; const y = Math.floor(index / width);
+      if (x > 0) queue(index - 1);
+      if (x + 1 < width) queue(index + 1);
+      if (y > 0) queue(index - width);
+      if (y + 1 < height) queue(index + width);
+    }
+    const eraseCanvas = await ensurePaintSurface(layer, 'erase');
+    if (token !== magicEraseTokenRef.current) return;
+    const eraseCtx = eraseCanvas.getContext('2d');
+    const eraseImage = eraseCtx.getImageData(0, 0, eraseCanvas.width, eraseCanvas.height);
+    for (let index = 0; index < selectedPixels.length; index += 1) {
+      if (!selectedPixels[index]) continue;
+      const offset = index * 4;
+      eraseImage.data[offset] = 0; eraseImage.data[offset + 1] = 0; eraseImage.data[offset + 2] = 0; eraseImage.data[offset + 3] = 255;
+    }
+    eraseCtx.putImageData(eraseImage, 0, 0);
+    const eraseSrc = eraseCanvas.toDataURL('image/png');
+    eraseSurfacesRef.current[layer.id] = { key: eraseSrc + '|' + Math.round(layer.width) + 'x' + Math.round(layer.height), canvas: eraseCanvas };
+    onPaintCommit(layer.id, { eraseSrc });
+  };
+
   const beginPaint = async (event) => {
     if (!['brush', 'mosaic', 'heal', 'fill', 'eraser', 'picker'].includes(tool)) return false;
     event.evt.preventDefault();
@@ -4402,6 +4526,10 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     if (!layer) return true;
     if (!pointInLayer(templatePoint.x, templatePoint.y, layer)) return true;
     const local = layerLocalPoint(layer, templatePoint);
+    if (effectiveTool === 'eraser' && eraserMode === 'magic') {
+      await magicEraseAt(layer, local);
+      return true;
+    }
     const pointerToken = ++paintPointerRef.current;
     const mode = effectiveTool === 'eraser' ? (eraserMode === 'layer' ? 'erase-layer' : 'erase-paint') : effectiveTool;
     const surfaceKind = mode === 'erase-layer' ? 'erase' : 'paint';
@@ -4472,6 +4600,8 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     return () => window.removeEventListener('mouseup', finishOutsideStage);
   });
 
+  const singleSelectedLayer = selectedIds.length === 1 ? template.layers.find((layer) => layer.id === selectedIds[0]) : null;
+  const keepTransformRatio = Boolean(singleSelectedLayer && singleSelectedLayer.type !== 'text' && aspectRatioLockedOf(singleSelectedLayer));
   const selectedPolygon = tool === 'select' && selectedIds.length === 1
     ? template.layers.find((layer) => layer.id === selectedIds[0] && layer.type === 'slot' && shapeOf(layer) === 'polygon' && !layer.locked)
     : null;
@@ -4518,9 +4648,10 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
       {groupHitAreas.filter((group) => group.groupId !== selectedGroupId).map((group) => renderGroupHitArea(group))}
       {template.layers.map((layer) => {
         if (layer.id === textEditingId || !isLayerVisibleAtFrame(layer, gifFrameIndex)) return null;
+        const renderedLayer = textTransformPreview[layer.id] ? { ...layer, ...textTransformPreview[layer.id] } : layer;
         const interactive = tool === 'select' && !layer.locked && !selectedGroupId && selectedIds.includes(layer.id);
         const selectable = tool === 'select';
-        return <EditorLayer key={layer.id} layer={layer} source={layer.id === gifFrameLayerId ? gifFrameSource : undefined} interactive={interactive} selectable={selectable}
+        return <EditorLayer key={layer.id} layer={renderedLayer} source={layer.id === gifFrameLayerId ? gifFrameSource : undefined} interactive={interactive} selectable={selectable}
           paintSource={paintPreview?.id === layer.id && paintPreview.kind === 'paint' ? paintPreview.canvas : null}
           eraseSource={paintPreview?.id === layer.id && paintPreview.kind === 'erase' ? paintPreview.canvas : null}
           mosaicSource={paintPreview?.id === layer.id && paintPreview.kind === 'mosaic' ? paintPreview.canvas : null}
@@ -4531,7 +4662,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
           onEnterCrop={handleLayerDoubleClick}
           onContextMenu={(event) => onLayerContextMenu(layer.id, event.evt)}
           onChange={(patch) => updateLayer(layer.id, patch)}
-          onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)} onTransformEnd={false}/>;
+          onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)} onTransform={(event) => previewTextTransform(layer, event)} onTransformEnd={false}/>;
       })}
       {groupHitAreas.filter((group) => group.groupId === selectedGroupId).map((group) => renderGroupHitArea(group, true))}
       {tool === 'select' && !selectedGroupId && selectedIds.map((id) => template.layers.find((layer) => layer.id === id)).filter((layer) => layer && !layer.locked && layer.visible && layer.id !== textEditingId && isLayerVisibleAtFrame(layer, gifFrameIndex)).map((layer) => <Rect key={`selected-hit-${layer.id}`} x={layer.x + layer.width / 2} y={layer.y + layer.height / 2} offsetX={layer.width / 2} offsetY={layer.height / 2} width={layer.width} height={layer.height} rotation={layer.rotation || 0} fill="rgba(0,0,0,0.001)" draggable listening onMouseDown={(event) => { event.cancelBubble = true; startDrag(layer); }} onTouchStart={(event) => { event.cancelBubble = true; startDrag(layer); }} onClick={(event) => { event.cancelBubble = true; selectLayer(layer.id, event.evt); }} onTap={(event) => { event.cancelBubble = true; selectLayer(layer.id, event.evt); }} onContextMenu={(event) => { event.cancelBubble = true; onLayerContextMenu(layer.id, event.evt); }} onDblClick={handleLayerDoubleClick} onDblTap={handleLayerDoubleClick} onDragStart={() => startDrag(layer)} onDragMove={(event) => moveDrag(layer, event)} onDragEnd={(event) => finishDrag(layer, event)}/>) }{template.layers.filter((layer) => layer.locked && selectedIds.includes(layer.id) && layer.visible).map((layer) => <Rect key={`locked-${layer.id}`} x={layer.x} y={layer.y} width={layer.width} height={layer.height} rotation={layer.rotation || 0} stroke="#e24b35" strokeWidth={2 / zoom} dash={[7 / zoom, 5 / zoom]} listening={false}/>)}
@@ -4540,7 +4671,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
         points={[...lassoDraft.points, ...(lassoDraft.hover ? [lassoDraft.hover] : [])].flatMap((point) => [point.x, point.y])}
         closed={lassoDraft.mode !== 'polygon'} stroke="#4384ff" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>}
       {guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94b37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }
-      <Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} keepRatio={selectedIds.length === 1 && aspectRatioLockedOf(template.layers.find((item) => item.id === selectedIds[0]))} enabledAnchors={selectedIds.length === 1 && aspectRatioLockedOf(template.layers.find((item) => item.id === selectedIds[0])) ? ['top-left','top-right','bottom-left','bottom-right'] : ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/>
+      <Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} keepRatio={keepTransformRatio} enabledAnchors={keepTransformRatio ? ['top-left','top-right','bottom-left','bottom-right'] : ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/>
       {selectedPolygon && <Group x={selectedPolygon.x} y={selectedPolygon.y} rotation={selectedPolygon.rotation || 0}>{polygonPointsOf(selectedPolygon).map((point, index) => <KonvaCircle key={`polygon-handle-${selectedPolygon.id}-${index}`} x={point.x * selectedPolygon.width} y={point.y * selectedPolygon.height} radius={6 / zoom} fill="#fff" stroke="#e24b35" strokeWidth={1.5 / zoom} draggable onMouseDown={(event) => { event.cancelBubble = true; }} onDragMove={(event) => { event.cancelBubble = true; event.target.position({ x: clamp(event.target.x(), 0, selectedPolygon.width), y: clamp(event.target.y(), 0, selectedPolygon.height) }); }} onDragEnd={(event) => { event.cancelBubble = true; const next = { x: clamp(event.target.x() / selectedPolygon.width, 0, 1), y: clamp(event.target.y() / selectedPolygon.height, 0, 1) }; updateLayer(selectedPolygon.id, { polygonPoints: polygonPointsOf(selectedPolygon).map((item, itemIndex) => itemIndex === index ? next : item) }); }} />)}</Group>}
     </Layer>
   </Stage>{['marquee', 'quick-select', 'lasso'].includes(tool) && marquee && <div
@@ -4596,7 +4727,7 @@ function LayerBorderShape({ layer }) {
   return <Rect x={inset} y={inset} width={width} height={height} cornerRadius={shapeOf(layer) === 'rounded' ? Math.max(0, cornerRadiusOf(layer) - inset) : 0} {...props}/>;
 }
 
-function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransformEnd, interactive = true, selectable = interactive, selected = false, source, sources, paintSource, eraseSource, mosaicSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
+function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransform, onTransformEnd, interactive = true, selectable = interactive, selected = false, source, sources, paintSource, eraseSource, mosaicSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
   const image = useHtmlImage(layer.type === 'slot' && layer.slotFill ? '' : (source ?? layer.src));
   const multiImages = useHtmlImages(sources || EMPTY_IMAGE_SOURCES);
   const loadedPaintImage = useHtmlImage(layer.paintSrc);
@@ -4611,6 +4742,7 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
   if (selectable) Object.assign(common, { onMouseDown: onPointerDown, onTouchStart: onPointerDown, onClick: onSelect, onTap: onSelect, onDblClick: onEnterCrop, onDblTap: onEnterCrop, onContextMenu });
   if (interactive) {
     Object.assign(common, { onDragStart, onDragMove, onDragEnd: onDragEnd || ((event) => onChange({ x: Math.round(event.target.x() - layer.width / 2), y: Math.round(event.target.y() - layer.height / 2) })) });
+    if (onTransform) common.onTransform = onTransform;
     if (onTransformEnd !== false) common.onTransformEnd = onTransformEnd || ((event) => { const node = event.target; const sx = node.scaleX(), sy = node.scaleY(); const width = Math.max(10, Math.round(node.width() * sx)); const height = Math.max(10, Math.round(node.height() * sy)); node.scaleX(1); node.scaleY(1); onChange({ x: Math.round(node.x() - width / 2), y: Math.round(node.y() - height / 2), width, height, rotation: Math.round(node.rotation()) }); });
   }
   if (maskedResult && !cropMode) return <Group {...common}><KonvaImage image={maskedResult.canvas} x={-maskedResult.insets.left} y={-maskedResult.insets.top} width={maskedResult.logicalWidth} height={maskedResult.logicalHeight}/></Group>;
@@ -4807,6 +4939,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
   };
   const updateDimension = (axis, rawValue) => {
     const value = Math.max(10, rawValue);
+    if (layer.type === 'text') { update({ [axis]: value, textAutoSize: false, autoFit: false }); return; }
     if (!aspectRatioLockedOf(layer)) { update({ [axis]: value }); return; }
     const width = Math.max(0.0001, Number(layer.width) || 0.0001);
     const height = Math.max(0.0001, Number(layer.height) || 0.0001);
@@ -4822,14 +4955,14 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
     {gifFrameCount > 0 && !isGifSource(layer.src) ? <div className="property-section"><h4>出现帧</h4><div ref={frameMenuRef} className="frame-visibility-control"><input value={layer.visibleFrames || ''} placeholder="留空表示所有帧均显示" onChange={(event) => update({ visibleFrames: event.target.value })}/><button type="button" title="选择帧" onClick={() => setFrameMenuOpen((open) => !open)}>+</button>{frameMenuOpen && <div className="frame-visibility-menu">{Array.from({ length: gifFrameCount }, (_, index) => index + 1).map((frame) => <button type="button" key={frame} className={visibleFrameValues.includes(frame) ? 'active' : ''} onClick={() => toggleVisibleFrame(frame)}>{frame}</button>)}</div>}</div></div> : null}
     {layer.type === 'text' && <>
       <div className="property-section text-content-section"><h4>文字内容</h4><textarea value={layer.text || ''} onPointerDown={onBeginTextInteraction} onFocus={onBeginTextInteraction} onChange={(event) => { onBeginTextInteraction?.(); updateText(event.target.value); onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd }); }} onSelect={(event) => onTextSelectionChange?.({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}/><label className="check-row text-lock-row"><input type="checkbox" checked={Boolean(layer.textLocked)} onChange={(event) => update({ textLocked: event.target.checked })}/><span>禁用替换文本</span></label></div>
-      <div className="property-section"><h4>字体{textSelection && textSelection.start !== textSelection.end ? ' · 已选 ' + Math.abs(textSelection.end - textSelection.start) + ' 字' : ''}</h4><select className="property-select" value={activeTextStyle.fontFamily} onChange={(event) => updateTextStyle({ fontFamily: event.target.value })}><option value="Microsoft YaHei">微软雅黑</option><option value="SimHei">黑体</option><option value="SimSun">宋体</option><option value="KaiTi">楷体</option><option value="Arial">Arial</option><option value="Segoe UI">Segoe UI</option></select><div className="text-format-row"><div><span>字号</span><NumericInput min={TEXT_SIZE_MIN} max={TEXT_SIZE_MAX} presets={FONT_SIZE_PRESETS} value={activeTextStyle.fontSize} onCommit={(fontSize) => updateTextStyle({ fontSize })}/></div><input className="color-swatch" type="color" title="文字颜色" value={activeTextStyle.fill} onChange={(event) => updateTextStyle({ fill: event.target.value })}/></div><NumberField label="间距" value={activeTextStyle.lineHeight} min={0} max={20} step={0.05} integer={false} presets={LINE_HEIGHT_PRESETS} onChange={(lineHeight) => updateTextStyle({ lineHeight })}/><label className="check-row" title="内容超出文本框时自动缩小字号；关闭后保持设定字号，超出部分可能被裁切。"><input type="checkbox" checked={Boolean(layer.autoFit)} onChange={(event) => update({ autoFit: event.target.checked })}/><span>文字自动适配文本框</span></label><div className="format-buttons"><button type="button" title="加粗" className={fontTokenSet.has('bold') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleFont('bold')}><Bold size={17}/></button><button type="button" title="斜体" className={fontTokenSet.has('italic') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleFont('italic')}><Italic size={17}/></button><button type="button" title="下划线" className={decorationTokenSet.has('underline') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleDecoration('underline')}><Underline size={17}/></button><button type="button" title="删除线" className={decorationTokenSet.has('line-through') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleDecoration('line-through')}><Strikethrough size={17}/></button></div><div className="format-buttons align-buttons"><button title="左对齐" className={layer.align === 'left' ? 'active' : ''} onClick={() => update({ align: 'left' })}><AlignLeft size={17}/></button><button title="居中" className={layer.align === 'center' ? 'active' : ''} onClick={() => update({ align: 'center' })}><AlignCenter size={17}/></button><button title="右对齐" className={layer.align === 'right' ? 'active' : ''} onClick={() => update({ align: 'right' })}><AlignRight size={17}/></button></div></div>
+      <div className="property-section"><h4>字体{textSelection && textSelection.start !== textSelection.end ? ' · 已选 ' + Math.abs(textSelection.end - textSelection.start) + ' 字' : ''}</h4><select className="property-select" value={activeTextStyle.fontFamily} onChange={(event) => updateTextStyle({ fontFamily: event.target.value })}><option value="Microsoft YaHei">微软雅黑</option><option value="SimHei">黑体</option><option value="SimSun">宋体</option><option value="KaiTi">楷体</option><option value="Arial">Arial</option><option value="Segoe UI">Segoe UI</option></select><div className="text-format-row"><div><span>字号</span><NumericInput min={TEXT_SIZE_MIN} max={TEXT_SIZE_MAX} presets={FONT_SIZE_PRESETS} value={activeTextStyle.fontSize} onCommit={(fontSize) => updateTextStyle({ fontSize })}/></div><input className="color-swatch" type="color" title="文字颜色" value={activeTextStyle.fill} onChange={(event) => updateTextStyle({ fill: event.target.value })}/></div><NumberField label="间距" value={activeTextStyle.lineHeight} min={0} max={20} step={0.05} integer={false} presets={LINE_HEIGHT_PRESETS} onChange={(lineHeight) => updateTextStyle({ lineHeight })}/><label className="check-row" title="内容超出文本框时自动缩小字号；关闭后保持设定字号，超出部分可能被裁切。"><input type="checkbox" checked={Boolean(layer.autoFit)} onChange={(event) => update({ autoFit: event.target.checked })}/><span>文字自动适配文本框</span></label><div className="format-buttons"><button type="button" title="加粗" className={fontTokenSet.has('bold') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleFont('bold')}><Bold size={17}/></button><button type="button" title="斜体" className={fontTokenSet.has('italic') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleFont('italic')}><Italic size={17}/></button><button type="button" title="下划线" className={decorationTokenSet.has('underline') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleDecoration('underline')}><Underline size={17}/></button><button type="button" title="删除线" className={decorationTokenSet.has('line-through') ? 'active' : ''} onPointerDown={(event) => event.preventDefault()} onClick={() => toggleDecoration('line-through')}><Strikethrough size={17}/></button></div><div className="text-alignment-controls"><div className="text-alignment-row"><span>水平</span><div className="format-buttons align-buttons"><button type="button" title="水平左对齐" className={textHorizontalAlignOf(layer) === 'left' ? 'active' : ''} onClick={() => update({ horizontalAlign: 'left' })}><AlignLeft size={17}/></button><button type="button" title="水平居中" className={textHorizontalAlignOf(layer) === 'center' ? 'active' : ''} onClick={() => update({ horizontalAlign: 'center' })}><AlignCenter size={17}/></button><button type="button" title="水平右对齐" className={textHorizontalAlignOf(layer) === 'right' ? 'active' : ''} onClick={() => update({ horizontalAlign: 'right' })}><AlignRight size={17}/></button></div></div><div className="text-alignment-row"><span>垂直</span><div className="format-buttons align-buttons"><button type="button" title="垂直顶部对齐" className={textVerticalAlignOf(layer) === 'top' ? 'active' : ''} onClick={() => update({ verticalAlign: 'top' })}><AlignVerticalJustifyStart size={17}/></button><button type="button" title="垂直居中" className={textVerticalAlignOf(layer) === 'middle' ? 'active' : ''} onClick={() => update({ verticalAlign: 'middle' })}><AlignVerticalJustifyCenter size={17}/></button><button type="button" title="垂直底部对齐" className={textVerticalAlignOf(layer) === 'bottom' ? 'active' : ''} onClick={() => update({ verticalAlign: 'bottom' })}><AlignVerticalJustifyEnd size={17}/></button></div></div></div></div>
       <div className="property-section"><h4>文字效果</h4><div className="effect-grid"><label><span>外描边</span><input type="color" value={activeTextStyle.stroke} onChange={(event) => updateTextStyle({ stroke: event.target.value })}/></label><NumberField label="外描边宽度" value={activeTextStyle.strokeWidth} min={0} max={30} presets={EFFECT_SIZE_PRESETS} onChange={(strokeWidth) => updateTextStyle({ strokeWidth })}/><label><span>背景</span><input type="color" value={layer.background || '#ffffff'} onChange={(event) => update({ background: event.target.value })}/></label><NumberField label="背景内边距" value={layer.backgroundPadding || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(backgroundPadding) => update({ backgroundPadding })}/></div><button className="wide-property-button subtle" onClick={() => update({ background: layer.background ? '' : '#ffffff' })}>{layer.background ? '移除文字背景' : '启用文字背景'}</button><label className="check-row"><input type="checkbox" checked={Boolean(layer.shadowEnabled)} onChange={(event) => update({ shadowEnabled: event.target.checked })}/><span>启用文字阴影</span></label>{layer.shadowEnabled && <div className="effect-grid"><label><span>阴影颜色</span><input type="color" value={layer.shadowColor || '#000000'} onChange={(event) => update({ shadowColor: event.target.value })}/></label><NumberField label="模糊" value={layer.shadowBlur || 0} min={0} max={50} presets={EFFECT_SIZE_PRESETS} onChange={(shadowBlur) => update({ shadowBlur })}/><NumberField label="水平偏移" value={layer.shadowOffsetX || 0} onChange={(shadowOffsetX) => update({ shadowOffsetX })}/><NumberField label="垂直偏移" value={layer.shadowOffsetY || 0} onChange={(shadowOffsetY) => update({ shadowOffsetY })}/></div>}</div>
     </>}
     <div className="property-section layer-composite-section">
       <div className="blend-mode-row"><h4>图层混合模式</h4><div ref={blendMenuRef} className="property-dropdown blend-mode-field"><button type="button" className="property-dropdown-trigger" aria-expanded={blendMenuOpen} onClick={() => { setBlendMenuOpen((open) => !open); setBindingMenuOpen(false); setFrameMenuOpen(false); }}><span>{activeBlendMode.label}</span><ChevronDown size={14}/></button>{blendMenuOpen && <div className="property-dropdown-menu blend-mode-menu">{LAYER_BLEND_MODES.map((option) => <button type="button" key={option.value} className={activeBlendMode.value === option.value ? 'active' : ''} onClick={() => { update({ blendMode: option.value }); setBlendMenuOpen(false); }}><span>{option.label}</span></button>)}</div>}</div></div>
     </div>
     <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} presets={false} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} presets={false} onChange={(y) => update({ y })}/></div><div className="rotation-inline-row"><div className="rotation-inline-control"><h4>旋转</h4><div className="rotation-inline-input"><NumericInput value={Number(layer.rotation) || 0} min={-360} max={360} presets={ROTATION_PRESETS} onCommit={(rotation) => update({ rotation })}/></div></div><input className="range" type="range" min="-180" max="180" value={Number(layer.rotation) || 0} onChange={(event) => { const rotation = Number(event.target.value); update({ rotation: rotationShiftRef.current ? Math.round(rotation / 45) * 45 : rotation }); }}/></div></div>
-    <div className="property-section"><div className="property-heading-row"><h4>尺寸</h4><button type="button" className={`aspect-lock-button ${aspectRatioLockedOf(layer) ? 'active' : ''}`} title={aspectRatioLockedOf(layer) ? '取消锁定宽高比' : '锁定宽高比'} onClick={() => update({ aspectRatioLocked: !aspectRatioLockedOf(layer) })}>{aspectRatioLockedOf(layer) ? <Lock size={13}/> : <Unlock size={13}/>}<span>宽高比</span></button></div><div className="property-grid"><NumberField label="宽" value={layer.width} min={10} presets={SIZE_PRESETS} onChange={(width) => updateDimension('width', width)}/><NumberField label="高" value={layer.height} min={10} presets={SIZE_PRESETS} onChange={(height) => updateDimension('height', height)}/></div></div>
+    <div className="property-section"><div className="property-heading-row"><h4>尺寸</h4>{layer.type !== 'text' && <button type="button" className={`aspect-lock-button ${aspectRatioLockedOf(layer) ? 'active' : ''}`} title={aspectRatioLockedOf(layer) ? '取消锁定宽高比' : '锁定宽高比'} onClick={() => update({ aspectRatioLocked: !aspectRatioLockedOf(layer) })}>{aspectRatioLockedOf(layer) ? <Lock size={13}/> : <Unlock size={13}/>}<span>宽高比</span></button>}</div><div className="property-grid"><NumberField label="宽" value={layer.width} min={10} presets={SIZE_PRESETS} onChange={(width) => updateDimension('width', width)}/><NumberField label="高" value={layer.height} min={10} presets={SIZE_PRESETS} onChange={(height) => updateDimension('height', height)}/></div></div>
     <div className="property-section"><h4>边框</h4><div className="border-controls"><label><span>颜色</span><input type="color" value={layer.borderColor || '#000000'} onChange={(event) => update({ borderColor: event.target.value })}/></label><label><span>类型</span><select className="property-select" value={borderPositionOf(layer)} onChange={(event) => update({ borderPosition: event.target.value })}><option value="outer">外边框</option><option value="inner">内边框</option></select></label><NumberField label="大小" value={layer.borderWidth || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(borderWidth) => update({ borderWidth })}/></div></div>
     {layer.type === 'slot' && <>
       <div className="property-section"><h4>槽位形状</h4><div className="shape-segmented four"><button className={shapeOf(layer) === 'rect' ? 'active' : ''} onClick={() => update({ shape: 'rect' })}>矩形</button><button className={shapeOf(layer) === 'circle' ? 'active' : ''} onClick={() => update({ shape: 'circle' })}>圆形</button><button className={shapeOf(layer) === 'rounded' ? 'active' : ''} onClick={() => update({ shape: 'rounded', cornerRadius: layer.cornerRadius ?? 36 })}>圆角</button><button className={shapeOf(layer) === 'polygon' ? 'active' : ''} onClick={() => update({ shape: 'polygon', polygonSides: layer.polygonSides || 5, polygonPoints: polygonPointsOf(layer) })}>多边形</button></div>{shapeOf(layer) === 'rounded' && <div className="rounded-radius-control"><NumberField label="圆角半径" value={layer.cornerRadius ?? 36} min={0} max={Math.floor(Math.min(layer.width, layer.height) / 2)} presets={[0, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128]} onChange={(cornerRadius) => update({ cornerRadius })}/></div>}{shapeOf(layer) === 'polygon' && <div className="polygon-controls"><NumberField label="边数" value={layer.polygonSides || 5} min={POLYGON_MIN_SIDES} max={POLYGON_MAX_SIDES} presets={[3, 4, 5, 6, 8, 10, 12, 16]} onChange={(polygonSides) => update({ polygonSides, polygonPoints: regularPolygonPoints(polygonSides) })}/>{polygonPointsOf(layer).map((point, index) => <label key={index} className="polygon-radius"><span>顶点 {index + 1}</span><input type="range" min="10" max="100" value={polygonRadiusPercent(point)} onChange={(event) => update({ polygonPoints: polygonPointsOf(layer).map((item, itemIndex) => itemIndex === index ? polygonPointAtRadius(item, Number(event.target.value)) : item) })}/><output>{polygonRadiusPercent(point)}%</output></label>)}</div>}</div>
