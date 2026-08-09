@@ -1428,7 +1428,7 @@ function App() {
   const [templates, setTemplates] = useState([]);
   const [editorDrafts, setEditorDrafts] = useState({});
   const [useSessions, setUseSessions] = useState({});
-  const [config, setConfig] = useState({ theme: 'system', autoCopy: true, libraryCardSize: 'large' });
+  const [config, setConfig] = useState({ theme: 'system', autoCopy: true, libraryCardSize: 'large', librarySort: 'recent' });
   const [templateFolders, setTemplateFolders] = useState([]);
   const [libraryFolder, setLibraryFolder] = useState('');
   const [ready, setReady] = useState(false);
@@ -1561,13 +1561,21 @@ function App() {
     notify('模板已复制');
   };
 
-  const useTemplate = async (template, file) => {
-    const nextTemplate = { ...template, lastUsedAt: Date.now() };
-    const next = templates.map((item) => item.id === template.id ? nextTemplate : item);
-    setTemplates(next);
-    desktop.saveTemplates(next).catch(() => undefined);
-    setPage({ name: 'use', template: nextTemplate, files: Array.isArray(file) ? file : file ? [file] : [] });
+  const useTemplate = (template, file) => {
+    setPage({ name: 'use', template, files: Array.isArray(file) ? file : file ? [file] : [] });
   };
+
+  const markTemplateUsed = useCallback((id) => {
+    const lastUsedAt = Date.now();
+    setTemplates((current) => {
+      const next = current.map((item) => item.id === id ? { ...item, lastUsedAt } : item);
+      desktop.saveTemplates(next).catch(() => undefined);
+      return next;
+    });
+    setPage((current) => current.template?.id === id
+      ? { ...current, template: { ...current.template, lastUsedAt } }
+      : current);
+  }, []);
 
   const toggleFavorite = async (id) => {
     const next = templates.map((item) => item.id === id ? { ...item, favorite: !item.favorite } : item);
@@ -1618,9 +1626,9 @@ function App() {
   if (!ready) return <div className="loading-screen"><Sparkles size={26}/><span>正在准备模板库...</span></div>;
 
   return <div className="app-shell">
-     {page.name === 'library' && <Library templates={templates} folders={templateFolders} currentFolder={libraryFolder} onFolderChange={setLibraryFolder} cardSize={config.libraryCardSize || 'large'} query={query} setQuery={setQuery} onCardSizeChange={(libraryCardSize) => updateConfig({ libraryCardSize })} onRefresh={refreshTemplates} onCreate={(folderPath) => setPage({ name: 'editor', folderPath })} onOpenSettings={() => setSettingsOpen(true)} onEdit={(template) => setPage({ name: 'editor', template })} onRename={renameTemplate} onUse={useTemplate} onDelete={deleteTemplate} onCopy={copyTemplate} onToggleFavorite={toggleFavorite} notify={notify}/>}
+     {page.name === 'library' && <Library templates={templates} folders={templateFolders} currentFolder={libraryFolder} onFolderChange={setLibraryFolder} cardSize={config.libraryCardSize || 'large'} sort={config.librarySort || 'recent'} query={query} setQuery={setQuery} onCardSizeChange={(libraryCardSize) => updateConfig({ libraryCardSize })} onSortChange={(librarySort) => updateConfig({ librarySort })} onRefresh={refreshTemplates} onCreate={(folderPath) => setPage({ name: 'editor', folderPath })} onOpenSettings={() => setSettingsOpen(true)} onEdit={(template) => setPage({ name: 'editor', template })} onRename={renameTemplate} onUse={useTemplate} onCopied={markTemplateUsed} onDelete={deleteTemplate} onCopy={copyTemplate} onToggleFavorite={toggleFavorite} notify={notify}/>}
     {page.name === 'editor' && <Editor initial={page.template} initialFolderPath={page.folderPath || ''} autosave={editorDrafts[page.template?.id || 'new']} onSaveDraft={saveEditorDraft} onClearDraft={clearEditorDraft} onBack={() => setPage({ name: 'library' })} onSave={saveTemplate} notify={notify}/>}
-    {page.name === 'use' && <UseTemplate template={page.template} initialFiles={page.files} cachedSession={useSessions[page.template.id]} onSaveSession={saveUseSession} onBack={() => setPage({ name: 'library' })} onEdit={() => setPage({ name: 'editor', template: page.template })} notify={notify}/>}
+    {page.name === 'use' && <UseTemplate template={page.template} initialFiles={page.files} cachedSession={useSessions[page.template.id]} onSaveSession={saveUseSession} onCopied={markTemplateUsed} onBack={() => setPage({ name: 'library' })} onEdit={() => setPage({ name: 'editor', template: page.template })} notify={notify}/>}
     {settingsOpen && <SettingsDialog config={config} onChange={updateConfig} onClose={() => setSettingsOpen(false)}/>}
     <Toast toast={toast}/>
   </div>;
@@ -1701,8 +1709,7 @@ function SettingsDialog({ config, onChange, onClose }) {
   return <div className="settings-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="settings-dialog" role="dialog" aria-modal="true"><div className="settings-dialog-heading"><div><p className="eyebrow">全局设置</p><h2>界面主题与主页显示</h2></div><IconButton label="关闭" onClick={onClose}><X size={18}/></IconButton></div><div className="settings-dialog-section"><h3>界面主题</h3><div className="settings-options">{themeOptions.map(({ value, label, description, icon: Icon }) => <button type="button" key={value} className={`settings-option ${config.theme === value ? 'active' : ''}`} onClick={() => onChange({ theme: value })}><span className="settings-option-icon"><Icon size={18}/></span><span><strong>{label}</strong><small>{description}</small></span><span className="settings-option-check">{config.theme === value ? '✓' : ''}</span></button>)}</div></div><div className="settings-dialog-section"><h3>主页模板显示大小</h3><div className="settings-size-options">{sizeOptions.map(({ value, label }) => <button type="button" key={value} className={`settings-size-option ${((config.libraryCardSize || 'large') === value) ? 'active' : ''}`} onClick={() => onChange({ libraryCardSize: value })}><span className="settings-size-radio">{(config.libraryCardSize || 'large') === value ? '●' : '○'}</span><strong>{label}</strong></button>)}</div></div><p className="settings-note">设置会立即生效，并保存到程序目录的 Data/config.json。</p></div></div>;
 }
 
-function Library({ templates, folders = [], currentFolder = '', onFolderChange, cardSize = 'large', query, setQuery, onCardSizeChange, onRefresh, onCreate, onOpenSettings, onEdit, onRename, onUse, onDelete, onCopy, onToggleFavorite, notify }) {
-  const [sort, setSort] = useState('recent');
+function Library({ templates, folders = [], currentFolder = '', onFolderChange, cardSize = 'large', sort = 'recent', query, setQuery, onCardSizeChange, onSortChange, onRefresh, onCreate, onOpenSettings, onEdit, onRename, onUse, onCopied, onDelete, onCopy, onToggleFavorite, notify }) {
   const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [templateType, setTemplateType] = useState('all');
   const [refreshing, setRefreshing] = useState(false);
@@ -1773,11 +1780,11 @@ function Library({ templates, folders = [], currentFolder = '', onFolderChange, 
   }, [cardSize, onCardSizeChange]);
   return <main className={`library-page library-size-${['small', 'medium', 'large'].includes(cardSize) ? cardSize : 'large'}`}>
     <header className="topbar"><Brand/><div className="topbar-actions"><button className="secondary-button" onClick={onOpenSettings}><Settings size={17}/>设置</button><span className="storage-note">{desktop.isDesktop ? '模板保存在程序目录的 meme 文件夹' : '模板保存在浏览器'}</span><button className="secondary-button" onClick={refresh} disabled={refreshing}><RefreshCw className={refreshing ? 'refresh-icon spinning' : 'refresh-icon'} size={17}/>{refreshing ? '刷新中' : '刷新'}</button><button className="primary-button" onClick={() => onCreate(normalizedFolder)}><Plus size={18}/>新建模板</button></div></header>
-    <section className="library-heading"><div><p className="eyebrow">模板工作台</p><h1>选择一个模板，马上开始</h1><p>点击使用，或把图片直接拖到模板上。</p><nav className="library-breadcrumb" aria-label="模板目录路径"><button type="button" onClick={() => setCurrentFolder('')}>meme</button>{breadcrumbParts.map((part, index) => { const target = breadcrumbParts.slice(0, index + 1).join('/'); return <React.Fragment key={target}><span>/</span><button type="button" onClick={() => setCurrentFolder(target)}>{part}</button></React.Fragment>; })}<span>/</span></nav></div><div className="library-controls"><div className="search-box"><LayoutTemplate size={18}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索名称或标签"/></div><button className={`favorite-filter ${favoritesOnly ? 'active' : ''}`} onClick={() => setFavoritesOnly((current) => !current)}><Star size={16} fill={favoritesOnly ? 'currentColor' : 'none'}/>收藏</button><div className="template-type-filter" role="group" aria-label="模板类型"><button className={templateType === 'all' ? 'active' : ''} onClick={() => setTemplateType('all')}>全部</button><button className={templateType === 'gif' ? 'active' : ''} onClick={() => setTemplateType('gif')}>GIF</button><button className={templateType === 'static' ? 'active' : ''} onClick={() => setTemplateType('static')}>普通</button></div><select value={sort} onChange={(event) => setSort(event.target.value)} aria-label="模板排序"><option value="recent">最近使用</option><option value="created">最近创建</option><option value="name">按名称</option></select></div></section>
+    <section className="library-heading"><div><p className="eyebrow">模板工作台</p><h1>选择一个模板，马上开始</h1><p>点击使用，或把图片直接拖到模板上。</p><nav className="library-breadcrumb" aria-label="模板目录路径"><button type="button" onClick={() => setCurrentFolder('')}>meme</button>{breadcrumbParts.map((part, index) => { const target = breadcrumbParts.slice(0, index + 1).join('/'); return <React.Fragment key={target}><span>/</span><button type="button" onClick={() => setCurrentFolder(target)}>{part}</button></React.Fragment>; })}<span>/</span></nav></div><div className="library-controls"><div className="search-box"><LayoutTemplate size={18}/><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索名称或标签"/></div><button className={`favorite-filter ${favoritesOnly ? 'active' : ''}`} onClick={() => setFavoritesOnly((current) => !current)}><Star size={16} fill={favoritesOnly ? 'currentColor' : 'none'}/>收藏</button><div className="template-type-filter" role="group" aria-label="模板类型"><button className={templateType === 'all' ? 'active' : ''} onClick={() => setTemplateType('all')}>全部</button><button className={templateType === 'gif' ? 'active' : ''} onClick={() => setTemplateType('gif')}>GIF</button><button className={templateType === 'static' ? 'active' : ''} onClick={() => setTemplateType('static')}>普通</button></div><select value={sort} onChange={(event) => onSortChange(event.target.value)} aria-label="模板排序"><option value="recent">最近使用</option><option value="created">最近创建</option><option value="name">按名称</option></select></div></section>
     <section className="template-grid">
       {normalizedFolder && <button className="folder-card folder-parent-card" onClick={() => setCurrentFolder(parentFolder)}><span className="folder-card-icon"><ArrowLeft size={24}/></span><strong>返回上一级</strong><small>{parentFolder ? `${folderName(parentFolder)}/` : 'meme/'}</small></button>}
       {visibleFolders.map((folder) => <button className="folder-card" key={folder} onClick={() => { setCurrentFolder(folder); if (normalizedQuery) setQuery(''); }}><span className="folder-card-icon"><FolderOpen size={24}/></span><strong>{folderName(folder)}</strong><small>{`${folder}/`}</small></button>)}
-      {filtered.map((template) => <TemplateCard key={template.id} template={template} onUse={onUse} onEdit={onEdit} onRename={onRename} onCopy={onCopy} onDelete={onDelete} onToggleFavorite={onToggleFavorite} notify={notify}/>) }
+      {filtered.map((template) => <TemplateCard key={template.id} template={template} onUse={onUse} onCopied={onCopied} onEdit={onEdit} onRename={onRename} onCopy={onCopy} onDelete={onDelete} onToggleFavorite={onToggleFavorite} notify={notify}/>) }
       <button className="new-template-card" onClick={() => onCreate(normalizedFolder)}><span className="new-icon"><Plus size={26}/></span><strong>创建新模板</strong><small>设置底图与照片位置</small></button>
     </section>
     {!filtered.length && !visibleFolders.length && <div className="empty-state"><LayoutTemplate size={34}/><h3>没有找到模板或文件夹</h3><p>换个关键词，或新建一个模板。</p></div>}
@@ -1808,7 +1815,7 @@ function RenameTemplateDialog({ template, onCancel, onSave }) {
   </div>;
 }
 
-function TemplateCard({ template, onUse, onEdit, onRename, onCopy, onDelete, onToggleFavorite, notify }) {
+function TemplateCard({ template, onUse, onCopied, onEdit, onRename, onCopy, onDelete, onToggleFavorite, notify }) {
   const [preview, setPreview] = useState('');
   const [dragging, setDragging] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -1861,6 +1868,7 @@ function TemplateCard({ template, onUse, onEdit, onRename, onCopy, onDelete, onT
       if (isQuickExportCancelled(job)) return;
       updateQuickExport(job, 78, '正在复制到剪贴板');
       await desktop.copyImage(dataUrl);
+      onCopied?.(template.id);
       if (isQuickExportCancelled(job)) return;
       updateQuickExport(job, 100, '导出完成');
       notify('作品已生成并复制到剪贴板');
@@ -1869,7 +1877,7 @@ function TemplateCard({ template, onUse, onEdit, onRename, onCopy, onDelete, onT
     } finally {
       finishQuickExport(job);
     }
-  }, [beginQuickExport, canQuickReplace, finishQuickExport, isQuickExportCancelled, notify, quickWorking, renderQuickOutput, updateQuickExport]);
+  }, [beginQuickExport, canQuickReplace, finishQuickExport, isQuickExportCancelled, notify, onCopied, quickWorking, renderQuickOutput, template.id, updateQuickExport]);
   const quickReplaceBatch = useCallback(async (sources) => {
     if (!canQuickReplace || quickWorking || !sources.length) return;
     const job = beginQuickExport(hasGif ? '正在合成 GIF' : '正在批量生成作品');
@@ -1885,6 +1893,7 @@ function TemplateCard({ template, onUse, onEdit, onRename, onCopy, onDelete, onT
         if (isQuickExportCancelled(job)) return;
         updateQuickExport(job, 86, '正在复制 GIF 到剪贴板');
         await desktop.copyImage(output);
+        onCopied?.(template.id);
         if (isQuickExportCancelled(job)) return;
         updateQuickExport(job, 100, '导出完成');
         notify(`已将 ${sources.length} 张图片合成为 1 个 GIF 并复制`);
@@ -1900,6 +1909,7 @@ function TemplateCard({ template, onUse, onEdit, onRename, onCopy, onDelete, onT
         updateQuickExport(job, 86, '正在复制到剪贴板');
         if (outputs.length === 1) await desktop.copyImage(outputs[0]);
         else await desktop.copyImages(outputs);
+        onCopied?.(template.id);
         if (isQuickExportCancelled(job)) return;
         updateQuickExport(job, 100, '导出完成');
         notify(`已生成并复制 ${outputs.length} 张作品`);
@@ -1909,7 +1919,7 @@ function TemplateCard({ template, onUse, onEdit, onRename, onCopy, onDelete, onT
     } finally {
       finishQuickExport(job);
     }
-  }, [beginQuickExport, canQuickReplace, finishQuickExport, hasGif, isQuickExportCancelled, notify, quickWorking, renderQuickOutput, slots, template, updateQuickExport]);
+  }, [beginQuickExport, canQuickReplace, finishQuickExport, hasGif, isQuickExportCancelled, notify, onCopied, quickWorking, renderQuickOutput, slots, template, updateQuickExport]);
   const pasteImage = useCallback(async () => {
     setPasteMenu(null);
     try {
@@ -2712,6 +2722,30 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
     } catch (error) { notify(error.message, 'error'); }
   };
 
+  const addWhiteCanvasBackground = () => {
+    if (draft.width <= 0 || draft.height <= 0) {
+      notify('请先设置大于 0 的画布尺寸', 'error');
+      setFixedLayerMenu(false);
+      return;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = 1; canvas.height = 1;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, 1, 1);
+    const layer = {
+      id: uid(), name: '白色画布背景', type: 'static', src: canvas.toDataURL('image/png'),
+      x: 0, y: 0, width: draft.width, height: draft.height, rotation: 0,
+      opacity: 1, blendMode: 'source-over', aspectRatioLocked: true, visible: true, fit: 'fill'
+    };
+    updateDraft((previous) => ({ ...previous, layers: [layer, ...previous.layers] }));
+    setFixedLayerMenu(false);
+    setSelectedIds([layer.id]);
+    setSelectedGroupId(null);
+    setSelectedGroupIds([]);
+    setActiveTool('select');
+  };
+
   const dropImageOnEditor = async (event) => {
     const file = Array.from(event.dataTransfer?.files || []).find((item) => isImageFileLike(item));
     if (!file) return;
@@ -3429,7 +3463,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
         <div className="layer-add-row">
           <div className="fixed-layer-add-wrap">
             <button onClick={() => memeInput.current?.click()} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setFixedLayerMenu((open) => !open); }}><ImagePlus size={18}/><span>添加固定图层</span></button>
-            {fixedLayerMenu && <div className="fixed-layer-menu" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setFixedLayerMenu(false); gifLayerInput.current?.click(); }}><ImagePlus size={16}/><span>选择一张图片创建 GIF 图层</span></button></div>}
+            {fixedLayerMenu && <div className="fixed-layer-menu" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setFixedLayerMenu(false); gifLayerInput.current?.click(); }}><ImagePlus size={16}/><span>选择一张图片创建 GIF 图层</span></button><button title="创建一个与当前画布等大的纯白色固定图层，并放到所有图层下方" onClick={addWhiteCanvasBackground}><Square size={16}/><span>添加白色画布背景</span></button></div>}
           </div>
           <div className="shape-picker-wrap"><button onClick={(event) => { event.stopPropagation(); setShapeMenu((open) => !open); }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setShapeMenu(true); }}><Shapes size={18}/><span>添加可替换照片</span></button>{shapeMenu && <div className="shape-picker" onPointerDown={(event) => event.stopPropagation()}><button onClick={() => addEmptySlot('rect')}><Square size={17}/><span>矩形</span></button><button onClick={() => addEmptySlot('circle')}><Circle size={17}/><span>圆形</span></button><button onClick={() => addEmptySlot('rounded')}><Shapes size={17}/><span>圆角矩形</span></button><button onClick={() => addEmptySlot('polygon')}><Pentagon size={17}/><span>多边形</span></button></div>}</div>
           <div className="text-add-wrap"><button className={activeTool === 'text' ? 'active' : ''} onClick={() => { setTextOrientation('horizontal'); setTextMenu(false); setActiveTool('text'); }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setTextMenu(true); }}><Type size={18}/><span>添加文字</span></button>{textMenu && <div className="text-orientation-menu" onPointerDown={(event) => event.stopPropagation()}><button className={textOrientation === 'horizontal' ? 'active' : ''} onClick={() => { setTextOrientation('horizontal'); setTextMenu(false); setActiveTool('text'); }}>横排文本</button><button className={textOrientation === 'vertical' ? 'active' : ''} onClick={() => { setTextOrientation('vertical'); setTextMenu(false); setActiveTool('text'); }}>竖排文本</button></div>}</div>
@@ -3850,6 +3884,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   const marqueeTrackingRef = useRef(null);
   const lastMarqueeStartRequestRef = useRef(null);
   const [shiftPressed, setShiftPressed] = useState(false);
+  const shiftPressedRef = useRef(false);
 
   const clearPixelSelection = useCallback(() => {
     selectionTokenRef.current += 1;
@@ -3887,8 +3922,17 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   }, [selectedIds, template.layers, textEditingId, tool, zoom]);
 
   useEffect(() => {
-    const updateShift = (event) => setShiftPressed(event.type === 'keydown');
-    const releaseShift = () => setShiftPressed(false);
+    const updateShift = (event) => {
+      const pressed = event.type === 'keydown';
+      shiftPressedRef.current = pressed;
+      setShiftPressed(pressed);
+      if (!pressed) setGuides([]);
+    };
+    const releaseShift = () => {
+      shiftPressedRef.current = false;
+      setShiftPressed(false);
+      setGuides([]);
+    };
     const handleKey = (event) => { if (event.key === 'Shift') updateShift(event); };
     window.addEventListener('keydown', handleKey);
     window.addEventListener('keyup', handleKey);
@@ -3899,6 +3943,38 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
       window.removeEventListener('blur', releaseShift);
     };
   }, []);
+
+  const snapTransformAnchor = (oldAbsPos, newAbsPos, event) => {
+    const activeAnchor = trRef.current?.getActiveAnchor?.() || '';
+    if (activeAnchor === 'rotater' || !(event?.shiftKey || shiftPressedRef.current)) {
+      setGuides([]);
+      return newAbsPos;
+    }
+    const stage = stageRef.current;
+    if (!stage) return newAbsPos;
+    const transform = stage.getAbsoluteTransform();
+    const topLeft = transform.point({ x: 0, y: 0 });
+    const bottomRight = transform.point({ x: template.width, y: template.height });
+    const threshold = 8;
+    const next = { ...newAbsPos };
+    const nextGuides = [];
+    if (activeAnchor.includes('left') && Math.abs(newAbsPos.x - topLeft.x) <= threshold) {
+      next.x = topLeft.x;
+      nextGuides.push({ axis: 'x', value: 0 });
+    } else if (activeAnchor.includes('right') && Math.abs(newAbsPos.x - bottomRight.x) <= threshold) {
+      next.x = bottomRight.x;
+      nextGuides.push({ axis: 'x', value: template.width });
+    }
+    if (activeAnchor.includes('top') && Math.abs(newAbsPos.y - topLeft.y) <= threshold) {
+      next.y = topLeft.y;
+      nextGuides.push({ axis: 'y', value: 0 });
+    } else if (activeAnchor.includes('bottom') && Math.abs(newAbsPos.y - bottomRight.y) <= threshold) {
+      next.y = bottomRight.y;
+      nextGuides.push({ axis: 'y', value: template.height });
+    }
+    setGuides(nextGuides);
+    return next;
+  };
 
   useEffect(() => {
     selectionTokenRef.current += 1;
@@ -4078,6 +4154,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
       patches[id] = { x: Math.round(node.x() - width / 2), y: Math.round(node.y() - height / 2), width, height, rotation: Math.round(node.rotation()), ...(layer.type === 'text' && resized ? { textAutoSize: false, autoFit: false } : {}) };
       node.scaleX(1); node.scaleY(1);
     });
+    setGuides([]);
     setTextTransformPreview({});
     if (Object.keys(patches).length) updateLayers(patches);
   };
@@ -4832,7 +4909,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     onContextMenu={(event) => { if (['marquee', 'quick-select', 'lasso'].includes(tool)) openMarqueeContextMenu(event); }}
   >
     <Layer>
-      <Rect name="editor-background" width={template.width} height={template.height} fill="#fff"/>
+      <Rect name="editor-background" width={template.width} height={template.height} fill="rgba(255,255,255,0)"/>
       {groupHitAreas.filter((group) => group.groupId !== selectedGroupId).map((group) => renderGroupHitArea(group))}
       {template.layers.map((layer) => {
         if (layer.id === textEditingId || !isLayerVisibleAtFrame(layer, gifFrameIndex)) return null;
@@ -4862,7 +4939,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
         points={[...lassoDraft.points, ...(lassoDraft.hover ? [lassoDraft.hover] : [])].flatMap((point) => [point.x, point.y])}
         closed={lassoDraft.mode !== 'polygon'} stroke="#4384ff" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>}
       {guides.map((guide, index) => <Line key={`${guide.axis}-${guide.value}-${index}`} points={guide.axis === 'x' ? [guide.value, 0, guide.value, template.height] : [0, guide.value, template.width, guide.value]} stroke="#e94b37" strokeWidth={1.5 / zoom} dash={[6 / zoom, 4 / zoom]} listening={false}/>) }
-      <Transformer ref={trRef} onTransformEnd={finishTransform} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} keepRatio={keepTransformRatio} enabledAnchors={keepTransformRatio ? ['top-left','top-right','bottom-left','bottom-right'] : ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/>
+      <Transformer ref={trRef} onTransformStart={() => setGuides([])} onTransformEnd={finishTransform} anchorDragBoundFunc={snapTransformAnchor} rotateEnabled rotationSnaps={shiftPressed ? ROTATION_SNAPS : []} rotationSnapTolerance={22.5} keepRatio={keepTransformRatio} enabledAnchors={keepTransformRatio ? ['top-left','top-right','bottom-left','bottom-right'] : ['top-left','top-right','bottom-left','bottom-right','middle-left','middle-right','top-center','bottom-center']} borderStroke="#e24b35" anchorFill="#fff" anchorStroke="#e24b35" anchorSize={10} anchorStrokeWidth={1.5} borderStrokeWidth={2} rotateAnchorOffset={28} boundBoxFunc={(oldBox, newBox) => (newBox.width < 24 || newBox.height < 24) ? oldBox : newBox}/>
       {selectedPolygon && <Group x={selectedPolygon.x} y={selectedPolygon.y} rotation={selectedPolygon.rotation || 0}>{polygonPointsOf(selectedPolygon).map((point, index) => <KonvaCircle key={`polygon-handle-${selectedPolygon.id}-${index}`} x={point.x * selectedPolygon.width} y={point.y * selectedPolygon.height} radius={6 / zoom} fill="#fff" stroke="#e24b35" strokeWidth={1.5 / zoom} draggable onMouseDown={(event) => { event.cancelBubble = true; }} onDragMove={(event) => { event.cancelBubble = true; event.target.position({ x: clamp(event.target.x(), 0, selectedPolygon.width), y: clamp(event.target.y(), 0, selectedPolygon.height) }); }} onDragEnd={(event) => { event.cancelBubble = true; const next = { x: clamp(event.target.x() / selectedPolygon.width, 0, 1), y: clamp(event.target.y() / selectedPolygon.height, 0, 1) }; updateLayer(selectedPolygon.id, { polygonPoints: polygonPointsOf(selectedPolygon).map((item, itemIndex) => itemIndex === index ? next : item) }); }} />)}</Group>}
     </Layer>
   </Stage>{['marquee', 'quick-select', 'lasso'].includes(tool) && marquee && <div
@@ -5366,7 +5443,7 @@ function createUseSession(template) {
   };
 }
 
-function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onBack, onEdit, notify }) {
+function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onCopied, onBack, onEdit, notify }) {
   const initialSessionRef = useRef();
   if (!initialSessionRef.current) {
     const canRestore = cachedSession?.templateUpdatedAt === (template.updatedAt || 0)
@@ -5970,6 +6047,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
         if (isExportCancelled(job)) return;
         updateExport(job, 88, '正在复制到剪贴板');
         await desktop.copyImages(outputs);
+        onCopied?.(template.id);
         if (isExportCancelled(job)) return;
         setResult(outputs[0] || 'batch-ready');
         setCopied(true);
@@ -5985,6 +6063,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
       if (isExportCancelled(job)) return;
       updateExport(job, 88, '正在复制到剪贴板');
       await desktop.copyImage(dataUrl, clipboardDataUrl);
+      onCopied?.(template.id);
       if (isExportCancelled(job)) return;
       setCopied(true);
       updateExport(job, 100, '导出完成');
@@ -5999,7 +6078,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onB
     } finally {
       finishExport(job);
     }
-  }, [batchSlot, batchSources, beginExport, composition, currentResult, exportScale, finishExport, isExportCancelled, notify, outputMime, renderOutput, renderReplacements, slotSources, slotTransforms, textValueLists, transparent, updateExport]);
+  }, [batchSlot, batchSources, beginExport, composition, currentResult, exportScale, finishExport, isExportCancelled, notify, onCopied, outputMime, renderOutput, renderReplacements, slotSources, slotTransforms, template.id, textValueLists, transparent, updateExport]);
 
   const resetUse = useCallback(() => {
     commitSession(createUseSession(template));

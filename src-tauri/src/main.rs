@@ -577,6 +577,10 @@ fn use_sessions_path() -> PathBuf {
     data_file_path("use-sessions.json")
 }
 
+fn clear_use_sessions() {
+    let _ = fs::remove_file(use_sessions_path());
+}
+
 fn decode_image_data_url(data_url: &str) -> Result<(&str, Vec<u8>), String> {
     let (header, encoded) = data_url
         .split_once(',')
@@ -1395,6 +1399,7 @@ fn main() {
     configure_windows_app_identity();
     tauri::Builder::default()
         .setup(|app| {
+            clear_use_sessions();
             if let Some(window) = app.get_webview_window("main") {
                 if let Some(icon) = app.default_window_icon().cloned() {
                     window.set_icon(icon)?;
@@ -1411,6 +1416,13 @@ fn main() {
                 window.show()?;
             }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() == "main"
+                && matches!(event, tauri::WindowEvent::CloseRequested { .. })
+            {
+                clear_use_sessions();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             load_config,
