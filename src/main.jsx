@@ -2517,8 +2517,8 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
         opacity: layerOpacityOf(copiedLayer),
         groupId: copiedLayer.groupId ? groupMap.get(copiedLayer.groupId) : undefined,
         name: copiedLayer.groupId ? copiedLayer.name : `${copiedLayer.name} \u526f\u672c`,
-        x: copiedLayer.x + 20,
-        y: copiedLayer.y + 20
+        x: copiedLayer.x,
+        y: copiedLayer.y
       };
     });
     const usedGroupNames = new Set(Object.values(draft.groupMeta || {}).map((meta) => String(meta?.name || '').trim()).filter(Boolean));
@@ -2626,6 +2626,18 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
   };
   useEffect(() => {
     const handleKeyDown = async (event) => {
+      if (event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'a' && !event.repeat && !isTextEditingTarget(event.target)) {
+        const frameFocused = Boolean(event.target?.closest?.('.gif-frame-cell') || document.activeElement?.closest?.('.gif-frame-cell'));
+        if (frameFocused && selectedGifLayer && gifTimeline.layerId === selectedGifLayer.id && gifTimeline.frames.length) {
+          event.preventDefault();
+          setGifTimeline((current) => ({
+            ...current,
+            selectedIndexes: current.frames.map((_, index) => index),
+            playing: false
+          }));
+          return;
+        }
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey) {
         event.preventDefault(); undoDraft();
         return;
