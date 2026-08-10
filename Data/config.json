@@ -7,5 +7,7 @@
     "height": 860,
     "minWidth": 1024,
     "minHeight": 680
-  }
+  },
+  "groupRosterImportMode": "local",
+  "groupRosterLocalDir": ""
 }

@@ -42,6 +42,8 @@ fn default_config() -> Value {
         "theme": "system",
         "autoCopy": true,
         "libraryCardSize": "large",
+        "groupRosterImportMode": "local",
+        "groupRosterLocalDir": "",
         "window": {
             "width": 1320,
             "height": 860,
@@ -683,6 +685,116 @@ async fn download_group_faces(worker_ids: Vec<String>) -> Result<Vec<GroupFaceDo
 }
 
 #[tauri::command]
+fn detect_welink_avatar_dir() -> Option<String> {
+    let roaming = env::var_os("APPDATA").map(PathBuf::from)?;
+    let contact_root = roaming.join("WeLink_Desktop").join("contact");
+    if !contact_root.is_dir() {
+        return None;
+    }
+
+    if let Some(username) = env::var_os("USERNAME") {
+        let exact = contact_root.join(username).join("imgMain");
+        if exact.is_dir() {
+            return Some(exact.to_string_lossy().into_owned());
+        }
+    }
+
+    let mut candidates = fs::read_dir(&contact_root)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("imgMain"))
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|path| {
+        fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    });
+    candidates.pop().map(|path| path.to_string_lossy().into_owned())
+}
+
+fn local_group_face_path(directory: &Path, account: &str) -> Option<PathBuf> {
+    let expected = format!("{account}_timestamp_0.png");
+    let exact = directory.join(&expected);
+    if exact.is_file() {
+        return Some(exact);
+    }
+    let prefix = format!("{}_timestamp_", account.to_ascii_lowercase());
+    let mut matches = fs::read_dir(directory)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            if !path.is_file() || image_mime_from_path(path).is_none() {
+                return false;
+            }
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.to_ascii_lowercase().starts_with(&prefix))
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by_key(|path| {
+        fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    });
+    matches.pop()
+}
+
+#[tauri::command]
+fn load_group_faces_local(
+    accounts: Vec<String>,
+    directory: String,
+) -> Result<Vec<GroupFaceDownload>, String> {
+    let directory = PathBuf::from(directory.trim());
+    if !directory.is_dir() {
+        return Err("The configured WeLink imgMain directory does not exist".to_string());
+    }
+
+    Ok(accounts
+        .into_iter()
+        .map(|raw_account| {
+            let account = raw_account.trim().to_string();
+            if account.is_empty()
+                || !account.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+                })
+            {
+                return GroupFaceDownload {
+                    worker_id: account,
+                    url: directory.to_string_lossy().into_owned(),
+                    data_url: None,
+                    error: Some("The account is empty or contains unsupported characters".to_string()),
+                };
+            }
+
+            let Some(path) = local_group_face_path(&directory, &account) else {
+                return GroupFaceDownload {
+                    worker_id: account.clone(),
+                    url: directory.join(format!("{account}_timestamp_0.png")).to_string_lossy().into_owned(),
+                    data_url: None,
+                    error: Some("No matching local avatar was found".to_string()),
+                };
+            };
+            let result = fs::read(&path)
+                .map_err(|error| error.to_string())
+                .and_then(|bytes| {
+                    let mime = image_mime_from_path(&path)
+                        .ok_or_else(|| "Unsupported local avatar format".to_string())?;
+                    Ok(format!("data:{mime};base64,{}", STANDARD.encode(bytes)))
+                });
+            GroupFaceDownload {
+                worker_id: account,
+                url: path.to_string_lossy().into_owned(),
+                data_url: result.as_ref().ok().cloned(),
+                error: result.err(),
+            }
+        })
+        .collect())
+}
+
+#[tauri::command]
 fn load_config() -> Value {
     read_config()
 }
@@ -1164,6 +1276,23 @@ mod tests {
     }
 
     #[test]
+    fn finds_local_welink_avatar_by_account_name() {
+        let root = test_directory("welink-avatar");
+        fs::create_dir_all(&root).expect("test directory must be created");
+        let avatar = root.join("hwx122333_timestamp_0.png");
+        fs::write(&avatar, b"fake-png-bytes").expect("avatar must be written");
+
+        let found = local_group_face_path(&root, "hwx122333").expect("avatar must be found");
+        assert_eq!(found, avatar);
+        let results = load_group_faces_local(vec!["hwx122333".to_string()], root.to_string_lossy().into_owned())
+            .expect("local avatars must load");
+        assert_eq!(results.len(), 1);
+        assert!(results[0].data_url.as_deref().unwrap_or_default().starts_with("data:image/png;base64,"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn writes_images_as_relative_assets_and_hydrates_them() {
         let root = test_directory("assets");
         let bytes = b"original-jpeg-bytes";
@@ -1479,6 +1608,8 @@ fn main() {
             decode_gif_frames,
             encode_gif_frames,
             download_group_faces,
+            detect_welink_avatar_dir,
+            load_group_faces_local,
             save_image
         ])
         .run(tauri::generate_context!())

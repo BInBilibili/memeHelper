@@ -5,7 +5,7 @@ import * as XLSX from 'xlsx';
 import { Stage, Layer, Group, Ellipse, Image as KonvaImage, Line, Rect, Text as KonvaText, Transformer, Circle as KonvaCircle } from 'react-konva';
 import {
   AlignCenter, AlignHorizontalDistributeCenter, AlignHorizontalJustifyCenter, AlignHorizontalJustifyEnd,
-  AlignHorizontalJustifyStart, AlignLeft, AlignRight, AlignVerticalDistributeCenter,
+  AlignHorizontalJustifyStart, AlignLeft, AlignRight, AlignVerticalDistributeCenter, AlertTriangle,
   AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowLeft, Bold, Check, ChevronDown, ChevronRight, ChevronUp,
   BoxSelect, Circle, Clipboard, Copy, Crop, Download, Eye, EyeOff, FileImage, Grid2X2, GripVertical, ImagePlus,
   Bandage, Blend, Eraser, FlipHorizontal, FlipVertical, FolderOpen, Italic, Lasso, Layers3, LayoutTemplate, Lock, Monitor, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Pentagon, Pipette, Plus, Redo2, RefreshCw, RotateCcw, ScanSearch, Scissors,
@@ -60,7 +60,9 @@ const browserDesktop = {
     const a = document.createElement('a'); a.href = dataUrl; a.download = name; a.click(); return name;
   },
   openTemplateFolder: async () => false,
-  downloadGroupFaces: async () => { throw new Error('群名单头像下载仅支持桌面版'); }
+  downloadGroupFaces: async () => { throw new Error('群名单头像下载仅支持桌面版'); },
+  loadGroupFacesLocal: async () => { throw new Error('本地群名单头像导入仅支持桌面版'); },
+  detectWeLinkAvatarDir: async () => null
 };
 
 const desktop = window.__TAURI_INTERNALS__ ? {
@@ -81,7 +83,9 @@ const desktop = window.__TAURI_INTERNALS__ ? {
   readClipboardImage: () => invoke('read_clipboard_image'),
   saveImage: (dataUrl, suggestedName) => invoke('save_image', { dataUrl, suggestedName }),
   openTemplateFolder: (templateId) => invoke('open_template_folder', { templateId }),
-  downloadGroupFaces: (workerIds) => invoke('download_group_faces', { workerIds })
+  downloadGroupFaces: (workerIds) => invoke('download_group_faces', { workerIds }),
+  loadGroupFacesLocal: (accounts, directory) => invoke('load_group_faces_local', { accounts, directory }),
+  detectWeLinkAvatarDir: () => invoke('detect_welink_avatar_dir')
 } : (window.memeDesktop || browserDesktop);
 
 function applyTheme(preference = 'system') {
@@ -567,6 +571,20 @@ async function fileToDataUrl(file) {
   });
 }
 
+function createRosterFallbackAvatar(name) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 120; canvas.height = 120;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#f0eee8'; ctx.fillRect(0, 0, 120, 120);
+  const text = String(name || '').trim();
+  const glyph = Array.from(text).at(-1) || '?';
+  ctx.fillStyle = '#6f6b63';
+  ctx.font = '48px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(glyph, 60, 60);
+  return canvas.toDataURL('image/png');
+}
+
 function loadImage(src) {
   return new Promise((resolve, reject) => {
     const image = new Image();
@@ -1028,7 +1046,8 @@ async function renderIsolatedLayer(layer, source, photoTransform, paintSource, e
 async function renderTemplate(template, replacements, photoTransforms = {}, options = {}) {
   const signal = typeof options === 'object' ? options.signal : null;
   if (signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
-  const scale = typeof options === 'number' ? options : clamp(options.scale || 1, 1, 4);
+  const requestedScale = typeof options === 'number' ? options : Number(options.scale);
+  const scale = clamp(Number.isFinite(requestedScale) ? requestedScale : 1, .1, 10);
   const mime = typeof options === 'object' ? options.mime || 'image/png' : 'image/png';
   const transparent = typeof options === 'object' && options.transparent && mime !== 'image/jpeg';
   const showSlotPlaceholder = typeof options !== 'object' || options.showSlotPlaceholder !== false;
@@ -1158,7 +1177,8 @@ function animationFrameAtTime(animation, time) {
 async function renderAnimatedTemplate(template, replacements = {}, photoTransforms = {}, options = {}) {
   const signal = typeof options === 'object' ? options.signal : null;
   if (signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
-  const scale = typeof options === 'number' ? options : clamp(options.scale || 1, 1, 10);
+  const requestedScale = typeof options === 'number' ? options : Number(options.scale);
+  const scale = clamp(Number.isFinite(requestedScale) ? requestedScale : 1, .1, 10);
   const transparent = typeof options === 'object' && Boolean(options.transparent);
   const showSlotPlaceholder = typeof options !== 'object' || options.showSlotPlaceholder !== false;
   const animations = [];
@@ -1444,7 +1464,7 @@ function App() {
   const [templates, setTemplates] = useState([]);
   const [editorDrafts, setEditorDrafts] = useState({});
   const [useSessions, setUseSessions] = useState({});
-  const [config, setConfig] = useState({ theme: 'system', autoCopy: true, libraryCardSize: 'large', librarySort: 'recent' });
+  const [config, setConfig] = useState({ theme: 'system', autoCopy: true, libraryCardSize: 'large', librarySort: 'recent', groupRosterImportMode: 'local', groupRosterLocalDir: '' });
   const [templateFolders, setTemplateFolders] = useState([]);
   const [libraryFolder, setLibraryFolder] = useState('');
   const [ready, setReady] = useState(false);
@@ -1480,25 +1500,32 @@ function App() {
     return () => window.removeEventListener('keydown', closeSettingsOnEscape, true);
   }, [settingsOpen]);
 
-  const notify = useCallback((message, kind = '') => {
+  const notify = useCallback((message, kind = '', duration = 2600) => {
     clearTimeout(toastTimer.current); setToast({ message, kind });
-    toastTimer.current = setTimeout(() => setToast(null), 2600);
+    toastTimer.current = setTimeout(() => setToast(null), Math.max(1000, Number(duration) || 2600));
   }, []);
 
   const updateConfig = useCallback(async (patch) => { const next = { ...config, ...patch }; setConfig(next); applyTheme(next.theme); try { await desktop.saveConfig(next); } catch (error) { notify(`设置保存失败：${error?.message || error}`, 'error'); } }, [config, notify]);
 
   useEffect(() => {
-    Promise.all([desktop.loadTemplates(), desktop.listTemplateFolders(), desktop.loadConfig(), desktop.loadEditorDrafts(), desktop.loadUseSessions()]).then(([saved, loadedFolders, loadedConfig, savedDrafts, savedUseSessions]) => {
+    Promise.all([desktop.loadTemplates(), desktop.listTemplateFolders(), desktop.loadConfig(), desktop.loadEditorDrafts(), desktop.loadUseSessions()]).then(async ([saved, loadedFolders, loadedConfig, savedDrafts, savedUseSessions]) => {
       const localTemplates = Array.isArray(saved) ? saved : [];
       const builtInTemplates = bundledTemplates.length ? structuredClone(bundledTemplates) : starterTemplates();
       const merged = desktop.isDesktop ? localTemplates : (localTemplates.length ? [...localTemplates, ...builtInTemplates] : builtInTemplates);
       const next = merged.filter((item, index) => merged.findIndex((candidate) => candidate.id === item.id) === index);
       const drafts = savedDrafts && typeof savedDrafts === 'object' && !Array.isArray(savedDrafts) ? savedDrafts : {};
       const sessions = savedUseSessions && typeof savedUseSessions === 'object' && !Array.isArray(savedUseSessions) ? savedUseSessions : {};
-      applyTheme(loadedConfig?.theme);
+      let resolvedConfig = { theme: 'system', autoCopy: true, libraryCardSize: 'large', librarySort: 'recent', groupRosterImportMode: 'local', groupRosterLocalDir: '', ...(loadedConfig || {}) };
+      if (desktop.isDesktop && !resolvedConfig.groupRosterLocalDir) {
+        try {
+          const detected = await desktop.detectWeLinkAvatarDir();
+          if (detected) { resolvedConfig = { ...resolvedConfig, groupRosterLocalDir: detected }; await desktop.saveConfig(resolvedConfig); }
+        } catch { /* Auto-detection failure is non-fatal; users can enter the path manually. */ }
+      }
+      applyTheme(resolvedConfig.theme);
       editorDraftsRef.current = drafts;
       useSessionsRef.current = sessions;
-       setEditorDrafts(drafts); setUseSessions(sessions); setTemplates(next); setTemplateFolders(Array.isArray(loadedFolders) ? loadedFolders : []); setConfig((previous) => ({ ...previous, ...(loadedConfig || {}) })); setReady(true);
+       setEditorDrafts(drafts); setUseSessions(sessions); setTemplates(next); setTemplateFolders(Array.isArray(loadedFolders) ? loadedFolders : []); setConfig(resolvedConfig); setReady(true);
       if (next.length !== localTemplates.length) desktop.saveTemplates(next);
     }).catch((error) => {
       console.error(error);
@@ -1644,7 +1671,7 @@ function App() {
   return <div className="app-shell">
      {page.name === 'library' && <Library templates={templates} folders={templateFolders} currentFolder={libraryFolder} onFolderChange={setLibraryFolder} cardSize={config.libraryCardSize || 'large'} sort={config.librarySort || 'recent'} query={query} setQuery={setQuery} onCardSizeChange={(libraryCardSize) => updateConfig({ libraryCardSize })} onSortChange={(librarySort) => updateConfig({ librarySort })} onRefresh={refreshTemplates} onCreate={(folderPath) => setPage({ name: 'editor', folderPath })} onOpenSettings={() => setSettingsOpen(true)} onEdit={(template) => setPage({ name: 'editor', template })} onRename={renameTemplate} onUse={useTemplate} onCopied={markTemplateUsed} onDelete={deleteTemplate} onCopy={copyTemplate} onToggleFavorite={toggleFavorite} notify={notify}/>}
     {page.name === 'editor' && <Editor initial={page.template} initialFolderPath={page.folderPath || ''} autosave={editorDrafts[page.template?.id || 'new']} onSaveDraft={saveEditorDraft} onClearDraft={clearEditorDraft} onBack={() => setPage({ name: 'library' })} onSave={saveTemplate} notify={notify}/>}
-    {page.name === 'use' && <UseTemplate template={page.template} initialFiles={page.files} cachedSession={useSessions[page.template.id]} onSaveSession={saveUseSession} onCopied={markTemplateUsed} onBack={() => setPage({ name: 'library' })} onEdit={() => setPage({ name: 'editor', template: page.template })} notify={notify}/>}
+    {page.name === 'use' && <UseTemplate template={page.template} initialFiles={page.files} cachedSession={useSessions[page.template.id]} onSaveSession={saveUseSession} onCopied={markTemplateUsed} onBack={() => setPage({ name: 'library' })} onEdit={() => setPage({ name: 'editor', template: page.template })} notify={notify} config={config}/>}
     {settingsOpen && <SettingsDialog config={config} onChange={updateConfig} onClose={() => setSettingsOpen(false)}/>}
     <Toast toast={toast}/>
   </div>;
@@ -1720,9 +1747,36 @@ function ExportProgressOverlay({ progress, onCancel }) {
 }
 
 function SettingsDialog({ config, onChange, onClose }) {
+  const [detectingPath, setDetectingPath] = useState(false);
+  const [pathStatus, setPathStatus] = useState('');
   const themeOptions = [{ value: 'light', label: '浅色', description: '使用明亮的浅色界面。', icon: Sun }, { value: 'dark', label: '深色', description: '使用深色界面，适合夜间使用。', icon: Monitor }, { value: 'system', label: '跟随 Windows 系统', description: '跟随系统的浅色或深色设置。', icon: Settings }];
   const sizeOptions = [{ value: 'small', label: '小' }, { value: 'medium', label: '中' }, { value: 'large', label: '大' }];
-  return <div className="settings-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="settings-dialog" role="dialog" aria-modal="true"><div className="settings-dialog-heading"><div><p className="eyebrow">全局设置</p><h2>界面主题与主页显示</h2></div><IconButton label="关闭" onClick={onClose}><X size={18}/></IconButton></div><div className="settings-dialog-section"><h3>界面主题</h3><div className="settings-options">{themeOptions.map(({ value, label, description, icon: Icon }) => <button type="button" key={value} className={`settings-option ${config.theme === value ? 'active' : ''}`} onClick={() => onChange({ theme: value })}><span className="settings-option-icon"><Icon size={18}/></span><span><strong>{label}</strong><small>{description}</small></span><span className="settings-option-check">{config.theme === value ? '✓' : ''}</span></button>)}</div></div><div className="settings-dialog-section"><h3>主页模板显示大小</h3><div className="settings-size-options">{sizeOptions.map(({ value, label }) => <button type="button" key={value} className={`settings-size-option ${((config.libraryCardSize || 'large') === value) ? 'active' : ''}`} onClick={() => onChange({ libraryCardSize: value })}><span className="settings-size-radio">{(config.libraryCardSize || 'large') === value ? '●' : '○'}</span><strong>{label}</strong></button>)}</div></div><p className="settings-note">设置会立即生效，并保存到程序目录的 Data/config.json。</p></div></div>;
+  const rosterMode = config.groupRosterImportMode === 'online' ? 'online' : 'local';
+  const autoDetectPath = async () => {
+    if (detectingPath) return;
+    setDetectingPath(true); setPathStatus('');
+    try {
+      const detected = await desktop.detectWeLinkAvatarDir();
+      if (detected) { await onChange({ groupRosterLocalDir: detected }); setPathStatus('已自动找到 WeLink 头像目录。'); }
+      else setPathStatus('未自动找到目录，请手动输入 imgMain 文件夹路径。');
+    } catch (error) {
+      setPathStatus('自动查找失败，请手动输入目录：' + (error?.message || error));
+    } finally { setDetectingPath(false); }
+  };
+  return <div className="settings-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="settings-dialog" role="dialog" aria-modal="true">
+    <div className="settings-dialog-heading"><div><p className="eyebrow">全局设置</p><h2>界面与导入设置</h2></div><IconButton label="关闭" onClick={onClose}><X size={18}/></IconButton></div>
+    <div className="settings-dialog-scroll">
+      <div className="settings-dialog-section"><h3>界面主题</h3><div className="settings-options">{themeOptions.map(({ value, label, description, icon: Icon }) => <button type="button" key={value} className={`settings-option ${config.theme === value ? 'active' : ''}`} onClick={() => onChange({ theme: value })}><span className="settings-option-icon"><Icon size={18}/></span><span><strong>{label}</strong><small>{description}</small></span><span className="settings-option-check">{config.theme === value ? '✓' : ''}</span></button>)}</div></div>
+      <div className="settings-dialog-section"><h3>主页模板显示大小</h3><div className="settings-size-options">{sizeOptions.map(({ value, label }) => <button type="button" key={value} className={`settings-size-option ${((config.libraryCardSize || 'large') === value) ? 'active' : ''}`} onClick={() => onChange({ libraryCardSize: value })}><span className="settings-size-radio">{(config.libraryCardSize || 'large') === value ? '●' : '○'}</span><strong>{label}</strong></button>)}</div></div>
+      <div className="settings-dialog-section"><h3>群名单头像导入</h3><div className="settings-import-options">
+        <button type="button" className={`settings-option ${rosterMode === 'local' ? 'active' : ''}`} onClick={() => onChange({ groupRosterImportMode: 'local' })}><span className="settings-option-icon"><FolderOpen size={18}/></span><span><strong>本地导入</strong><small>从本机 WeLink 头像缓存读取，不访问网络。</small></span><span className="settings-option-check">{rosterMode === 'local' ? '✓' : ''}</span></button>
+        <button type="button" className={`settings-option ${rosterMode === 'online' ? 'active' : ''}`} onClick={() => onChange({ groupRosterImportMode: 'online' })}><span className="settings-option-icon settings-warning-icon" title="可能涉及爬虫违规"><AlertTriangle size={18}/></span><span><strong>联网导入</strong><small>根据工号从现有头像接口下载。</small></span><span className="settings-option-check">{rosterMode === 'online' ? '✓' : ''}</span></button>
+      </div>
+      {rosterMode === 'local' && <div className="settings-local-import"><label><span>本地头像目录</span><div className="settings-path-row"><input value={config.groupRosterLocalDir || ''} placeholder="C:\Users\账号\AppData\Roaming\WeLink_Desktop\contact\账号\imgMain" onChange={(event) => onChange({ groupRosterLocalDir: event.target.value })}/><button type="button" className="secondary-button" disabled={detectingPath} onClick={autoDetectPath}>{detectingPath ? '正在查找' : '自动设置'}</button></div></label><small>软件首次启动时会自动查找当前 Windows 用户及 WeLink contact 目录下可用的 imgMain 文件夹；未找到时可以手动填写。</small>{pathStatus && <p className="settings-path-status">{pathStatus}</p>}</div>}
+      </div>
+      <p className="settings-note">设置会立即生效，并保存到程序目录的 Data/config.json。</p>
+    </div>
+  </div></div>;
 }
 
 function Library({ templates, folders = [], currentFolder = '', onFolderChange, cardSize = 'large', sort = 'recent', query, setQuery, onCardSizeChange, onSortChange, onRefresh, onCreate, onOpenSettings, onEdit, onRename, onUse, onCopied, onDelete, onCopy, onToggleFavorite, notify }) {
@@ -2641,12 +2695,13 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
   };
   useEffect(() => {
     const handleKeyDown = async (event) => {
-      if (event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'a' && !event.repeat && !isTextEditingTarget(event.target)) {
-        const frameFocused = Boolean(event.target?.closest?.('.gif-frame-cell') || document.activeElement?.closest?.('.gif-frame-cell'));
-        if (frameFocused && selectedGifLayer && gifTimeline.layerId === selectedGifLayer.id && gifTimeline.frames.length) {
+      if (event.altKey && !event.ctrlKey && !event.metaKey && (event.key.toLowerCase() === 'a' || event.code === 'KeyA') && !event.repeat && !isTextEditingTarget(event.target)) {
+        if (selectedGifLayer && gifTimeline.layerId === selectedGifLayer.id && gifTimeline.frames.length) {
           event.preventDefault();
+          event.stopPropagation();
           setGifTimeline((current) => ({
             ...current,
+            frameIndex: current.frameIndex >= 0 ? current.frameIndex : 0,
             selectedIndexes: current.frames.map((_, index) => index),
             playing: false
           }));
@@ -4956,11 +5011,9 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   const beginPaint = async (event) => {
     if (!['brush', 'mosaic', 'heal', 'fill', 'eraser', 'picker'].includes(tool)) return false;
     event.evt.preventDefault();
-    const stage = stageRef.current;
-    const pointer = stage?.getPointerPosition();
     const effectiveTool = tool === 'brush' && event.evt.altKey ? 'picker' : tool;
-    if (!pointer) return true;
-    const templatePoint = { x: pointer.x / zoom, y: pointer.y / zoom };
+    const templatePoint = pointFromClient(event.evt.clientX, event.evt.clientY);
+    if (!templatePoint) return true;
     if (effectiveTool === 'picker') {
       const image = await loadImage(await renderTemplate(template, {}));
       const canvas = document.createElement('canvas');
@@ -5027,9 +5080,9 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
 
   const movePaint = (event) => {
     const painting = paintingRef.current;
-    const pointer = stageRef.current?.getPointerPosition();
-    if (!painting || !pointer) return;
-    const local = layerLocalPoint(painting.layer, { x: pointer.x / zoom, y: pointer.y / zoom });
+    const templatePoint = pointFromClient(event.evt.clientX, event.evt.clientY);
+    if (!painting || !templatePoint) return;
+    const local = layerLocalPoint(painting.layer, templatePoint);
     const point = { x: clamp(local.x, 0, painting.layer.width), y: clamp(local.y, 0, painting.layer.height) };
     if (painting.mode === 'mosaic') drawMosaicSegment(painting, point);
     else if (painting.mode === 'heal') drawHealingSegment(painting, point);
@@ -5437,7 +5490,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
     <div className="property-section layer-composite-section">
       <div className="blend-mode-row"><h4>图层混合模式</h4><div ref={blendMenuRef} className="property-dropdown blend-mode-field"><button type="button" className="property-dropdown-trigger" aria-expanded={blendMenuOpen} onClick={() => { setBlendMenuOpen((open) => !open); setBindingMenuOpen(false); setFrameMenuOpen(false); }}><span>{activeBlendMode.label}</span><ChevronDown size={14}/></button>{blendMenuOpen && <div className="property-dropdown-menu blend-mode-menu">{LAYER_BLEND_MODES.map((option) => <button type="button" key={option.value} className={activeBlendMode.value === option.value ? 'active' : ''} onClick={() => { update({ blendMode: option.value }); setBlendMenuOpen(false); }}><span>{option.label}</span></button>)}</div>}</div></div>
     </div>
-    <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} presets={false} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} presets={false} onChange={(y) => update({ y })}/></div><div className="rotation-inline-row"><div className="rotation-inline-control"><h4>旋转</h4><div className="rotation-inline-input"><NumericInput value={Number(layer.rotation) || 0} min={-360} max={360} presets={ROTATION_PRESETS} onCommit={(rotation) => update({ rotation })}/></div></div><input className="range" type="range" min="-180" max="180" value={Number(layer.rotation) || 0} onChange={(event) => { const rotation = Number(event.target.value); update({ rotation: rotationShiftRef.current ? Math.round(rotation / 45) * 45 : rotation }); }}/></div><div className="layer-flip-row"><label className="check-row"><input type="checkbox" checked={Boolean(layer.verticalFlip)} onChange={(event) => update({ verticalFlip: event.target.checked })}/><span>????</span></label><label className="check-row"><input type="checkbox" checked={Boolean(layer.horizontalFlip)} onChange={(event) => update({ horizontalFlip: event.target.checked })}/><span>????</span></label></div></div>
+    <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} presets={false} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} presets={false} onChange={(y) => update({ y })}/></div><div className="rotation-inline-row"><div className="rotation-inline-control"><h4>旋转</h4><div className="rotation-inline-input"><NumericInput value={Number(layer.rotation) || 0} min={-360} max={360} presets={ROTATION_PRESETS} onCommit={(rotation) => update({ rotation })}/></div></div><input className="range" type="range" min="-180" max="180" value={Number(layer.rotation) || 0} onChange={(event) => { const rotation = Number(event.target.value); update({ rotation: rotationShiftRef.current ? Math.round(rotation / 45) * 45 : rotation }); }}/></div><div className="layer-flip-row"><label className="check-row"><input type="checkbox" checked={Boolean(layer.verticalFlip)} onChange={(event) => update({ verticalFlip: event.target.checked })}/><span>垂直翻转</span></label><label className="check-row"><input type="checkbox" checked={Boolean(layer.horizontalFlip)} onChange={(event) => update({ horizontalFlip: event.target.checked })}/><span>水平翻转</span></label></div></div>
     <div className="property-section"><div className="property-heading-row"><h4>尺寸</h4>{layer.type !== 'text' && <button type="button" className={`aspect-lock-button ${aspectRatioLockedOf(layer) ? 'active' : ''}`} title={aspectRatioLockedOf(layer) ? '取消锁定宽高比' : '锁定宽高比'} onClick={() => update({ aspectRatioLocked: !aspectRatioLockedOf(layer) })}>{aspectRatioLockedOf(layer) ? <Lock size={13}/> : <Unlock size={13}/>}<span>宽高比</span></button>}</div><div className="property-grid"><NumberField label="宽" value={layer.width} min={10} presets={SIZE_PRESETS} onChange={(width) => updateDimension('width', width)}/><NumberField label="高" value={layer.height} min={10} presets={SIZE_PRESETS} onChange={(height) => updateDimension('height', height)}/></div></div>
     <div className="property-section"><h4>边框</h4><div className="border-controls"><label><span>颜色</span><input type="color" value={layer.borderColor || '#000000'} onChange={(event) => update({ borderColor: event.target.value })}/></label><label><span>类型</span><select className="property-select" value={borderPositionOf(layer)} onChange={(event) => update({ borderPosition: event.target.value })}><option value="outer">外边框</option><option value="inner">内边框</option></select></label><NumberField label="大小" value={layer.borderWidth || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(borderWidth) => update({ borderWidth })}/></div></div>
     {layer.type === 'slot' && <>
@@ -5646,7 +5699,7 @@ function createUseSession(template) {
   };
 }
 
-function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onCopied, onBack, onEdit, notify }) {
+function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onCopied, onBack, onEdit, notify, config }) {
   const initialSessionRef = useRef();
   if (!initialSessionRef.current) {
     const canRestore = cachedSession?.templateUpdatedAt === (template.updatedAt || 0)
@@ -5698,6 +5751,9 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
   const slotGalleryRef = useRef();
   const textBatchRef = useRef();
   const groupRosterInput = useRef();
+  const rosterMode = config?.groupRosterImportMode === 'online' ? 'online' : 'local';
+  const rosterIdentityKey = rosterMode === 'local' ? 'account' : 'workerId';
+  const rosterIdentityLabel = rosterMode === 'local' ? '账号' : '工号';
   useEffect(() => {
     const closeBatchPopover = () => setTextBatchOpenId(null);
     window.addEventListener('resize', closeBatchPopover);
@@ -5727,7 +5783,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
     if (mime === 'image/gif') return renderAnimatedTemplate(targetTemplate, replacements, transforms, outputOptions);
     return renderTemplate(targetTemplate, replacements, transforms, outputOptions);
   }, []);
-  const exportScaleHint = '控制保存和复制图片的像素尺寸；2x 的宽高均为 1x 的 2 倍。';
+  const exportScaleHint = '可自由输入导出倍率；0.5 表示宽高各为原尺寸的一半，2 表示宽高各为原尺寸的 2 倍。';
 
   const editTextLayer = useCallback((id) => {
     const layer = composition.layers.find((item) => item.id === id && item.type === 'text');
@@ -6069,9 +6125,23 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
     setGroupRosterChoice(null);
     setGroupRosterBusy(true);
     try {
-      const downloads = await desktop.downloadGroupFaces(rows.map((row) => row.workerId));
-      const imported = downloads
+      const identities = rows.map((row) => String(row[rosterIdentityKey] || '').trim());
+      if (rosterMode === 'local' && !String(config?.groupRosterLocalDir || '').trim()) {
+        throw new Error('请先在主页设置中填写或自动设置 WeLink 本地头像目录');
+      }
+      const downloads = rosterMode === 'local'
+        ? await desktop.loadGroupFacesLocal(identities, String(config?.groupRosterLocalDir || '').trim())
+        : await desktop.downloadGroupFaces(identities);
+      const failedEntries = downloads
         .map((download, index) => ({ download, row: rows[index] }))
+        .filter(({ download }) => !download?.dataUrl);
+      const imported = downloads
+        .map((download, index) => {
+          const row = rows[index];
+          if (download?.dataUrl) return { download, row };
+          if (rosterMode !== 'local') return { download, row };
+          return { download: { ...download, dataUrl: createRosterFallbackAvatar(row?.chineseName) }, row, fallback: true };
+        })
         .filter(({ download }) => Boolean(download?.dataUrl));
       const textRows = rows;
 
@@ -6091,7 +6161,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
           if (imported.length && slots.length === 1) {
             const slotId = slots[0].id;
             const sources = imported.map(({ download }) => download.dataUrl);
-            const names = imported.map(({ row }) => String(row.workerId) + '.jpg');
+            const names = imported.map(({ row }) => String(row[rosterIdentityKey] || 'avatar') + '.png');
             next.slotSources[slotId] = sources[0];
             next.slotNames[slotId] = names[0];
             next.slotSourceLists[slotId] = sources;
@@ -6100,7 +6170,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
           } else if (imported.length) {
             imported.slice(0, slots.length).forEach(({ download, row }, index) => {
               const slotId = slots[index].id;
-              const name = String(row.workerId) + '.jpg';
+              const name = String(row[rosterIdentityKey] || 'avatar') + '.png';
               next.slotSources[slotId] = download.dataUrl;
               next.slotNames[slotId] = name;
               next.slotSourceLists[slotId] = [download.dataUrl];
@@ -6138,22 +6208,24 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
         if (imported.length) setSelectedId(slots[Math.min(imported.length, slots.length) - 1]?.id || null);
       }
 
-      const failed = downloads.filter((download) => !download?.dataUrl);
-      if (!imported.length) {
-        const detail = failed[0]?.error ? '：' + failed[0].error : '';
+      if (rosterMode === 'local') {
+        if (failedEntries.length) {
+          const names = failedEntries.map(({ row }) => `${row?.chineseName || row?.account || '未知用户'}（${row?.account || '无账号'}）`);
+          notify(`本地头像未找到：${names.join('、')}；已使用中文名最后一个字生成 120×120 占位头像。`, 'error', Math.min(15000, 6500 + failedEntries.length * 700));
+        } else notify(`已从本地导入 ${imported.length} 张头像`);
+      } else if (!imported.length) {
+        const detail = failedEntries[0]?.download?.error ? '：' + failedEntries[0].download.error : '';
         const textStatus = textField !== 'none' && editableTextLayers.length ? '，文本已完成替换' : '';
         notify('群名单中的头像均下载失败' + detail + textStatus, 'error');
-      } else if (failed.length) {
-        notify('已导入 ' + imported.length + ' 张头像，另有 ' + failed.length + ' 张下载失败', 'error');
-      } else {
-        notify('已从群名单导入 ' + imported.length + ' 张头像');
-      }
+      } else if (failedEntries.length) {
+        notify('已导入 ' + imported.length + ' 张头像，另有 ' + failedEntries.length + ' 张下载失败', 'error');
+      } else notify('已从群名单导入 ' + imported.length + ' 张头像');
     } catch (error) {
-      notify('导入群名单失败：' + (error?.message || error), 'error');
+      notify('导入群名单失败：' + (error?.message || error), 'error', rosterMode === 'local' ? 7000 : 2600);
     } finally {
       setGroupRosterBusy(false);
     }
-  }, [commitSession, editableTextLayers, groupRosterBusy, notify, slots]);
+  }, [commitSession, config?.groupRosterLocalDir, editableTextLayers, groupRosterBusy, notify, rosterIdentityKey, rosterMode, slots]);
 
   const chooseGroupRosterFile = useCallback(async (file) => {
     if (!file) return;
@@ -6165,24 +6237,29 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
       if (!table.length) throw new Error('表格中没有数据');
       const headers = table[0].map((value) => String(value ?? '').trim());
       const column = (name) => headers.indexOf(name);
-      const workerIdColumn = column('工号');
-      if (workerIdColumn < 0) throw new Error('第一行中未找到“工号”表头');
-      const rows = table.slice(1).map((values) => ({
-        workerId: String(values[workerIdColumn] ?? '').trim(),
-        chineseName: column('中文名') >= 0 ? String(values[column('中文名')] ?? '') : '',
-        englishName: column('英文名') >= 0 ? String(values[column('英文名')] ?? '') : '',
-        nickname: column('昵称') >= 0 ? String(values[column('昵称')] ?? '') : ''
-      })).filter((row) => row.workerId);
-      if (!rows.length) throw new Error('“工号”列中没有可导入的数据');
-      if (editableTextLayers.length) {
-        setGroupRosterChoice({ rows, fileName: file.name });
-      } else {
-        await importGroupRosterRows(rows, 'none');
-      }
+      const identityColumn = column(rosterIdentityLabel);
+      if (identityColumn < 0) throw new Error(`第一行中未找到“${rosterIdentityLabel}”表头`);
+      const chineseNameColumn = column('中文名');
+      const englishNameColumn = column('英文名');
+      const nicknameColumn = column('昵称');
+      const rows = table.slice(1).map((values) => {
+        const identity = String(values[identityColumn] ?? '').trim();
+        return {
+          [rosterIdentityKey]: identity,
+          workerId: rosterMode === 'online' ? identity : '',
+          account: rosterMode === 'local' ? identity : '',
+          chineseName: chineseNameColumn >= 0 ? String(values[chineseNameColumn] ?? '') : '',
+          englishName: englishNameColumn >= 0 ? String(values[englishNameColumn] ?? '') : '',
+          nickname: nicknameColumn >= 0 ? String(values[nicknameColumn] ?? '') : ''
+        };
+      }).filter((row) => row[rosterIdentityKey]);
+      if (!rows.length) throw new Error(`“${rosterIdentityLabel}”列中没有可导入的数据`);
+      if (editableTextLayers.length) setGroupRosterChoice({ rows, fileName: file.name });
+      else await importGroupRosterRows(rows, 'none');
     } catch (error) {
       notify(`读取群名单失败：${error?.message || error}`, 'error');
     }
-  }, [editableTextLayers.length, importGroupRosterRows, notify]);
+  }, [editableTextLayers.length, importGroupRosterRows, notify, rosterIdentityKey, rosterIdentityLabel, rosterMode]);
 
   const generateBatch = useCallback(async (files, targetId, append = false) => {
     const requestedLayer = composition.layers.find((layer) => layer.id === targetId);
@@ -6508,8 +6585,8 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
             </div>;
           })}</div>
         </div>}
-        <div className="export-settings"><div className="slot-list-heading"><strong>导出设置</strong></div><div className="export-setting-row"><label><span>格式</span><select value={exportFormat} onChange={(event) => { const value = event.target.value; setExportFormat(value); if (value === 'jpg') setTransparent(false); }}><option value="png">PNG</option><option value="jpg">JPEG</option><option value="webp">WebP</option><option value="gif">GIF 动图</option></select></label><label title={exportScaleHint}><span title={exportScaleHint}>倍率</span><select title={exportScaleHint} value={exportScale} onChange={(event) => setExportScale(Number(event.target.value))}><option value="1" title={exportScaleHint}>1x</option><option value="2" title={exportScaleHint}>2x</option><option value="3" title={exportScaleHint}>3x</option></select></label></div><label className="check-row"><input type="checkbox" disabled={exportFormat === 'jpg'} checked={transparent} onChange={(event) => setTransparent(event.target.checked)}/><span>透明画布背景</span></label></div>
-        <button type="button" className="secondary-button group-roster-import-button" title="选择 xlsx 群名单，按“工号”列下载成员头像，并可按工号、中文名、英文名或昵称依次替换文字图层。" disabled={groupRosterBusy} onClick={() => groupRosterInput.current?.click()}><Upload size={16}/>{groupRosterBusy ? '正在导入群名单（xlsx）' : '导入群名单（xlsx）'}</button>
+        <div className="export-settings"><div className="slot-list-heading"><strong>导出设置</strong></div><div className="export-setting-row"><label><span>格式</span><select value={exportFormat} onChange={(event) => { const value = event.target.value; setExportFormat(value); if (value === 'jpg') setTransparent(false); }}><option value="png">PNG</option><option value="jpg">JPEG</option><option value="webp">WebP</option><option value="gif">GIF 动图</option></select></label><label title={exportScaleHint}><span title={exportScaleHint}>倍率</span><NumericInput title={exportScaleHint} value={exportScale} min={0.1} max={10} step={0.1} integer={false} presets={[0.5, 1, 2, 3]} onCommit={setExportScale}/></label></div><label className="check-row"><input type="checkbox" disabled={exportFormat === 'jpg'} checked={transparent} onChange={(event) => setTransparent(event.target.checked)}/><span>透明画布背景</span></label></div>
+        <button type="button" className="secondary-button group-roster-import-button" title={rosterMode === 'local' ? '选择 xlsx 群名单，按“账号”列从设置的 WeLink 本地目录读取头像；读取失败时使用中文名末字生成占位头像。' : '选择 xlsx 群名单，按“工号”列联网下载成员头像，并可替换文字图层。'} disabled={groupRosterBusy} onClick={() => groupRosterInput.current?.click()}><Upload size={16}/>{groupRosterBusy ? '正在导入群名单（xlsx）' : '导入群名单（xlsx）'}</button>
         <input ref={groupRosterInput} className="hidden-input" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) chooseGroupRosterFile(file); }}/>
       </section>
       <section className="result-area">
@@ -6524,11 +6601,11 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
         <div className="group-roster-heading"><div><strong id="group-roster-title">是否替换文本？</strong><span>{groupRosterChoice.fileName}</span></div><IconButton label="取消" onClick={() => setGroupRosterChoice(null)}><X size={17}/></IconButton></div>
         <p>选择 Excel 第一行中的字段，将按从上到下的顺序替换可编辑文字图层。禁用替换文本的图层不会被修改。</p>
         <div className="group-roster-options">
-           {[['workerId', '工号'], ['chineseName', '中文名'], ['englishName', '英文名'], ['nickname', '昵称'], ['none', '否']].map(([value, label]) => <button type="button" key={value} className={value === 'none' ? 'secondary-button' : 'primary-button'} onClick={() => importGroupRosterRows(groupRosterChoice.rows, value)}>{label}</button>)}
+           {[[rosterIdentityKey, rosterIdentityLabel], ['chineseName', '中文名'], ['englishName', '英文名'], ['nickname', '昵称'], ['none', '否']].map(([value, label]) => <button type="button" key={value} className={value === 'none' ? 'secondary-button' : 'primary-button'} onClick={() => importGroupRosterRows(groupRosterChoice.rows, value)}>{label}</button>)}
         </div>
       </div>
     </div>}
-    {groupRosterBusy && <div className="group-roster-busy" role="status" aria-live="polite"><div><RefreshCw size={20}/><strong>正在导入群名单</strong><span>正在下载成员头像，请稍候…</span></div></div>}
+    {groupRosterBusy && <div className="group-roster-busy" role="status" aria-live="polite"><div><RefreshCw size={20}/><strong>正在导入群名单</strong><span>{rosterMode === 'local' ? '正在读取本地 WeLink 头像，请稍候…' : '正在联网下载成员头像，请稍候…'}</span></div></div>}
     {contextMenu && <div className="result-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setContextMenu(null); copyAgain(); }}><Copy size={16}/>{exportFormat === 'gif' ? '复制 GIF' : '复制图片'}</button></div>}
     <ExportProgressOverlay progress={exportProgress} onCancel={cancelExport}/>
     {slotContextMenu && <div className="result-context-menu" style={{ left: slotContextMenu.x, top: slotContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { const { id: slotId, index } = slotContextMenu; setSlotContextMenu(null); pasteClipboardImage(slotId, false, index); }}><Clipboard size={16}/>粘贴图片</button><button type="button" className={slotContextLayer?.verticalFlip ? 'active' : ''} onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); if (slotContextLayer) updateLayer(slotId, { verticalFlip: !slotContextLayer.verticalFlip }); }}><FlipVertical size={16}/>{slotContextLayer?.verticalFlip ? '取消垂直翻转' : '垂直翻转'}</button><button type="button" className={slotContextLayer?.horizontalFlip ? 'active' : ''} onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); if (slotContextLayer) updateLayer(slotId, { horizontalFlip: !slotContextLayer.horizontalFlip }); }}><FlipHorizontal size={16}/>{slotContextLayer?.horizontalFlip ? '\u53d6\u6d88\u6c34\u5e73\u7ffb\u8f6c' : '\u6c34\u5e73\u7ffb\u8f6c'}</button><button className="danger" disabled={Number.isInteger(slotContextMenu.index) ? !(slotSourceLists[slotContextMenu.id] || [slotSources[slotContextMenu.id]]).filter(Boolean)[slotContextMenu.index] : !slotSources[slotContextMenu.id]} onClick={() => { const { id: slotId, index } = slotContextMenu; setSlotContextMenu(null); if (Number.isInteger(index)) removeSlotSourceAt(slotId, index); else removeSlotSource(slotId); }}><Trash2 size={16}/>删除图片</button></div>}

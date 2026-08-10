@@ -125,6 +125,15 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .rename-dialog-actions button:disabled { opacity: .45; cursor: not-allowed; transform: none; }
 .settings-dialog-backdrop { position: fixed; inset: 0; z-index: 210; padding: 20px; background: rgba(25,24,21,.45); display: grid; place-items: center; }
 .settings-dialog { width: min(470px, 100%); padding: 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 18px 56px rgba(0,0,0,.24); }
+.settings-dialog-scroll { max-height: min(76vh, 720px); overflow-y: auto; padding-right: 3px; }
+.settings-import-options { display: grid; gap: 8px; }
+.settings-warning-icon { color: #d28a12; }
+.settings-local-import { margin-top: 11px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-soft); }
+.settings-local-import label > span { display: block; margin-bottom: 6px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.settings-path-row { display: flex; gap: 7px; }
+.settings-path-row input { min-width: 0; flex: 1; }
+.settings-path-status { margin: 8px 0 0; color: var(--accent); font-size: 10px; }
+
 .settings-dialog-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
 .settings-dialog-heading h2 { margin: 0; font-size: 18px; }
 .settings-dialog-section { margin-top: 18px; }
@@ -523,6 +532,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .export-setting-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .export-setting-row label span { display: block; margin-bottom: 5px; color: var(--muted); font-size: 9px; font-weight: 600; }
 .export-setting-row select { width: 100%; height: 34px; padding: 0 7px; border: 1px solid var(--line); border-radius: 4px; background: #fff; font-size: 10px; }
+.export-setting-row .numeric-input > input { width: 100%; height: 34px; padding: 0 30px 0 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--ink); font-size: 10px; }
 .result-area { min-width: 0; min-height: 0; padding: 36px 44px; display: flex; flex-direction: column; }
 .result-heading { height: 58px; flex: none; display: flex; align-items: start; justify-content: space-between; }
 .result-heading h2 { margin: 0; font-size: 20px; }
@@ -542,6 +552,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .result-context-menu button:disabled { opacity: .4; cursor: not-allowed; }
 .toast { position: fixed; left: 50%; bottom: 28px; z-index: 100; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; min-height: 44px; padding: 0 17px; border-radius: 6px; background: #1f1e1c; color: #fff; display: flex; align-items: center; gap: 9px; box-shadow: 0 8px 26px rgba(0,0,0,.2); font-size: 12px; transition: opacity .2s, transform .2s; }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
+.toast { max-width: min(760px, calc(100vw - 40px)); padding-top: 10px; padding-bottom: 10px; }
+.toast span { white-space: normal; line-height: 1.45; }
 .toast.error svg { color: var(--accent); }
 
 :root[data-theme="dark"] .topbar,
