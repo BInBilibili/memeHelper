@@ -8,7 +8,7 @@ import {
   AlignHorizontalJustifyStart, AlignLeft, AlignRight, AlignVerticalDistributeCenter,
   AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowLeft, Bold, Check, ChevronDown, ChevronRight, ChevronUp,
   BoxSelect, Circle, Clipboard, Copy, Crop, Download, Eye, EyeOff, FileImage, Grid2X2, GripVertical, ImagePlus,
-  Bandage, Blend, Eraser, FlipVertical, FolderOpen, Italic, Lasso, Layers3, LayoutTemplate, Lock, Monitor, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Pentagon, Pipette, Plus, Redo2, RefreshCw, RotateCcw, ScanSearch, Scissors,
+  Bandage, Blend, Eraser, FlipHorizontal, FlipVertical, FolderOpen, Italic, Lasso, Layers3, LayoutTemplate, Lock, Monitor, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Pentagon, Pipette, Plus, Redo2, RefreshCw, RotateCcw, ScanSearch, Scissors,
   Save, Settings, Shapes, Sparkles, Square, Star, Strikethrough, Sun, Trash2, Type, Underline, Undo2, Unlock, Upload, Link2,
   X, ZoomIn, ZoomOut
 } from 'lucide-react';
@@ -1057,6 +1057,10 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
       ctx.translate(0, layer.height);
       ctx.scale(1, -1);
     }
+    if (layer.horizontalFlip) {
+      ctx.translate(layer.width, 0);
+      ctx.scale(-1, 1);
+    }
     const suppliedReplacement = typeof replacements === 'string' ? replacements : replacements?.[layer.id];
     const boundReplacement = layer.type === 'slot' && layer.boundLayerId && typeof replacements !== 'string' ? replacements?.[layer.boundLayerId] : undefined;
     const replacement = layer.type === 'slot' && !layer.replacementDisabled && !layer.slotFill ? (suppliedReplacement || boundReplacement) : undefined;
@@ -1161,12 +1165,14 @@ async function renderAnimatedTemplate(template, replacements = {}, photoTransfor
   for (const layer of template.layers || []) {
     if (signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
     const source = sourceForLayer(template, layer, replacements);
-    if (!isGifSource(source)) continue;
-    const decoded = await desktop.decodeGifFrames(source);
+    // Normalize a single slot GIF stored as a one-item source array so every frame is decoded.
+    const animationSource = Array.isArray(source) && source.length === 1 ? source[0] : source;
+    if (!isGifSource(animationSource)) continue;
+    const decoded = await desktop.decodeGifFrames(animationSource);
     if (!decoded?.frames?.length) continue;
     const customDelays = Array.isArray(layer.gifFrameDelays) && layer.gifFrameDelays.length === decoded.frames.length ? layer.gifFrameDelays : null;
     const frames = customDelays ? decoded.frames.map((frame, index) => ({ ...frame, delayMs: Number(customDelays[index]) || frame.delayMs })) : decoded.frames;
-    animations.push({ layer, source, ...decoded, frames });
+    animations.push({ layer, source: animationSource, ...decoded, frames });
   }
   if (!animations.length) {
     const png = await renderTemplate(template, replacements, photoTransforms, { scale, transparent, mime: 'image/png', signal, showSlotPlaceholder });
@@ -5206,7 +5212,7 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
   const crop = image && layer.fit === 'cover' ? getCoverCrop(image, layer.width, layer.height) : undefined;
   const placement = image && layer.type === 'slot' && source ? getPhotoPlacement(image, layer, photoTransform) : null;
   if (!layer.visible) return null;
-  const common = { ref: setRef, x: layer.x + layer.width / 2, y: layer.y + layer.height / 2, offsetX: layer.width / 2, offsetY: layer.height / 2, width: layer.width, height: layer.height, rotation: layer.rotation || 0, scaleY: layer.verticalFlip ? -1 : 1, opacity: layerOpacityOf(layer), globalCompositeOperation: layerBlendModeOf(layer), draggable: interactive, listening: selectable };
+  const common = { ref: setRef, x: layer.x + layer.width / 2, y: layer.y + layer.height / 2, offsetX: layer.width / 2, offsetY: layer.height / 2, width: layer.width, height: layer.height, rotation: layer.rotation || 0, scaleX: layer.horizontalFlip ? -1 : 1, scaleY: layer.verticalFlip ? -1 : 1, opacity: layerOpacityOf(layer), globalCompositeOperation: layerBlendModeOf(layer), draggable: interactive, listening: selectable };
   if (selectable) Object.assign(common, { onMouseDown: onPointerDown, onTouchStart: onPointerDown, onClick: onSelect, onTap: onSelect, onDblClick: onEnterCrop, onDblTap: onEnterCrop, onContextMenu });
   if (interactive) {
     Object.assign(common, { onDragStart, onDragMove, onDragEnd: onDragEnd || ((event) => onChange({ x: Math.round(event.target.x() - layer.width / 2), y: Math.round(event.target.y() - layer.height / 2) })) });
@@ -5431,7 +5437,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
     <div className="property-section layer-composite-section">
       <div className="blend-mode-row"><h4>图层混合模式</h4><div ref={blendMenuRef} className="property-dropdown blend-mode-field"><button type="button" className="property-dropdown-trigger" aria-expanded={blendMenuOpen} onClick={() => { setBlendMenuOpen((open) => !open); setBindingMenuOpen(false); setFrameMenuOpen(false); }}><span>{activeBlendMode.label}</span><ChevronDown size={14}/></button>{blendMenuOpen && <div className="property-dropdown-menu blend-mode-menu">{LAYER_BLEND_MODES.map((option) => <button type="button" key={option.value} className={activeBlendMode.value === option.value ? 'active' : ''} onClick={() => { update({ blendMode: option.value }); setBlendMenuOpen(false); }}><span>{option.label}</span></button>)}</div>}</div></div>
     </div>
-    <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} presets={false} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} presets={false} onChange={(y) => update({ y })}/></div><div className="rotation-inline-row"><div className="rotation-inline-control"><h4>旋转</h4><div className="rotation-inline-input"><NumericInput value={Number(layer.rotation) || 0} min={-360} max={360} presets={ROTATION_PRESETS} onCommit={(rotation) => update({ rotation })}/></div></div><input className="range" type="range" min="-180" max="180" value={Number(layer.rotation) || 0} onChange={(event) => { const rotation = Number(event.target.value); update({ rotation: rotationShiftRef.current ? Math.round(rotation / 45) * 45 : rotation }); }}/></div><label className="check-row layer-flip-row"><input type="checkbox" checked={Boolean(layer.verticalFlip)} onChange={(event) => update({ verticalFlip: event.target.checked })}/><span>垂直翻转</span></label></div>
+    <div className="property-section"><h4>位置</h4><div className="property-grid"><NumberField label="X" value={layer.x} presets={false} onChange={(x) => update({ x })}/><NumberField label="Y" value={layer.y} presets={false} onChange={(y) => update({ y })}/></div><div className="rotation-inline-row"><div className="rotation-inline-control"><h4>旋转</h4><div className="rotation-inline-input"><NumericInput value={Number(layer.rotation) || 0} min={-360} max={360} presets={ROTATION_PRESETS} onCommit={(rotation) => update({ rotation })}/></div></div><input className="range" type="range" min="-180" max="180" value={Number(layer.rotation) || 0} onChange={(event) => { const rotation = Number(event.target.value); update({ rotation: rotationShiftRef.current ? Math.round(rotation / 45) * 45 : rotation }); }}/></div><div className="layer-flip-row"><label className="check-row"><input type="checkbox" checked={Boolean(layer.verticalFlip)} onChange={(event) => update({ verticalFlip: event.target.checked })}/><span>????</span></label><label className="check-row"><input type="checkbox" checked={Boolean(layer.horizontalFlip)} onChange={(event) => update({ horizontalFlip: event.target.checked })}/><span>????</span></label></div></div>
     <div className="property-section"><div className="property-heading-row"><h4>尺寸</h4>{layer.type !== 'text' && <button type="button" className={`aspect-lock-button ${aspectRatioLockedOf(layer) ? 'active' : ''}`} title={aspectRatioLockedOf(layer) ? '取消锁定宽高比' : '锁定宽高比'} onClick={() => update({ aspectRatioLocked: !aspectRatioLockedOf(layer) })}>{aspectRatioLockedOf(layer) ? <Lock size={13}/> : <Unlock size={13}/>}<span>宽高比</span></button>}</div><div className="property-grid"><NumberField label="宽" value={layer.width} min={10} presets={SIZE_PRESETS} onChange={(width) => updateDimension('width', width)}/><NumberField label="高" value={layer.height} min={10} presets={SIZE_PRESETS} onChange={(height) => updateDimension('height', height)}/></div></div>
     <div className="property-section"><h4>边框</h4><div className="border-controls"><label><span>颜色</span><input type="color" value={layer.borderColor || '#000000'} onChange={(event) => update({ borderColor: event.target.value })}/></label><label><span>类型</span><select className="property-select" value={borderPositionOf(layer)} onChange={(event) => update({ borderPosition: event.target.value })}><option value="outer">外边框</option><option value="inner">内边框</option></select></label><NumberField label="大小" value={layer.borderWidth || 0} min={0} max={100} presets={EFFECT_SIZE_PRESETS} onChange={(borderWidth) => update({ borderWidth })}/></div></div>
     {layer.type === 'slot' && <>
@@ -6525,7 +6531,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
     {groupRosterBusy && <div className="group-roster-busy" role="status" aria-live="polite"><div><RefreshCw size={20}/><strong>正在导入群名单</strong><span>正在下载成员头像，请稍候…</span></div></div>}
     {contextMenu && <div className="result-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setContextMenu(null); copyAgain(); }}><Copy size={16}/>{exportFormat === 'gif' ? '复制 GIF' : '复制图片'}</button></div>}
     <ExportProgressOverlay progress={exportProgress} onCancel={cancelExport}/>
-    {slotContextMenu && <div className="result-context-menu" style={{ left: slotContextMenu.x, top: slotContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { const { id: slotId, index } = slotContextMenu; setSlotContextMenu(null); pasteClipboardImage(slotId, false, index); }}><Clipboard size={16}/>粘贴图片</button><button type="button" className={slotContextLayer?.verticalFlip ? 'active' : ''} onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); if (slotContextLayer) updateLayer(slotId, { verticalFlip: !slotContextLayer.verticalFlip }); }}><FlipVertical size={16}/>{slotContextLayer?.verticalFlip ? '取消垂直翻转' : '垂直翻转'}</button><button className="danger" disabled={Number.isInteger(slotContextMenu.index) ? !(slotSourceLists[slotContextMenu.id] || [slotSources[slotContextMenu.id]]).filter(Boolean)[slotContextMenu.index] : !slotSources[slotContextMenu.id]} onClick={() => { const { id: slotId, index } = slotContextMenu; setSlotContextMenu(null); if (Number.isInteger(index)) removeSlotSourceAt(slotId, index); else removeSlotSource(slotId); }}><Trash2 size={16}/>删除图片</button></div>}
+    {slotContextMenu && <div className="result-context-menu" style={{ left: slotContextMenu.x, top: slotContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { const { id: slotId, index } = slotContextMenu; setSlotContextMenu(null); pasteClipboardImage(slotId, false, index); }}><Clipboard size={16}/>粘贴图片</button><button type="button" className={slotContextLayer?.verticalFlip ? 'active' : ''} onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); if (slotContextLayer) updateLayer(slotId, { verticalFlip: !slotContextLayer.verticalFlip }); }}><FlipVertical size={16}/>{slotContextLayer?.verticalFlip ? '取消垂直翻转' : '垂直翻转'}</button><button type="button" className={slotContextLayer?.horizontalFlip ? 'active' : ''} onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); if (slotContextLayer) updateLayer(slotId, { horizontalFlip: !slotContextLayer.horizontalFlip }); }}><FlipHorizontal size={16}/>{slotContextLayer?.horizontalFlip ? '\u53d6\u6d88\u6c34\u5e73\u7ffb\u8f6c' : '\u6c34\u5e73\u7ffb\u8f6c'}</button><button className="danger" disabled={Number.isInteger(slotContextMenu.index) ? !(slotSourceLists[slotContextMenu.id] || [slotSources[slotContextMenu.id]]).filter(Boolean)[slotContextMenu.index] : !slotSources[slotContextMenu.id]} onClick={() => { const { id: slotId, index } = slotContextMenu; setSlotContextMenu(null); if (Number.isInteger(index)) removeSlotSourceAt(slotId, index); else removeSlotSource(slotId); }}><Trash2 size={16}/>删除图片</button></div>}
   </main>;
 }
 

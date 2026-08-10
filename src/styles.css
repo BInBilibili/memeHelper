@@ -355,6 +355,8 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .text-format-row .numeric-input input { width: 100%; height: 34px; border: 1px solid var(--line); border-radius: 4px; padding: 0 30px 0 8px; font-size: 11px; }
 .check-row { margin-top: 10px; display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 10px; cursor: pointer; }
 .check-row input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+.layer-flip-row { display: flex; align-items: center; gap: 16px; }
+.layer-flip-row .check-row { margin-top: 10px; }
 .effect-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .effect-grid > label > span { display: block; margin-bottom: 6px; color: var(--muted); font-size: 9px; font-weight: 600; }
 .effect-grid input[type="color"] { width: 100%; height: 34px; padding: 3px; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
