@@ -160,9 +160,10 @@ function polygonPointAtRadius(point, percent) {
 function layerBounds(layer) {
   const radians = (Number(layer.rotation) || 0) * Math.PI / 180;
   const cosine = Math.cos(radians); const sine = Math.sin(radians);
-  const corners = [[0, 0], [layer.width, 0], [layer.width, layer.height], [0, layer.height]].map(([x, y]) => ({
-    x: layer.x + x * cosine - y * sine,
-    y: layer.y + x * sine + y * cosine
+  const centerX = layer.x + layer.width / 2; const centerY = layer.y + layer.height / 2;
+  const corners = [[-layer.width / 2, -layer.height / 2], [layer.width / 2, -layer.height / 2], [layer.width / 2, layer.height / 2], [-layer.width / 2, layer.height / 2]].map(([x, y]) => ({
+    x: centerX + x * cosine - y * sine,
+    y: centerY + x * sine + y * cosine
   }));
   const xs = corners.map((point) => point.x); const ys = corners.map((point) => point.y);
   const left = Math.min(...xs); const top = Math.min(...ys);
@@ -1048,8 +1049,9 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
     ctx.save();
     ctx.globalAlpha = layerOpacityOf(layer);
     ctx.globalCompositeOperation = layerBlendModeOf(layer);
-    ctx.translate(layer.x, layer.y);
+    ctx.translate(layer.x + layer.width / 2, layer.y + layer.height / 2);
     ctx.rotate((layer.rotation || 0) * Math.PI / 180);
+    ctx.translate(-layer.width / 2, -layer.height / 2);
     const suppliedReplacement = typeof replacements === 'string' ? replacements : replacements?.[layer.id];
     const boundReplacement = layer.type === 'slot' && layer.boundLayerId && typeof replacements !== 'string' ? replacements?.[layer.boundLayerId] : undefined;
     const replacement = layer.type === 'slot' && !layer.replacementDisabled && !layer.slotFill ? (suppliedReplacement || boundReplacement) : undefined;
