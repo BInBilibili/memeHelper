@@ -43,8 +43,11 @@ body { min-height: 100vh; overflow: hidden; }
 button, input { font: inherit; letter-spacing: 0; }
 button { color: inherit; }
 input, textarea, select { color: var(--ink); }
-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; box-shadow: none; }
+button:focus-visible, a:focus-visible, [tabindex]:focus-visible,
+input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
 .layers-panel > .panel-title > .icon-button { display: none; }
 
 .app-shell { min-height: 100vh; background: var(--paper); }
@@ -226,6 +229,14 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 0; 
 .layers-panel, .properties-panel { background: #fff; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .layers-panel { border-right: 1px solid var(--line); }
 .properties-panel { border-left: 1px solid var(--line); }
+.panel-resize-handle { position: relative; width: 6px; min-width: 6px; height: 100%; cursor: col-resize; background: transparent; z-index: 8; touch-action: none; }
+.panel-resize-handle::before { content: ''; position: absolute; inset: 0 2px; background: transparent; transition: background .15s; }
+.panel-resize-handle:hover::before, .panel-resize-handle:active::before { background: var(--accent); }
+.layers-panel.panel-collapsed { overflow: hidden; }
+.layers-panel.panel-collapsed > * { visibility: hidden; pointer-events: none; }
+.properties-panel.collapsed { display: flex; align-items: flex-start; justify-content: center; overflow: hidden; }
+.properties-expand-button { width: 33px; height: 53px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--muted); display: grid; place-items: center; cursor: pointer; }
+.properties-expand-button:hover { color: var(--accent); background: var(--surface-hover); }
 .panel-title { height: 53px; padding: 0 15px 0 18px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 700; }
 .panel-title > div { display: flex; align-items: center; gap: 7px; }
 .panel-title small { min-width: 19px; height: 19px; display: grid; place-items: center; border-radius: 10px; background: #eeece6; color: var(--muted); }

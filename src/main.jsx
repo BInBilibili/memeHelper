@@ -1772,7 +1772,7 @@ function SettingsDialog({ config, onChange, onClose }) {
         <button type="button" className={`settings-option ${rosterMode === 'local' ? 'active' : ''}`} onClick={() => onChange({ groupRosterImportMode: 'local' })}><span className="settings-option-icon"><FolderOpen size={18}/></span><span><strong>本地导入</strong><small>从本机 WeLink 头像缓存读取，不访问网络。</small></span><span className="settings-option-check">{rosterMode === 'local' ? '✓' : ''}</span></button>
         <button type="button" className={`settings-option ${rosterMode === 'online' ? 'active' : ''}`} onClick={() => onChange({ groupRosterImportMode: 'online' })}><span className="settings-option-icon settings-warning-icon" title="可能涉及爬虫违规"><AlertTriangle size={18}/></span><span><strong>联网导入</strong><small>根据工号从现有头像接口下载。</small></span><span className="settings-option-check">{rosterMode === 'online' ? '✓' : ''}</span></button>
       </div>
-      {rosterMode === 'local' && <div className="settings-local-import"><label><span>本地头像目录</span><div className="settings-path-row"><input value={config.groupRosterLocalDir || ''} placeholder="C:\Users\账号\AppData\Roaming\WeLink_Desktop\contact\账号\imgMain" onChange={(event) => onChange({ groupRosterLocalDir: event.target.value })}/><button type="button" className="secondary-button" disabled={detectingPath} onClick={autoDetectPath}>{detectingPath ? '正在查找' : '自动设置'}</button></div></label><small>软件首次启动时会自动查找当前 Windows 用户及 WeLink contact 目录下可用的 imgMain 文件夹；未找到时可以手动填写。</small>{pathStatus && <p className="settings-path-status">{pathStatus}</p>}</div>}
+      {rosterMode === 'local' && <div className="settings-local-import"><label><span>本地头像目录</span><div className="settings-path-row"><input value={config.groupRosterLocalDir || ''} placeholder="C:\Users\账号\AppData\Roaming\WeLink_Desktop\contact\账号\imgMain" onChange={(event) => onChange({ groupRosterLocalDir: event.target.value })}/><button type="button" className="secondary-button" disabled={detectingPath} onClick={autoDetectPath}>{detectingPath ? '正在查找' : '自动设置'}</button></div></label>{pathStatus && <p className="settings-path-status">{pathStatus}</p>}</div>}
       </div>
       <p className="settings-note">设置会立即生效，并保存到程序目录的 Data/config.json。</p>
     </div>
@@ -2158,6 +2158,8 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
   const [textEditingId, setTextEditingId] = useState(null);
   const [textSelection, setTextSelection] = useState(null);
   const [propertyTextSelection, setPropertyTextSelection] = useState(null);
+  const [layersPanelWidth, setLayersPanelWidth] = useState(250);
+  const [propertiesCollapsed, setPropertiesCollapsed] = useState(false);
   const [dirty, setDirty] = useState(initialStateRef.current.restored);
   const [autosaveState, setAutosaveState] = useState(initialStateRef.current.restored ? 'saved' : 'idle');
   const [leavePrompt, setLeavePrompt] = useState(null);
@@ -2188,6 +2190,8 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
   const gifLayerInput = useRef();
   const [fixedLayerMenu, setFixedLayerMenu] = useState(false);
   const stageHostRef = useRef();
+  const editorBodyRef = useRef();
+  const layersPanelResizeRef = useRef(null);
   const outsideDragRef = useRef(null);
   const clipboardLayersRef = useRef({ layers: [], groupMeta: {} });
   const layerReorderRef = useRef(null);
@@ -2195,6 +2199,37 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
   const groupSelectionAnchorRef = useRef(null);
   const [gifTimeline, setGifTimeline] = useState({ layerId: null, frames: [], frameIndex: 0, selectedIndexes: [], playing: false });
   const gifFrameAnchorRef = useRef(null);
+  const beginLayersPanelResize = useCallback((event) => {
+    event.preventDefault();
+    layersPanelResizeRef.current = { pointerId: event.pointerId };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
+  useEffect(() => {
+    const move = (event) => {
+      if (!layersPanelResizeRef.current || !editorBodyRef.current) return;
+      const bounds = editorBodyRef.current.getBoundingClientRect();
+      const rightWidth = propertiesCollapsed ? 34 : 280;
+      const maxWidth = Math.max(4, bounds.width - rightWidth - 260);
+      setLayersPanelWidth(clamp(event.clientX - bounds.left, 4, maxWidth));
+    };
+    const finish = () => {
+      if (!layersPanelResizeRef.current) return;
+      layersPanelResizeRef.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [propertiesCollapsed]);
   const selected = draft.layers.find((item) => item.id === selectedId);
   const selectedGifLayer = selected && isGifSource(selected.src) ? selected : null;
   const timelineGifLayer = selectedGifLayer
@@ -3702,8 +3737,8 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
 
   return <main className="editor-page">
     <header className="editor-topbar"><div className="editor-left"><IconButton label="返回模板库" onClick={tryBack}><ArrowLeft size={21}/></IconButton><div className="title-field"><div className="editable-template-name" title="点击编辑模板名称"><input aria-label="模板名称" style={{ width: `${Math.max(8, Math.min(52, Array.from(String(draft.name || '')).reduce((total, character) => total + (/[^\x00-\xff]/.test(character) ? 2 : 1), 0) + 2))}ch` }} value={draft.name} onChange={(e) => updateDraft({ ...draft, name: e.target.value })}/><Pencil size={13} aria-hidden="true"/></div><span>{draft.width} x {draft.height}px</span></div></div><div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undoDraft} disabled={!canUndo}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redoDraft} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={tryBack}>取消</button><button className="primary-button" onClick={save}><Save size={17}/>保存模板</button></div></header>
-    <div className="editor-body">
-      <aside className="layers-panel" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu} onDragOver={handleGifFrameLayerDragOver} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setGifFrameLayerDrop(null); }} onDrop={handleGifFrameLayerDrop}>
+    <div ref={editorBodyRef} className="editor-body" style={{ gridTemplateColumns: `${layersPanelWidth}px 6px minmax(0, 1fr) ${propertiesCollapsed ? '34px' : '280px'}` }}>
+      <aside className={`layers-panel ${layersPanelWidth <= 40 ? 'panel-collapsed' : ''}`} onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu} onDragOver={handleGifFrameLayerDragOver} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setGifFrameLayerDrop(null); }} onDrop={handleGifFrameLayerDrop}>
         <div className="panel-title"><div><span>{templateHasGif ? 'GIF' : '图层'}</span><small>{draft.layers.length}</small></div></div>
         <div className="layer-add-row">
           <div className="fixed-layer-add-wrap">
@@ -3719,13 +3754,14 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
         <div className="layers-list" onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu} onDragOver={handleGifFrameLayerDragOver} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setGifFrameLayerDrop(null); }} onDrop={handleGifFrameLayerDrop}>{layerListRows}</div>
         {!draft.layers.length && <div className="layers-empty" onClick={clearSelection} onContextMenu={openLayersBlankMenu}><Layers3 size={28}/><p>添加第一个图层后，画布会自动匹配图层大小。</p></div>}
       </aside>
+      <div className="panel-resize-handle" role="separator" aria-label="调整左侧图层面板宽度" onPointerDown={beginLayersPanelResize} />
       <section className="canvas-workspace">
         <div className="canvas-toolbar">
           <div className="canvas-size"><button type="button" className={`size-mode-button ${sizeMode === 'image' ? 'active' : ''}`} title={sizeMode === 'canvas' ? '点击切换为修改图像尺寸' : '点击切换为修改画布尺寸'} onClick={() => setSizeMode((mode) => mode === 'canvas' ? 'image' : 'canvas')}>{sizeMode === 'canvas' ? '画布' : '图像'}</button><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeWidth} disabled={sizeMode === 'image' && !imageBounds} onCommit={(width) => commitToolbarSize('width', width)}/><span>×</span><NumericInput min={sizeMode === 'image' ? 1 : 0} max={4000} presets={SIZE_PRESETS} value={sizeHeight} disabled={sizeMode === 'image' && !imageBounds} onCommit={(height) => commitToolbarSize('height', height)}/>{sizeMode === 'image' && <IconButton className={`size-lock-button ${imageSizeLocked ? 'active' : ''}`} label={imageSizeLocked ? '已锁定宽高比' : '锁定宽高比'} onClick={() => setImageSizeLocked((locked) => !locked)}><Link2 size={15}/></IconButton>}{sizeMode === 'canvas' && <button className="auto-canvas-button" onClick={autoSizeCanvas}>自动设置</button>}</div>
           <div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>
         </div>
         {timelineGifLayer && <GifTimeline frames={gifTimeline.frames} frameIndex={gifTimeline.frameIndex} selectedIndexes={gifTimeline.selectedIndexes} playing={gifTimeline.playing} layerInsertionIndex={timelineLayerInsertionIndex} onTogglePlay={() => setGifTimeline((current) => ({ ...current, playing: !current.playing }))} onSelectFrame={selectGifFrame} onDropFrames={insertGifFrames} onDuplicateFrame={duplicateGifFrame} onDeleteFrame={deleteGifFrame} onReorderFrame={reorderGifFrame}/> }
-        <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropImageOnEditor} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left, y: event.clientY - bounds.top, altKey: event.altKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { if (activeTool === 'text' && event.button === 0 && !event.target.closest('.canvas-tool-dock')) { event.preventDefault(); event.stopPropagation(); const bounds = stageHostRef.current?.getBoundingClientRect(); const point = bounds ? { x: clamp((event.clientX - bounds.left) / zoom, 0, Math.max(0, draft.width)), y: clamp((event.clientY - bounds.top) / zoom, 0, Math.max(0, draft.height)) } : { x: 0, y: 0 }; addTextLayer(point, textOrientation); return; } if (beginOutsideSelectionDrag(event)) return; const blank = !event.target.closest('.stage-shadow, .canvas-tool-dock'); if (activeTool === 'select' && blank) { clearSelection(); beginPan(event); } else if (activeTool === 'marquee' && event.button === 0 && blank) { event.preventDefault(); setMarqueeStartRequest({ clientX: event.clientX, clientY: event.clientY, key: event.timeStamp }); } }}>
+        <div className={`canvas-scroll pan-viewport ${panning ? 'panning' : ''} tool-${activeTool}`} onWheel={zoomAtPointer} onDragOver={(event) => { if (Array.from(event.dataTransfer?.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropImageOnEditor} onPointerMove={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setToolPointer({ x: event.clientX - bounds.left + event.currentTarget.scrollLeft, y: event.clientY - bounds.top + event.currentTarget.scrollTop, altKey: event.altKey }); }} onPointerLeave={() => setToolPointer(null)} onMouseDown={(event) => { if (activeTool === 'text' && event.button === 0 && !event.target.closest('.canvas-tool-dock')) { event.preventDefault(); event.stopPropagation(); const bounds = stageHostRef.current?.getBoundingClientRect(); const point = bounds ? { x: clamp((event.clientX - bounds.left) / zoom, 0, Math.max(0, draft.width)), y: clamp((event.clientY - bounds.top) / zoom, 0, Math.max(0, draft.height)) } : { x: 0, y: 0 }; addTextLayer(point, textOrientation); return; } if (beginOutsideSelectionDrag(event)) return; const blank = !event.target.closest('.stage-shadow, .canvas-tool-dock'); if (activeTool === 'select' && blank) { clearSelection(); beginPan(event); } else if (activeTool === 'marquee' && event.button === 0 && blank) { event.preventDefault(); setMarqueeStartRequest({ clientX: event.clientX, clientY: event.clientY, key: event.timeStamp }); } }}>
           <div className="canvas-tool-dock"><div className="editor-paint-tools">
             <IconButton label="选择与移动" className={activeTool === 'select' ? 'active' : ''} onClick={() => setActiveTool('select')}><MousePointer2 size={17}/></IconButton>
             <IconButton label="选框工具：拖动后右键复制或剪切选区" className={activeTool === 'marquee' ? 'active' : ''} onClick={() => setActiveTool('marquee')}><BoxSelect size={17}/></IconButton>
@@ -3768,7 +3804,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
           )}
         </div>
       </section>
-      <aside className="properties-panel"><div className="panel-title"><span>属性</span></div>{selectedGroupId && selectedGroupLayers.length ? <GroupProperties name={selectedGroupName} layers={selectedGroupLayers} onRename={(name) => updateGroupMeta(selectedGroupId, { name })} onToggleLock={() => updateGroupLayers(selectedGroupId, { locked: selectedGroupLayers.some((layer) => !layer.locked) })} onToggleVisibility={() => updateGroupLayers(selectedGroupId, { visible: !selectedGroupLayers.every((layer) => layer.visible) })} onMove={(axis, value) => moveGroupTo(selectedGroupId, axis, value)} onUngroup={ungroupSelected} onRemove={() => removeGroup(selectedGroupId)} onOrder={(direction) => moveLayer(selectedGroupLayers[0].id, direction, true)}/> : selectedLayers.length > 1 ? <MultiSelectionProperties layers={selectedLayers} grouped={Boolean(uniformlySelectedGroupId)} onGroup={groupSelected} onUngroup={ungroupSelected} onToggleLock={toggleSelectedLock} onAlign={alignSelected} onDistribute={distributeSelected}/> : selected ? <Properties layers={draft.layers} gifFrameCount={templateGifFrameCount} layer={selected} gifTimeline={selectedGifLayer?.id === gifTimeline.layerId ? gifTimeline : null} onGifFrameDelay={updateGifFrameDelay} textStyle={selected.type === 'text' ? textStyleAt(selected, Math.min(Math.max(0, String(selected.text || '').length - 1), Math.min(activeTextSelection?.start ?? 0, activeTextSelection?.end ?? 0))) : null} textSelection={activeTextSelection} onBeginTextInteraction={beginPropertyTextInteraction} onTextSelectionChange={(selection) => setPropertyTextSelection({ id: selected.id, ...selection })} updateTextStyle={applySelectedTextStyle} updateText={updateSelectedText} update={updateSelectedProperties} toggleLock={() => updateLayer(selected.id, { locked: !selected.locked })} remove={() => removeLayer(selected.id)} move={(direction) => moveLayer(selected.id, direction)}/> : <div className="property-empty"><Pencil size={26}/><p>选择一个图层后，可调整位置、尺寸和旋转。</p></div>}</aside>
+      <aside className={`properties-panel ${propertiesCollapsed ? 'collapsed' : ''}`}>{propertiesCollapsed ? <button type="button" className="properties-expand-button" title="展开属性面板" aria-label="展开属性面板" onClick={() => setPropertiesCollapsed(false)}><ChevronLeft size={18}/></button> : <><div className="panel-title"><span>属性</span><IconButton label="折叠属性面板" onClick={() => setPropertiesCollapsed(true)}><ChevronRight size={16}/></IconButton></div>{selectedGroupId && selectedGroupLayers.length ? <GroupProperties name={selectedGroupName} layers={selectedGroupLayers} onRename={(name) => updateGroupMeta(selectedGroupId, { name })} onToggleLock={() => updateGroupLayers(selectedGroupId, { locked: selectedGroupLayers.some((layer) => !layer.locked) })} onToggleVisibility={() => updateGroupLayers(selectedGroupId, { visible: !selectedGroupLayers.every((layer) => layer.visible) })} onMove={(axis, value) => moveGroupTo(selectedGroupId, axis, value)} onUngroup={ungroupSelected} onRemove={() => removeGroup(selectedGroupId)} onOrder={(direction) => moveLayer(selectedGroupLayers[0].id, direction, true)}/> : selectedLayers.length > 1 ? <MultiSelectionProperties layers={selectedLayers} grouped={Boolean(uniformlySelectedGroupId)} onGroup={groupSelected} onUngroup={ungroupSelected} onToggleLock={toggleSelectedLock} onAlign={alignSelected} onDistribute={distributeSelected}/> : selected ? <Properties layers={draft.layers} gifFrameCount={templateGifFrameCount} layer={selected} gifTimeline={selectedGifLayer?.id === gifTimeline.layerId ? gifTimeline : null} onGifFrameDelay={updateGifFrameDelay} textStyle={selected.type === 'text' ? textStyleAt(selected, Math.min(Math.max(0, String(selected.text || '').length - 1), Math.min(activeTextSelection?.start ?? 0, activeTextSelection?.end ?? 0))) : null} textSelection={activeTextSelection} onBeginTextInteraction={beginPropertyTextInteraction} onTextSelectionChange={(selection) => setPropertyTextSelection({ id: selected.id, ...selection })} updateTextStyle={applySelectedTextStyle} updateText={updateSelectedText} update={updateSelectedProperties} toggleLock={() => updateLayer(selected.id, { locked: !selected.locked })} remove={() => removeLayer(selected.id)} move={(direction) => moveLayer(selected.id, direction)}/> : <div className="property-empty"><Pencil size={26}/><p>选择一个图层后，可调整位置、尺寸和旋转。</p></div>}</>}</aside>
     </div>
     {layerMenu && <div className="layer-context-menu" style={{ left: layerMenu.x, top: Math.max(6, layerMenu.y) }} onPointerDown={(event) => event.stopPropagation()}>
       {layerMenu.marquee ? <><button onClick={() => { copyMarqueePixels(layerMenu.marquee.ids, layerMenu.marquee.rect); setLayerMenu(null); }}><Copy size={16}/>复制选区内容</button><button className="danger" onClick={() => { cutMarqueePixels(layerMenu.marquee.ids, layerMenu.marquee.rect); setLayerMenu(null); }}><Scissors size={16}/>剪切选区内容</button></> : layerMenu.blank ? <button onClick={() => { pasteLayers(); setLayerMenu(null); }}><Clipboard size={16}/>粘贴图层</button> : <>
@@ -4686,7 +4722,11 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     const container = stageRef.current?.container();
     if (!container) return null;
     const bounds = container.getBoundingClientRect();
-    return { x: (clientX - bounds.left) / zoom, y: (clientY - bounds.top) / zoom };
+    if (!bounds.width || !bounds.height) return null;
+    return {
+      x: (clientX - bounds.left) * template.width / bounds.width,
+      y: (clientY - bounds.top) * template.height / bounds.height
+    };
   };
 
   const beginQuickSelection = async (event) => {
@@ -6120,7 +6160,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
     }
   }, [commitSession, composition.layers, notify, replaceSlotSources]);
 
-  const importGroupRosterRows = useCallback(async (rows, textField = 'none') => {
+  const importGroupRosterRows = useCallback(async (rows, textField = 'none', targetSlotId = null) => {
     if (!rows.length || groupRosterBusy) return;
     setGroupRosterChoice(null);
     setGroupRosterBusy(true);
@@ -6158,8 +6198,13 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
             composition: previous.composition
           };
 
-          if (imported.length && slots.length === 1) {
-            const slotId = slots[0].id;
+          if (imported.length && (targetSlotId || slots.length === 1)) {
+            // When an xlsx file is opened from a specific replaceable layer,
+            // keep all imported avatars in that layer instead of distributing
+            // them across the template's slots. This is also the normal path
+            // for templates that only have one replaceable layer.
+            const slotId = targetSlotId || slots[0].id;
+            if (!slots.some((slot) => slot.id === slotId)) return previous;
             const sources = imported.map(({ download }) => download.dataUrl);
             const names = imported.map(({ row }) => String(row[rosterIdentityKey] || 'avatar') + '.png');
             next.slotSources[slotId] = sources[0];
@@ -6205,7 +6250,9 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
           }
           return next;
         });
-        if (imported.length) setSelectedId(slots[Math.min(imported.length, slots.length) - 1]?.id || null);
+        if (imported.length) {
+          setSelectedId(targetSlotId || slots[Math.min(imported.length, slots.length) - 1]?.id || null);
+        }
       }
 
       if (rosterMode === 'local') {
@@ -6227,7 +6274,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
     }
   }, [commitSession, config?.groupRosterLocalDir, editableTextLayers, groupRosterBusy, notify, rosterIdentityKey, rosterMode, slots]);
 
-  const chooseGroupRosterFile = useCallback(async (file) => {
+  const chooseGroupRosterFile = useCallback(async (file, targetSlotId = null) => {
     if (!file) return;
     try {
       const workbook = XLSX.read(await file.arrayBuffer(), { type: 'array' });
@@ -6254,8 +6301,8 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
         };
       }).filter((row) => row[rosterIdentityKey]);
       if (!rows.length) throw new Error(`“${rosterIdentityLabel}”列中没有可导入的数据`);
-      if (editableTextLayers.length) setGroupRosterChoice({ rows, fileName: file.name });
-      else await importGroupRosterRows(rows, 'none');
+      if (editableTextLayers.length) setGroupRosterChoice({ rows, fileName: file.name, targetSlotId });
+      else await importGroupRosterRows(rows, 'none', targetSlotId);
     } catch (error) {
       notify(`读取群名单失败：${error?.message || error}`, 'error');
     }
@@ -6559,7 +6606,23 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
           })}
         </div>
         {cropLayer && slotSources[cropLayer.id] && <div className="crop-controls"><div className="crop-controls-heading"><strong><Crop size={16}/>裁切照片</strong><IconButton label="完成裁切" onClick={() => setCropModeId(null)}><Check size={16}/></IconButton></div><label className="crop-zoom-field"><span>缩放</span><input type="range" min="1" max="5" step="0.05" value={cropTransform.zoom} onChange={(event) => updatePhotoTransform(cropLayer.id, { zoom: Number(event.target.value) })}/><output>{Math.round(cropTransform.zoom * 100)}%</output></label><button className="wide-property-button" onClick={resetCrop}><RotateCcw size={16}/>重置裁切</button></div>}
-        <input ref={input} hidden type="file" accept="image/*" multiple onChange={(event) => { const files = Array.from(event.target.files || []); if (files.length) { if (files.length > 1 || pendingAppend.current) acceptInitialFiles(files, pendingSlot.current, pendingAppend.current); else acceptFile(files[0], pendingSlot.current); } event.target.value = ''; pendingSlot.current = null; pendingAppend.current = false; }}/>
+	        <input ref={input} hidden type="file" accept="image/*,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" multiple onChange={(event) => {
+	          const files = Array.from(event.target.files || []);
+	          const targetSlotId = pendingSlot.current;
+	          const append = pendingAppend.current;
+	          const rosterFile = files.find((file) => /\.(xlsx|xls)$/i.test(file.name || '') || /spreadsheet|excel/i.test(file.type || ''));
+	          if (rosterFile) {
+	            // Opening an xlsx from “双击选择图片” imports all roster avatars
+	            // into the layer that initiated the file picker.
+	            chooseGroupRosterFile(rosterFile, targetSlotId);
+	          } else if (files.length) {
+	            if (files.length > 1 || append) acceptInitialFiles(files, targetSlotId, append);
+	            else acceptFile(files[0], targetSlotId);
+	          }
+	          event.target.value = '';
+	          pendingSlot.current = null;
+	          pendingAppend.current = false;
+	        }}/>
         {textLayers.length > 0 && <div className="use-text-layers">
           <div className="slot-list-heading"><strong>文字图层</strong><span>{textLayers.length}</span></div>
           <div className="use-text-layer-list">{textLayers.map((layer) => {
@@ -6601,7 +6664,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
         <div className="group-roster-heading"><div><strong id="group-roster-title">是否替换文本？</strong><span>{groupRosterChoice.fileName}</span></div><IconButton label="取消" onClick={() => setGroupRosterChoice(null)}><X size={17}/></IconButton></div>
         <p>选择 Excel 第一行中的字段，将按从上到下的顺序替换可编辑文字图层。禁用替换文本的图层不会被修改。</p>
         <div className="group-roster-options">
-           {[[rosterIdentityKey, rosterIdentityLabel], ['chineseName', '中文名'], ['englishName', '英文名'], ['nickname', '昵称'], ['none', '否']].map(([value, label]) => <button type="button" key={value} className={value === 'none' ? 'secondary-button' : 'primary-button'} onClick={() => importGroupRosterRows(groupRosterChoice.rows, value)}>{label}</button>)}
+           {[[rosterIdentityKey, rosterIdentityLabel], ['chineseName', '中文名'], ['englishName', '英文名'], ['nickname', '昵称'], ['none', '否']].map(([value, label]) => <button type="button" key={value} className={value === 'none' ? 'secondary-button' : 'primary-button'} onClick={() => importGroupRosterRows(groupRosterChoice.rows, value, groupRosterChoice.targetSlotId)}>{label}</button>)}
         </div>
       </div>
     </div>}
