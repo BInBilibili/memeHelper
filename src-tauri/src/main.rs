@@ -687,7 +687,7 @@ async fn download_group_faces(worker_ids: Vec<String>) -> Result<Vec<GroupFaceDo
 #[tauri::command]
 fn detect_welink_avatar_dir() -> Option<String> {
     let roaming = env::var_os("APPDATA").map(PathBuf::from)?;
-    let contact_root = roaming.join("WeLink_Desktop").join("contact");
+    let contact_root = roaming.join("WeLink_Desktop").join("appdata").join("contact");
     if !contact_root.is_dir() {
         return None;
     }
