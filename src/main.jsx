@@ -1262,29 +1262,59 @@ function compositionForBatchIndex(composition, textValueLists = {}, index = 0) {
   return changed ? { ...composition, layers } : composition;
 }
 
+function replacementBatchesForTemplate(template, slotSources = {}, slotSourceLists = {}) {
+  const slots = (template?.layers || []).filter(isReplaceableSlot);
+  const sourceLists = Object.fromEntries(slots.map((layer) => {
+    const listed = Array.isArray(slotSourceLists[layer.id]) ? slotSourceLists[layer.id].filter(Boolean) : [];
+    const sources = listed.length ? listed : (slotSources[layer.id] ? [slotSources[layer.id]] : []);
+    return [layer.id, sources];
+  }));
+  const batchCount = Math.max(1, ...slots
+    .filter((layer) => multiPhotoLayoutOf(layer) === 'none')
+    .map((layer) => sourceLists[layer.id].length));
+  return Array.from({ length: batchCount }, (_, index) => Object.fromEntries(slots.flatMap((layer) => {
+    const sources = sourceLists[layer.id];
+    if (!sources.length) return [];
+    if (multiPhotoLayoutOf(layer) !== 'none') return [[layer.id, sources]];
+    return [[layer.id, sources[index] || sources[0]]];
+  })));
+}
+
+async function renderAnimatedReplacementBatches(template, replacementBatches = [], photoTransforms = {}, options = {}) {
+  const batches = replacementBatches.length ? replacementBatches : [{}];
+  if (batches.length === 1) {
+    return renderAnimatedTemplate(
+      compositionForBatchIndex(template, options.textValueLists, 0),
+      batches[0],
+      photoTransforms,
+      options
+    );
+  }
+  const outputFrames = [];
+  for (let index = 0; index < batches.length; index += 1) {
+    if (options.signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
+    const batchTemplate = compositionForBatchIndex(template, options.textValueLists, index);
+    const dataUrl = await renderAnimatedTemplate(batchTemplate, batches[index], photoTransforms, options);
+    if (options.signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
+    const decoded = await desktop.decodeGifFrames(dataUrl);
+    if (decoded?.frames?.length) outputFrames.push(...decoded.frames);
+    options.onBatchProgress?.((index + 1) / batches.length);
+  }
+  if (!outputFrames.length) throw new Error('没有可导出的 GIF 帧');
+  return desktop.encodeGifFrames(outputFrames, null);
+}
+
 async function renderAnimatedBatchTemplate(template, slotId, sources = [], replacements = {}, photoTransforms = {}, options = {}) {
   const usableSources = sources.filter(Boolean);
   if (!slotId || !usableSources.length) {
     return renderAnimatedTemplate(template, replacements, photoTransforms, options);
   }
-  const outputFrames = [];
-  for (let index = 0; index < usableSources.length; index += 1) {
-    if (options.signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
-    const source = usableSources[index];
-    const batchTemplate = compositionForBatchIndex(template, options.textValueLists, index);
-    const dataUrl = await renderAnimatedTemplate(
-      batchTemplate,
-      { ...replacements, [slotId]: source },
-      { ...photoTransforms, [slotId]: photoTransforms[slotId] || { zoom: 1, offsetX: 0, offsetY: 0 } },
-      options
-    );
-    if (options.signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
-    const decoded = await desktop.decodeGifFrames(dataUrl);
-    if (decoded?.frames?.length) outputFrames.push(...decoded.frames);
-    options.onBatchProgress?.((index + 1) / usableSources.length);
-  }
-  if (!outputFrames.length) throw new Error('没有可导出的 GIF 帧');
-  return desktop.encodeGifFrames(outputFrames, null);
+  return renderAnimatedReplacementBatches(
+    template,
+    usableSources.map((source) => ({ ...replacements, [slotId]: source })),
+    { ...photoTransforms, [slotId]: photoTransforms[slotId] || { zoom: 1, offsetX: 0, offsetY: 0 } },
+    options
+  );
 }
 
 function useHtmlImage(src) {
@@ -5802,9 +5832,11 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
   const slots = composition.layers.filter(isReplaceableSlot);
   const textLayers = composition.layers.filter((layer) => layer.type === 'text' && !layer.textLocked);
   const editableTextLayers = textLayers;
-  const batchSlot = slots.length === 1 ? slots[0] : null;
-  const batchSources = batchSlot ? (slotSourceLists[batchSlot.id] || (slotSources[batchSlot.id] ? [slotSources[batchSlot.id]] : [])) : [];
-  const batchNames = batchSlot ? (slotNameLists[batchSlot.id] || (slotNames[batchSlot.id] ? [slotNames[batchSlot.id]] : [])) : [];
+  const batchReplacementSets = useMemo(
+    () => replacementBatchesForTemplate(composition, slotSources, slotSourceLists),
+    [composition, slotSourceLists, slotSources]
+  );
+  const batchCount = batchReplacementSets.length;
   const gallerySources = slotGalleryId ? (slotSourceLists[slotGalleryId] || (slotSources[slotGalleryId] ? [slotSources[slotGalleryId]] : [])) : [];
   const galleryNames = slotGalleryId ? (slotNameLists[slotGalleryId] || (slotNames[slotGalleryId] ? [slotNames[slotGalleryId]] : [])) : [];
   const renderReplacements = useMemo(() => {
@@ -6335,43 +6367,48 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
   }, [acceptFile, acceptInitialFiles, composition.layers, initialFiles]);
 
   const currentResult = useCallback(async (job = null) => {
-    const useLegacyBatchAnimation = batchSlot && multiPhotoLayoutOf(batchSlot) === 'none' && batchSources.length > 1;
-    const dataUrl = outputMime === 'image/gif' && useLegacyBatchAnimation
-      ? await renderAnimatedBatchTemplate(composition, batchSlot.id, batchSources, slotSources, slotTransforms, {
+    const firstReplacements = batchReplacementSets[0] || renderReplacements;
+    const dataUrl = outputMime === 'image/gif' && batchCount > 1
+      ? await renderAnimatedReplacementBatches(composition, batchReplacementSets, slotTransforms, {
         scale: exportScale,
         transparent,
         mime: outputMime,
         showSlotPlaceholder: false,
-         signal: job?.controller.signal,
-         onFrameProgress: job ? (value) => updateExport(job, 8 + value * 58, `正在生成 GIF（${Math.round(value * 100)}%）`) : undefined,
-         onBatchProgress: job ? (value) => updateExport(job, 8 + value * 58, `正在合成 GIF（${Math.round(value * 100)}%）`) : undefined,
-         textValueLists
+        signal: job?.controller.signal,
+        onFrameProgress: job ? (value) => updateExport(job, 8 + value * 58, `正在生成 GIF（${Math.round(value * 100)}%）`) : undefined,
+        onBatchProgress: job ? (value) => updateExport(job, 8 + value * 58, `正在合成 GIF（${Math.round(value * 100)}%）`) : undefined,
+        textValueLists
       })
-      : await renderOutput(composition, renderReplacements, slotTransforms, { scale: exportScale, transparent, mime: outputMime, signal: job?.controller.signal });
+      : await renderOutput(
+        compositionForBatchIndex(composition, textValueLists, 0),
+        firstReplacements,
+        slotTransforms,
+        { scale: exportScale, transparent, mime: outputMime, signal: job?.controller.signal }
+      );
     if (job && isExportCancelled(job)) return '';
     if (job) updateExport(job, 68, '正在准备复制');
     setResult(dataUrl);
     return dataUrl;
-  }, [batchSlot, batchSources, composition, exportScale, isExportCancelled, outputMime, renderOutput, renderReplacements, slotSources, slotTransforms, textValueLists, transparent, updateExport]);
+  }, [batchCount, batchReplacementSets, composition, exportScale, isExportCancelled, outputMime, renderOutput, renderReplacements, slotTransforms, textValueLists, transparent, updateExport]);
 
   const copyAgain = useCallback(async () => {
     const job = beginExport(outputMime === 'image/gif' ? '正在导出 GIF' : '正在导出图片');
     updateExport(job, 5);
     await new Promise((resolve) => requestAnimationFrame(() => resolve()));
     try {
-      if (batchSlot && multiPhotoLayoutOf(batchSlot) === 'none' && batchSources.length > 1 && outputMime !== 'image/gif') {
+      if (batchCount > 1 && outputMime !== 'image/gif') {
         const outputs = [];
-        for (let index = 0; index < batchSources.length; index += 1) {
+        for (let index = 0; index < batchCount; index += 1) {
           if (isExportCancelled(job)) return;
           const batchComposition = compositionForBatchIndex(composition, textValueLists, index);
           outputs.push(await renderOutput(
             batchComposition,
-             { ...renderReplacements, [batchSlot.id]: batchSources[index] },
+            batchReplacementSets[index],
             slotTransforms,
             { scale: exportScale, transparent, mime: outputMime, signal: job.controller.signal }
           ));
           if (isExportCancelled(job)) return;
-          updateExport(job, 8 + (index + 1) / batchSources.length * 70, `正在生成第 ${index + 1}/${batchSources.length} 张作品`);
+          updateExport(job, 8 + (index + 1) / batchCount * 70, `正在生成第 ${index + 1}/${batchCount} 张作品`);
         }
         if (isExportCancelled(job)) return;
         updateExport(job, 88, '正在复制到剪贴板');
@@ -6388,7 +6425,12 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
       if (!dataUrl || isExportCancelled(job)) return;
       const clipboardDataUrl = outputMime === 'image/png'
         ? undefined
-        : await renderTemplate(compositionForBatchIndex(composition, textValueLists, 0), renderReplacements, slotTransforms, { scale: exportScale, transparent, mime: 'image/png', signal: job.controller.signal, showSlotPlaceholder: false });
+        : await renderTemplate(
+          compositionForBatchIndex(composition, textValueLists, 0),
+          batchReplacementSets[0] || renderReplacements,
+          slotTransforms,
+          { scale: exportScale, transparent, mime: 'image/png', signal: job.controller.signal, showSlotPlaceholder: false }
+        );
       if (isExportCancelled(job)) return;
       updateExport(job, 88, '正在复制到剪贴板');
       await desktop.copyImage(dataUrl, clipboardDataUrl);
@@ -6396,8 +6438,8 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
       if (isExportCancelled(job)) return;
       setCopied(true);
       updateExport(job, 100, '导出完成');
-      notify(outputMime === 'image/gif' && batchSources.length > 1
-        ? `已将 ${batchSources.length} 张图片合成为 1 个 GIF 并复制`
+      notify(outputMime === 'image/gif' && batchCount > 1
+        ? `已按 ${batchCount} 组图片合成为 1 个 GIF 并复制`
         : '已复制，可粘贴到聊天窗口或文件夹');
     } catch (error) {
       if (!isExportCancelled(job)) {
@@ -6407,7 +6449,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
     } finally {
       finishExport(job);
     }
-  }, [batchSlot, batchSources, beginExport, composition, currentResult, exportScale, finishExport, isExportCancelled, notify, onCopied, outputMime, renderOutput, renderReplacements, slotSources, slotTransforms, template.id, textValueLists, transparent, updateExport]);
+  }, [batchCount, batchReplacementSets, beginExport, composition, currentResult, exportScale, finishExport, isExportCancelled, notify, onCopied, outputMime, renderOutput, renderReplacements, slotTransforms, template.id, textValueLists, transparent, updateExport]);
 
   const resetUse = useCallback(() => {
     commitSession(createUseSession(template));

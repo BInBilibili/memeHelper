@@ -127,7 +127,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .rename-dialog-actions { margin-top: 22px; display: flex; justify-content: flex-end; gap: 8px; }
 .rename-dialog-actions button:disabled { opacity: .45; cursor: not-allowed; transform: none; }
 .settings-dialog-backdrop { position: fixed; inset: 0; z-index: 210; padding: 20px; background: rgba(25,24,21,.45); display: grid; place-items: center; }
-.settings-dialog { width: min(470px, 100%); padding: 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 18px 56px rgba(0,0,0,.24); }
+.settings-dialog { width: min(720px, calc(100vw - 40px)); min-width: min(560px, calc(100vw - 40px)); max-width: calc(100vw - 40px); padding: 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 18px 56px rgba(0,0,0,.24); resize: horizontal; overflow: hidden; }
 .settings-dialog-scroll { max-height: min(76vh, 720px); overflow-y: auto; padding-right: 3px; }
 .settings-import-options { display: grid; gap: 8px; }
 .settings-warning-icon { color: #d28a12; }
