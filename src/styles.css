@@ -356,14 +356,14 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .pan-viewport { cursor: grab; }
 .pan-viewport.panning, .pan-viewport.panning * { cursor: grabbing !important; user-select: none; }
 .pan-viewport.tool-marquee, .pan-viewport.tool-marquee canvas, .pan-viewport.tool-lasso, .pan-viewport.tool-lasso canvas { cursor: default; }
-.pan-viewport.tool-brush, .pan-viewport.tool-fill, .pan-viewport.tool-eraser, .pan-viewport.tool-picker, .pan-viewport.tool-mosaic, .pan-viewport.tool-heal, .pan-viewport.tool-quick-select,
-.pan-viewport.tool-brush canvas, .pan-viewport.tool-fill canvas, .pan-viewport.tool-eraser canvas, .pan-viewport.tool-picker canvas, .pan-viewport.tool-mosaic canvas, .pan-viewport.tool-heal canvas, .pan-viewport.tool-quick-select canvas { cursor: none; }
+.pan-viewport.tool-brush, .pan-viewport.tool-fill, .pan-viewport.tool-eraser, .pan-viewport.tool-picker, .pan-viewport.tool-mosaic, .pan-viewport.tool-quick-select,
+.pan-viewport.tool-brush canvas, .pan-viewport.tool-fill canvas, .pan-viewport.tool-eraser canvas, .pan-viewport.tool-picker canvas, .pan-viewport.tool-mosaic canvas, .pan-viewport.tool-quick-select canvas { cursor: none; }
 .tool-cursor { position: absolute; z-index: 12; width: 24px; height: 24px; transform: translate(-3px, -21px); display: grid; place-items: center; color: #171716; background: transparent; filter: drop-shadow(0 1px 1px rgba(255,255,255,.9)) drop-shadow(0 1px 2px rgba(0,0,0,.32)); pointer-events: none; }
 .tool-cursor.text-tool-cursor { width: auto; height: auto; transform: translate(4px, -22px); place-items: initial; color: var(--ink); filter: none; font-size: 19px; font-weight: 700; line-height: 1; text-shadow: 0 1px 1px var(--surface); }
 .tool-cursor.brush-preview { box-sizing: border-box; border: 1px solid #171716; border-radius: 50%; transform: translate(-50%, -50%); box-shadow: 0 0 0 1px rgba(255,255,255,.9); filter: none; }
 .tool-cursor svg { display: block; background: transparent; }
 .pan-viewport.tool-text { cursor: text; }
-.pan-viewport.tool-brush, .pan-viewport.tool-fill, .pan-viewport.tool-eraser, .pan-viewport.tool-picker, .pan-viewport.tool-mosaic, .pan-viewport.tool-heal, .pan-viewport.tool-quick-select { cursor: none; }
+.pan-viewport.tool-brush, .pan-viewport.tool-fill, .pan-viewport.tool-eraser, .pan-viewport.tool-picker, .pan-viewport.tool-mosaic, .pan-viewport.tool-quick-select { cursor: none; }
 .property-content { padding: 17px; }
 .text-field, .number-field { display: block; }
 .text-field > span, .number-field > span { display: block; margin-bottom: 6px; color: var(--muted); font-size: 9px; font-weight: 600; }

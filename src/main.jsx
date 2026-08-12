@@ -8,7 +8,7 @@ import {
   AlignHorizontalJustifyStart, AlignLeft, AlignRight, AlignVerticalDistributeCenter, AlertTriangle,
   AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowLeft, Bold, Check, ChevronDown, ChevronRight, ChevronUp,
   BoxSelect, Circle, Clipboard, Copy, Crop, Download, Eye, EyeOff, FileImage, Grid2X2, GripVertical, ImagePlus,
-  Bandage, Blend, Eraser, FlipHorizontal, FlipVertical, FolderOpen, Italic, Lasso, Layers3, LayoutTemplate, Lock, Monitor, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Pentagon, Pipette, Plus, Redo2, RefreshCw, RotateCcw, ScanSearch, Scissors,
+  Blend, Eraser, FlipHorizontal, FlipVertical, FolderOpen, Italic, Lasso, Layers3, LayoutTemplate, Lock, Monitor, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Pentagon, Pipette, Plus, Redo2, RefreshCw, RotateCcw, ScanSearch, Scissors,
   Save, Settings, Shapes, Sparkles, Square, Star, Strikethrough, Sun, Trash2, Type, Underline, Undo2, Unlock, Upload, Link2,
   X, ZoomIn, ZoomOut
 } from 'lucide-react';
@@ -2198,6 +2198,8 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
   const [layerMenu, setLayerMenu] = useState(null);
   const [marqueeStartRequest, setMarqueeStartRequest] = useState(null);
   const [selectionClearRequest, setSelectionClearRequest] = useState(0);
+  const [selectionUndoRequest, setSelectionUndoRequest] = useState(0);
+  const [canUndoPixelSelection, setCanUndoPixelSelection] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState(() => new Set(
     Object.entries(draft.groupMeta || {})
       .filter(([, meta]) => meta?.collapsed)
@@ -2454,6 +2456,13 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
   })), [updateDraft]);
   const undoDraft = useCallback(() => { if (undo()) { setDirty(true); setAutosaveState('pending'); } }, [undo]);
   const redoDraft = useCallback(() => { if (redo()) { setDirty(true); setAutosaveState('pending'); } }, [redo]);
+  const undoEditorAction = useCallback(() => {
+    if (['quick-select', 'lasso'].includes(activeTool) && canUndoPixelSelection) {
+      setSelectionUndoRequest((value) => value + 1);
+      return;
+    }
+    undoDraft();
+  }, [activeTool, canUndoPixelSelection, undoDraft]);
   const clearSelection = useCallback(() => {
     setSelectedIds([]);
     setSelectedGroupId(null);
@@ -2774,7 +2783,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
         }
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z' && !event.shiftKey) {
-        event.preventDefault(); undoDraft();
+        event.preventDefault(); undoEditorAction();
         return;
       }
       if ((event.ctrlKey || event.metaKey) && ((event.key.toLowerCase() === 'z' && event.shiftKey) || event.key.toLowerCase() === 'y')) {
@@ -2836,7 +2845,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('pointerdown', closeMenus);
     return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('pointerdown', closeMenus); };
-  }, [activeTool, copySelectedLayers, gifTimeline, nudgeSelectedLayers, pasteLayers, redoDraft, removeSelectedLayers, selectedGifLayer, selectedIds.length, textEditingId, tryBack, undoDraft]);
+  }, [activeTool, copySelectedLayers, gifTimeline, nudgeSelectedLayers, pasteLayers, redoDraft, removeSelectedLayers, selectedGifLayer, selectedIds.length, textEditingId, tryBack, undoEditorAction]);
 
   useEffect(() => {
     if (activeTool !== 'text') return undefined;
@@ -3766,7 +3775,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
   };
 
   return <main className="editor-page">
-    <header className="editor-topbar"><div className="editor-left"><IconButton label="返回模板库" onClick={tryBack}><ArrowLeft size={21}/></IconButton><div className="title-field"><div className="editable-template-name" title="点击编辑模板名称"><input aria-label="模板名称" style={{ width: `${Math.max(8, Math.min(52, Array.from(String(draft.name || '')).reduce((total, character) => total + (/[^\x00-\xff]/.test(character) ? 2 : 1), 0) + 2))}ch` }} value={draft.name} onChange={(e) => updateDraft({ ...draft, name: e.target.value })}/><Pencil size={13} aria-hidden="true"/></div><span>{draft.width} x {draft.height}px</span></div></div><div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undoDraft} disabled={!canUndo}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redoDraft} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={tryBack}>取消</button><button className="primary-button" onClick={save}><Save size={17}/>保存模板</button></div></header>
+    <header className="editor-topbar"><div className="editor-left"><IconButton label="返回模板库" onClick={tryBack}><ArrowLeft size={21}/></IconButton><div className="title-field"><div className="editable-template-name" title="点击编辑模板名称"><input aria-label="模板名称" style={{ width: `${Math.max(8, Math.min(52, Array.from(String(draft.name || '')).reduce((total, character) => total + (/[^\x00-\xff]/.test(character) ? 2 : 1), 0) + 2))}ch` }} value={draft.name} onChange={(e) => updateDraft({ ...draft, name: e.target.value })}/><Pencil size={13} aria-hidden="true"/></div><span>{draft.width} x {draft.height}px</span></div></div><div className="editor-actions"><IconButton label="撤销 (Ctrl+Z)" onClick={undoEditorAction} disabled={!canUndo && !(['quick-select', 'lasso'].includes(activeTool) && canUndoPixelSelection)}><Undo2 size={18}/></IconButton><IconButton label="重做 (Ctrl+Shift+Z)" onClick={redoDraft} disabled={!canRedo}><Redo2 size={18}/></IconButton><button className="secondary-button" onClick={tryBack}>取消</button><button className="primary-button" onClick={save}><Save size={17}/>保存模板</button></div></header>
     <div ref={editorBodyRef} className="editor-body" style={{ gridTemplateColumns: `${layersPanelWidth}px 6px minmax(0, 1fr) ${propertiesCollapsed ? '34px' : '280px'}` }}>
       <aside className={`layers-panel ${layersPanelWidth <= 40 ? 'panel-collapsed' : ''}`} onClick={(event) => { if (event.target === event.currentTarget) clearSelection(); }} onContextMenu={openLayersBlankMenu} onDragOver={handleGifFrameLayerDragOver} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setGifFrameLayerDrop(null); }} onDrop={handleGifFrameLayerDrop}>
         <div className="panel-title"><div><span>{templateHasGif ? 'GIF' : '图层'}</span><small>{draft.layers.length}</small></div></div>
@@ -3795,19 +3804,18 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
           <div className="canvas-tool-dock"><div className="editor-paint-tools">
             <IconButton label="选择与移动" className={activeTool === 'select' ? 'active' : ''} onClick={() => setActiveTool('select')}><MousePointer2 size={17}/></IconButton>
             <IconButton label="选框工具：拖动后右键复制或剪切选区" className={activeTool === 'marquee' ? 'active' : ''} onClick={() => setActiveTool('marquee')}><BoxSelect size={17}/></IconButton>
-            <IconButton label="快速选择工具：根据相近颜色选择连续区域" className={activeTool === 'quick-select' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('quick-select')}><ScanSearch size={17}/></IconButton>
+            <IconButton label="快速选择工具：根据相近颜色选择连续区域；按住 Alt 点击可从选区减去区域" className={activeTool === 'quick-select' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('quick-select')}><ScanSearch size={17}/></IconButton>
             <div className="tool-menu-wrap lasso-tool-wrap"><IconButton label={lassoMode === 'polygon' ? '多边形套索工具' : lassoMode === 'magnetic' ? '磁性套索工具' : '套索工具'} className={activeTool === 'lasso' ? 'active' : ''} onClick={() => setActiveTool('lasso')} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setLassoMenu(true); }}><Lasso size={17}/></IconButton>{lassoMenu && <div className="eraser-mode-menu lasso-mode-menu" onPointerDown={(event) => event.stopPropagation()}><button className={lassoMode === 'freehand' ? 'active' : ''} onClick={() => { setLassoMode('freehand'); setLassoMenu(false); setActiveTool('lasso'); }}>套索工具</button><button className={lassoMode === 'polygon' ? 'active' : ''} onClick={() => { setLassoMode('polygon'); setLassoMenu(false); setActiveTool('lasso'); }}>多边形套索工具</button><button className={lassoMode === 'magnetic' ? 'active' : ''} onClick={() => { setLassoMode('magnetic'); setLassoMenu(false); setActiveTool('lasso'); }}>磁性套索工具</button></div>}</div>
             <IconButton label="画笔（按住 Alt 临时取色）" className={activeTool === 'brush' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('brush')}><Pencil size={17}/></IconButton>
             <div className="tool-menu-wrap mosaic-tool-wrap"><IconButton label={mosaicMode === 'blur' ? '高斯模糊（效果不可叠加）' : '像素马赛克（效果不可叠加）'} className={activeTool === 'mosaic' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('mosaic')} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setMosaicMenu(true); }}>{mosaicMode === 'blur' ? <Blend size={17}/> : <Grid2X2 size={17}/>}</IconButton>{mosaicMenu && <div className="eraser-mode-menu mosaic-mode-menu" onPointerDown={(event) => event.stopPropagation()}><button className={mosaicMode === 'pixel' ? 'active' : ''} onClick={() => { setMosaicMode('pixel'); setMosaicMenu(false); setActiveTool('mosaic'); }}>像素马赛克</button><button className={mosaicMode === 'blur' ? 'active' : ''} onClick={() => { setMosaicMode('blur'); setMosaicMenu(false); setActiveTool('mosaic'); }}>高斯模糊</button></div>}</div>
-            <IconButton label="污点修复工具（内容识别）" className={activeTool === 'heal' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('heal')}><Bandage size={17}/></IconButton>
             <IconButton label="填充当前图层" className={activeTool === 'fill' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('fill')}><PaintBucket size={17}/></IconButton>
             <div className="tool-menu-wrap eraser-tool-wrap"><IconButton label={'橡皮擦：' + (eraserMode === 'paint' ? '仅擦除画笔' : eraserMode === 'magic' ? '魔法橡皮擦' : '擦除图层')} className={activeTool === 'eraser' ? 'active' : ''} disabled={!selected || selected.locked || selectedLayers.length !== 1} onClick={() => setActiveTool('eraser')} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setEraserMenu(true); }}><Eraser size={17}/></IconButton>{eraserMenu && <div className="eraser-mode-menu" onPointerDown={(event) => event.stopPropagation()}><button className={eraserMode === 'paint' ? 'active' : ''} onClick={() => { setEraserMode('paint'); setEraserMenu(false); setActiveTool('eraser'); }}>仅擦除画笔</button><button className={eraserMode === 'layer' ? 'active' : ''} onClick={() => { setEraserMode('layer'); setEraserMenu(false); setActiveTool('eraser'); }}>擦除图层</button><button className={eraserMode === 'magic' ? 'active' : ''} onClick={() => { setEraserMode('magic'); setEraserMenu(false); setActiveTool('eraser'); }}>魔法橡皮擦</button></div>}</div>
             <IconButton label="颜色选取器（可从所有图层取色）" className={activeTool === 'picker' ? 'active' : ''} onClick={() => setActiveTool('picker')}><Pipette size={17}/></IconButton>
             <input className="paint-color" type="color" aria-label="绘画颜色" title="绘画颜色" value={paintColor} onChange={(event) => setPaintColor(event.target.value)}/>
-            <label className="brush-size" title={activeTool === 'eraser' && eraserMode === 'magic' ? '魔法橡皮擦颜色容差' : '画笔、模糊、修复和橡皮擦大小'}><NumericInput aria-label={activeTool === 'eraser' && eraserMode === 'magic' ? '颜色容差' : '画笔大小'} min={1} max={160} presets={[1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 160]} value={brushSize} onCommit={setBrushSize}/><input type="range" min="1" max="160" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))}/></label>
+            <label className="brush-size" title={activeTool === 'eraser' && eraserMode === 'magic' ? '魔法橡皮擦颜色容差' : '画笔、模糊和橡皮擦大小'}><NumericInput aria-label={activeTool === 'eraser' && eraserMode === 'magic' ? '颜色容差' : '画笔大小'} min={1} max={160} presets={[1, 2, 4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 160]} value={brushSize} onCommit={setBrushSize}/><input type="range" min="1" max="160" value={brushSize} onChange={(event) => setBrushSize(Number(event.target.value))}/></label>
           </div></div>
           <div className="canvas-scroll-surface" style={{ width: `max(100%, ${Math.max(0, draft.width * zoom) + 160}px)`, height: `max(100%, ${Math.max(0, draft.height * zoom) + 160}px)` }}><div ref={stageHostRef} className="stage-shadow" style={{ width: draft.width * zoom, height: draft.height * zoom, transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px)` }}>
-            <EditorStage gifFrameIndex={timelineGifLayer ? gifTimeline.frameIndex + 1 : null} gifFrameLayerId={timelineGifLayer?.id || null} gifFrameSource={timelineGifLayer?.id === gifTimeline.layerId ? gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl : null} template={draft} selectedIds={selectedIds} selectedGroupId={selectedGroupId} selectLayer={selectLayer} selectGroup={selectGroup} clearSelection={clearSelection} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onGroupContextMenu={openGroupMenu} onMarqueeContextMenu={openMarqueeMenu} marqueeStartRequest={marqueeStartRequest} selectionClearRequest={selectionClearRequest} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} eraserMode={eraserMode} mosaicMode={mosaicMode} lassoMode={lassoMode} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, patch) => updateLayer(id, patch)} onPickColor={setPaintColor} zoom={zoom} transformerDisabledIds={selectedOutsideLayers.map((layer) => layer.id)}/>
+            <EditorStage gifFrameIndex={timelineGifLayer ? gifTimeline.frameIndex + 1 : null} gifFrameLayerId={timelineGifLayer?.id || null} gifFrameSource={timelineGifLayer?.id === gifTimeline.layerId ? gifTimeline.frames[gifTimeline.frameIndex]?.dataUrl : null} template={draft} selectedIds={selectedIds} selectedGroupId={selectedGroupId} selectLayer={selectLayer} selectGroup={selectGroup} clearSelection={clearSelection} updateLayer={updateLayer} updateLayers={updateLayers} onLayerContextMenu={openLayerMenu} onGroupContextMenu={openGroupMenu} onMarqueeContextMenu={openMarqueeMenu} marqueeStartRequest={marqueeStartRequest} selectionClearRequest={selectionClearRequest} selectionUndoRequest={selectionUndoRequest} onSelectionUndoStateChange={setCanUndoPixelSelection} onPanStart={beginPan} onEditText={editTextLayer} textEditingId={textEditingId} tool={activeTool} eraserMode={eraserMode} mosaicMode={mosaicMode} lassoMode={lassoMode} paintColor={paintColor} brushSize={brushSize} onPaintCommit={(id, patch) => updateLayer(id, patch)} onPickColor={setPaintColor} zoom={zoom} transformerDisabledIds={selectedOutsideLayers.map((layer) => layer.id)}/>
             {selectedOutsideLayers.map((layer) => {
               const dragPreview = outsideDragPreview?.ids.includes(layer.id) ? outsideDragPreview : null;
               const resized = outsideResizePreview?.id === layer.id ? { ...layer, ...outsideResizePreview } : layer;
@@ -3828,7 +3836,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
             />}
           </div></div>
           {toolPointer && !['select', 'marquee', 'lasso'].includes(activeTool) && !panning && (
-            (['brush', 'mosaic', 'heal', 'quick-select'].includes(activeTool) || (activeTool === 'eraser' && eraserMode !== 'magic')) && !(activeTool === 'brush' && toolPointer.altKey)
+            (['brush', 'mosaic', 'quick-select'].includes(activeTool) || (activeTool === 'eraser' && eraserMode !== 'magic')) && !(activeTool === 'brush' && toolPointer.altKey)
               ? <div className="tool-cursor brush-preview" style={{ left: toolPointer.x, top: toolPointer.y, width: Math.max(3, brushSize * zoom), height: Math.max(3, brushSize * zoom) }}/>
               : <div className={`tool-cursor ${activeTool === 'text' ? 'text-tool-cursor' : ''}`} style={{ left: toolPointer.x, top: toolPointer.y }}>{activeTool === 'text' ? <span aria-hidden="true">T</span> : activeTool === 'picker' || (activeTool === 'brush' && toolPointer.altKey) ? <Pipette size={19}/> : activeTool === 'eraser' && eraserMode === 'magic' ? <Sparkles size={19}/> : <PaintBucket size={19}/>}</div>
           )}
@@ -4177,7 +4185,7 @@ function floodFillCanvas(canvas, x, y, color) {
   ctx.putImageData(image, 0, 0);
 }
 
-function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, selectGroup, clearSelection, updateLayer, updateLayers, onLayerContextMenu, onGroupContextMenu, onMarqueeContextMenu, marqueeStartRequest, selectionClearRequest, onPanStart, onEditText, textEditingId, tool, eraserMode, mosaicMode, lassoMode, paintColor, brushSize, onPaintCommit, onPickColor, zoom, gifFrameLayerId, gifFrameSource, gifFrameIndex, transformerDisabledIds = [] }) {
+function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, selectGroup, clearSelection, updateLayer, updateLayers, onLayerContextMenu, onGroupContextMenu, onMarqueeContextMenu, marqueeStartRequest, selectionClearRequest, selectionUndoRequest, onSelectionUndoStateChange, onPanStart, onEditText, textEditingId, tool, eraserMode, mosaicMode, lassoMode, paintColor, brushSize, onPaintCommit, onPickColor, zoom, gifFrameLayerId, gifFrameSource, gifFrameIndex, transformerDisabledIds = [] }) {
   const stageRef = useRef();
   const trRef = useRef();
   const nodeRefs = useRef({});
@@ -4192,6 +4200,8 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   const healMaskSurfacesRef = useRef({});
   const healingBaseRef = useRef({});
   const selectionTokenRef = useRef(0);
+  const selectionHistoryRef = useRef([]);
+  const lastSelectionUndoRequestRef = useRef(selectionUndoRequest);
   const quickSelectionSessionRef = useRef(null);
   const magicEraseTokenRef = useRef(0);
   const paintingRef = useRef(null);
@@ -4207,16 +4217,47 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   const [shiftPressed, setShiftPressed] = useState(false);
   const shiftPressedRef = useRef(false);
 
-  const clearPixelSelection = useCallback(() => {
+  const cancelPixelSelectionTracking = useCallback(() => {
     selectionTokenRef.current += 1;
     quickSelectionSessionRef.current?.cleanup?.();
     quickSelectionSessionRef.current = null;
     marqueeTrackingRef.current?.();
     marqueeTrackingRef.current = null;
     marqueeRef.current = null;
+  }, []);
+
+  const reportSelectionUndoState = useCallback((available) => {
+    onSelectionUndoStateChange?.(available);
+  }, [onSelectionUndoStateChange]);
+
+  const rememberPixelSelection = useCallback((selection) => {
+    selectionHistoryRef.current = [...selectionHistoryRef.current.slice(-49), selection ? structuredClone(selection) : null];
+    reportSelectionUndoState(true);
+  }, [reportSelectionUndoState]);
+
+  const clearPixelSelection = useCallback(() => {
+    cancelPixelSelectionTracking();
+    selectionHistoryRef.current = [];
+    reportSelectionUndoState(false);
     setMarquee(null);
     setLassoDraft(null);
-  }, []);
+  }, [cancelPixelSelectionTracking, reportSelectionUndoState]);
+
+  const undoPixelSelection = useCallback(() => {
+    if (!selectionHistoryRef.current.length) return false;
+    cancelPixelSelectionTracking();
+    const previous = selectionHistoryRef.current.pop();
+    setMarquee(previous ? structuredClone(previous) : null);
+    setLassoDraft(null);
+    reportSelectionUndoState(selectionHistoryRef.current.length > 0);
+    return true;
+  }, [cancelPixelSelectionTracking, reportSelectionUndoState]);
+
+  useEffect(() => {
+    if (selectionUndoRequest === lastSelectionUndoRequestRef.current) return;
+    lastSelectionUndoRequestRef.current = selectionUndoRequest;
+    undoPixelSelection();
+  }, [selectionUndoRequest, undoPixelSelection]);
 
   useEffect(() => {
     if (!selectionClearRequest) return;
@@ -4789,11 +4830,14 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     const globalMask = document.createElement('canvas');
     globalMask.width = selection.width; globalMask.height = selection.height;
     const globalCtx = globalMask.getContext('2d');
-    if (marquee?.kind === 'quick' && marquee.layerId === layer.id && marquee.maskSrc && marquee.x === selection.x && marquee.y === selection.y && marquee.width === selection.width && marquee.height === selection.height) {
+    const previousQuickCompatible = marquee?.kind === 'quick' && marquee.layerId === layer.id && marquee.maskSrc && marquee.x === selection.x && marquee.y === selection.y && marquee.width === selection.width && marquee.height === selection.height;
+    if (previousQuickCompatible) {
       const previousMask = await loadImage(marquee.maskSrc);
       if (token !== selectionTokenRef.current) { window.removeEventListener('mouseup', detectEarlyRelease); return; }
       globalCtx.drawImage(previousMask, 0, 0, globalMask.width, globalMask.height);
     }
+    const subtracting = Boolean(event.evt.altKey);
+    if (subtracting && !previousQuickCompatible) { window.removeEventListener('mouseup', detectEarlyRelease); return; }
     window.removeEventListener('mouseup', detectEarlyRelease);
     const accumulated = new Uint8Array(width * height);
     const visitMarks = new Uint32Array(width * height);
@@ -4803,7 +4847,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     const smallMaskCtx = smallMask.getContext('2d');
     const smallMaskImage = smallMaskCtx.createImageData(width, height);
     let generation = 0;
-    const session = { token, timer: null, pending: null, lastClient: { x: event.evt.clientX, y: event.evt.clientY }, cleanup: null };
+    const session = { token, timer: null, pending: null, lastClient: { x: event.evt.clientX, y: event.evt.clientY }, subtracting, historyCaptured: false, cleanup: null };
     quickSelectionSessionRef.current = session;
 
     const applyPoint = (templatePoint) => {
@@ -4841,15 +4885,21 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
         if (y + 1 < height) queue(index + width);
       }
       if (!changed) return;
+      if (!session.historyCaptured) {
+        rememberPixelSelection(marquee);
+        session.historyCaptured = true;
+      }
       smallMaskCtx.putImageData(smallMaskImage, 0, 0);
       globalCtx.save();
+      globalCtx.globalCompositeOperation = session.subtracting ? 'destination-out' : 'source-over';
       globalCtx.translate(-selection.x, -selection.y);
       globalCtx.translate(layer.x + layer.width / 2, layer.y + layer.height / 2);
       globalCtx.rotate((Number(layer.rotation) || 0) * Math.PI / 180);
       globalCtx.translate(-layer.width / 2, -layer.height / 2);
       globalCtx.drawImage(smallMask, 0, 0, width, height, 0, 0, layer.width, layer.height);
       globalCtx.restore();
-      setMarquee({ ...selection, maskSrc: globalMask.toDataURL('image/png') });
+      const hasSelection = !session.subtracting || globalCtx.getImageData(0, 0, globalMask.width, globalMask.height).data.some((value, index) => index % 4 === 3 && value > 0);
+      setMarquee(hasSelection ? { ...selection, maskSrc: globalMask.toDataURL('image/png') } : null);
     };
 
     const queueClientPoint = (clientX, clientY, immediate = false) => {
@@ -4936,6 +4986,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     if (lassoMode === 'polygon') {
       const points = lassoDraft?.mode === 'polygon' ? [...lassoDraft.points] : [];
       if (points.length >= 3 && Math.hypot(points[0].x - initial.x, points[0].y - initial.y) <= 10 / zoom) {
+        rememberPixelSelection(marquee);
         setMarquee(selectionFromPoints(points, 'polygon-lasso'));
         setLassoDraft(null);
       } else {
@@ -4973,7 +5024,10 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
       const currentDrag = marqueeRef.current;
       marqueeRef.current = null;
       cleanup();
-      if (currentDrag?.points.length >= 3) setMarquee(selectionFromPoints(currentDrag.points, currentDrag.mode === 'magnetic' ? 'magnetic-lasso' : 'freehand-lasso'));
+      if (currentDrag?.points.length >= 3) {
+        rememberPixelSelection(marquee);
+        setMarquee(selectionFromPoints(currentDrag.points, currentDrag.mode === 'magnetic' ? 'magnetic-lasso' : 'freehand-lasso'));
+      }
       setLassoDraft(null);
     };
     marqueeTrackingRef.current?.();
@@ -4993,7 +5047,10 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     if (tool !== 'lasso' || lassoMode !== 'polygon' || !lassoDraft?.points?.length) return false;
     event?.evt?.preventDefault?.();
     const points = [...lassoDraft.points];
-    if (points.length >= 3) setMarquee(selectionFromPoints(points, 'polygon-lasso'));
+    if (points.length >= 3) {
+      rememberPixelSelection(marquee);
+      setMarquee(selectionFromPoints(points, 'polygon-lasso'));
+    }
     setLassoDraft(null);
     return true;
   };
@@ -5079,7 +5136,7 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
   };
 
   const beginPaint = async (event) => {
-    if (!['brush', 'mosaic', 'heal', 'fill', 'eraser', 'picker'].includes(tool)) return false;
+    if (!['brush', 'mosaic', 'fill', 'eraser', 'picker'].includes(tool)) return false;
     event.evt.preventDefault();
     const effectiveTool = tool === 'brush' && event.evt.altKey ? 'picker' : tool;
     const templatePoint = pointFromClient(event.evt.clientX, event.evt.clientY);
@@ -5226,9 +5283,9 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     }}
     onMouseMove={(event) => {
       if (tool === 'lasso' && lassoMode === 'polygon') updatePolygonLassoHover(event);
-      if (['brush', 'mosaic', 'heal', 'fill', 'eraser', 'picker'].includes(tool)) movePaint(event);
+      if (['brush', 'mosaic', 'fill', 'eraser', 'picker'].includes(tool)) movePaint(event);
     }}
-    onMouseUp={['brush', 'mosaic', 'heal', 'fill', 'eraser', 'picker'].includes(tool) ? finishPaint : undefined}
+    onMouseUp={['brush', 'mosaic', 'fill', 'eraser', 'picker'].includes(tool) ? finishPaint : undefined}
     onContextMenu={(event) => { if (['marquee', 'quick-select', 'lasso'].includes(tool)) openMarqueeContextMenu(event); }}
   >
     <Layer>
