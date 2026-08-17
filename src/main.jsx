@@ -6,7 +6,7 @@ import { Stage, Layer, Group, Ellipse, Image as KonvaImage, Line, Rect, Text as 
 import {
   AlignCenter, AlignHorizontalDistributeCenter, AlignHorizontalJustifyCenter, AlignHorizontalJustifyEnd,
   AlignHorizontalJustifyStart, AlignLeft, AlignRight, AlignVerticalDistributeCenter, AlertTriangle,
-  AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowLeft, Bold, Check, ChevronDown, ChevronRight, ChevronUp,
+  AlignVerticalJustifyCenter, AlignVerticalJustifyEnd, AlignVerticalJustifyStart, ArrowLeft, Bold, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp,
   BoxSelect, Circle, Clipboard, Copy, Crop, Download, Eye, EyeOff, FileImage, Grid2X2, GripVertical, ImagePlus,
   Blend, Eraser, FlipHorizontal, FlipVertical, FolderOpen, Italic, Lasso, Layers3, LayoutTemplate, Lock, Monitor, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Pentagon, Pipette, Plus, Redo2, RefreshCw, RotateCcw, ScanSearch, Scissors,
   Save, Settings, Shapes, Sparkles, Square, Star, Strikethrough, Sun, Trash2, Type, Underline, Undo2, Unlock, Upload, Link2,
@@ -695,7 +695,35 @@ function multiPhotoCells(layer, count) {
   return Array.from({ length: total }, (_, index) => ({ x: (index % columns) * unitWidth, y: Math.floor(index / columns) * unitHeight, width: unitWidth, height: unitHeight }));
 }
 
-async function drawMultiPhotoSources(ctx, layer, sources, signal) {
+function normalizeImageFlip(value) {
+  return {
+    horizontalFlip: Boolean(value?.horizontalFlip),
+    verticalFlip: Boolean(value?.verticalFlip)
+  };
+}
+
+function drawImageWithFlip(ctx, image, sourceRect, destinationRect, flip = {}) {
+  const normalized = normalizeImageFlip(flip);
+  const { x, y, width, height } = destinationRect;
+  ctx.save();
+  ctx.translate(x + (normalized.horizontalFlip ? width : 0), y + (normalized.verticalFlip ? height : 0));
+  ctx.scale(normalized.horizontalFlip ? -1 : 1, normalized.verticalFlip ? -1 : 1);
+  if (sourceRect) ctx.drawImage(image, sourceRect.x, sourceRect.y, sourceRect.width, sourceRect.height, 0, 0, width, height);
+  else ctx.drawImage(image, 0, 0, image.width, image.height, 0, 0, width, height);
+  ctx.restore();
+}
+
+function konvaImageFlipProps(x, y, width, height, flip = {}) {
+  const normalized = normalizeImageFlip(flip);
+  return {
+    x: x + (normalized.horizontalFlip ? width : 0),
+    y: y + (normalized.verticalFlip ? height : 0),
+    scaleX: normalized.horizontalFlip ? -1 : 1,
+    scaleY: normalized.verticalFlip ? -1 : 1
+  };
+}
+
+async function drawMultiPhotoSources(ctx, layer, sources, signal, flips = []) {
   const validSources = (Array.isArray(sources) ? sources : [sources]).filter(Boolean);
   if (!validSources.length) return;
   const cells = multiPhotoCells(layer, validSources.length);
@@ -703,11 +731,12 @@ async function drawMultiPhotoSources(ctx, layer, sources, signal) {
     if (signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
     const image = await loadImage(validSources[index]);
     const cell = cells[index] || cells[cells.length - 1];
+    const flip = Array.isArray(flips) ? flips[index] : flips;
     if (layer.fit === 'cover') {
       const crop = getCoverCrop(image, cell.width, cell.height);
-      ctx.drawImage(image, crop.x, crop.y, crop.width, crop.height, cell.x, cell.y, cell.width, cell.height);
+      drawImageWithFlip(ctx, image, crop, cell, flip);
     } else {
-      ctx.drawImage(image, 0, 0, image.width, image.height, cell.x, cell.y, cell.width, cell.height);
+      drawImageWithFlip(ctx, image, null, cell, flip);
     }
   }
 }
@@ -976,7 +1005,7 @@ function drawLayerBorder(ctx, layer) {
   ctx.restore();
 }
 
-async function renderIsolatedLayer(layer, source, photoTransform, paintSource, eraseSource, scale = 1, mosaicSource = null, mosaicMaskSource = null, healSource = null, healMaskSource = null, showSlotPlaceholder = true) {
+async function renderIsolatedLayer(layer, source, photoTransform, paintSource, eraseSource, scale = 1, mosaicSource = null, mosaicMaskSource = null, healSource = null, healMaskSource = null, showSlotPlaceholder = true, sourceFlip = {}) {
   const insets = layerEffectInsets(layer);
   const logicalWidth = layer.width + insets.left + insets.right;
   const logicalHeight = layer.height + insets.top + insets.bottom;
@@ -994,7 +1023,7 @@ async function renderIsolatedLayer(layer, source, photoTransform, paintSource, e
     const image = await loadImage(drawSource);
     if (layer.type === 'slot' && source) {
       const placement = getPhotoPlacement(image, layer, photoTransform);
-      ctx.drawImage(image, 0, 0, image.width, image.height, placement.x, placement.y, placement.width, placement.height);
+      drawImageWithFlip(ctx, image, null, placement, sourceFlip);
     } else if (layer.fit === 'cover') {
       const crop = getCoverCrop(image, layer.width, layer.height);
       ctx.drawImage(image, crop.x, crop.y, crop.width, crop.height, 0, 0, layer.width, layer.height);
@@ -1051,6 +1080,7 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
   const mime = typeof options === 'object' ? options.mime || 'image/png' : 'image/png';
   const transparent = typeof options === 'object' && options.transparent && mime !== 'image/jpeg';
   const showSlotPlaceholder = typeof options !== 'object' || options.showSlotPlaceholder !== false;
+  const replacementFlips = typeof options === 'object' ? options.replacementFlips || {} : {};
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(template.width * scale);
   canvas.height = Math.round(template.height * scale);
@@ -1082,13 +1112,17 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
     }
     const suppliedReplacement = typeof replacements === 'string' ? replacements : replacements?.[layer.id];
     const boundReplacement = layer.type === 'slot' && layer.boundLayerId && typeof replacements !== 'string' ? replacements?.[layer.boundLayerId] : undefined;
+    const suppliedFlips = typeof replacementFlips === 'object' ? replacementFlips?.[layer.id] : undefined;
+    const boundFlips = layer.type === 'slot' && layer.boundLayerId && typeof replacementFlips === 'object' ? replacementFlips?.[layer.boundLayerId] : undefined;
     const replacement = layer.type === 'slot' && !layer.replacementDisabled && !layer.slotFill ? (suppliedReplacement || boundReplacement) : undefined;
+    const activeReplacementFlips = suppliedReplacement ? suppliedFlips : boundFlips;
     const replacementSources = layer.type === 'slot'
       ? (Array.isArray(replacement) ? replacement.filter(Boolean) : replacement ? [replacement] : [])
       : [];
+    const replacementFlipList = Array.isArray(activeReplacementFlips) ? activeReplacementFlips : replacementSources.map(() => activeReplacementFlips || {});
     const src = layer.type === 'slot' ? (layer.slotFill ? '' : (replacementSources[0] || (layer.replacementDisabled ? '' : layer.src))) : layer.src;
     if (layer.eraseSrc || layer.mosaicMaskSrc || layer.healMaskSrc) {
-      const isolated = await renderIsolatedLayer(layer, layer.type === 'slot' ? replacement : src, photoTransforms[layer.id], null, null, scale, null, null, null, null, showSlotPlaceholder);
+      const isolated = await renderIsolatedLayer(layer, layer.type === 'slot' ? replacement : src, photoTransforms[layer.id], null, null, scale, null, null, null, null, showSlotPlaceholder, replacementFlipList[0]);
       ctx.drawImage(isolated.canvas, -isolated.insets.left, -isolated.insets.top, isolated.logicalWidth, isolated.logicalHeight);
       ctx.restore();
       continue;
@@ -1104,7 +1138,7 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
     const shapeClipped = layer.type === 'slot';
     if (shapeClipped) { ctx.save(); traceLayerShape(ctx, layer); ctx.clip(); }
     if (layer.type === 'slot' && replacementSources.length && multiPhotoLayoutOf(layer) !== 'none') {
-      await drawMultiPhotoSources(ctx, layer, replacementSources, signal);
+      await drawMultiPhotoSources(ctx, layer, replacementSources, signal, replacementFlipList);
       await drawPaintOverlay(ctx, layer);
       await drawMosaicOverlay(ctx, layer);
     } else if (!src) {
@@ -1124,7 +1158,7 @@ async function renderTemplate(template, replacements, photoTransforms = {}, opti
       const image = await loadImage(src);
       if (layer.type === 'slot' && replacement) {
         const placement = getPhotoPlacement(image, layer, photoTransforms[layer.id]);
-        ctx.drawImage(image, 0, 0, image.width, image.height, placement.x, placement.y, placement.width, placement.height);
+        drawImageWithFlip(ctx, image, null, placement, replacementFlipList[0]);
       } else if (layer.fit === 'cover') {
         const crop = getCoverCrop(image, layer.width, layer.height);
         ctx.drawImage(image, crop.x, crop.y, crop.width, crop.height, 0, 0, layer.width, layer.height);
@@ -1181,6 +1215,7 @@ async function renderAnimatedTemplate(template, replacements = {}, photoTransfor
   const scale = clamp(Number.isFinite(requestedScale) ? requestedScale : 1, .1, 10);
   const transparent = typeof options === 'object' && Boolean(options.transparent);
   const showSlotPlaceholder = typeof options !== 'object' || options.showSlotPlaceholder !== false;
+  const replacementFlips = typeof options === 'object' ? options.replacementFlips || {} : {};
   const animations = [];
   for (const layer of template.layers || []) {
     if (signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
@@ -1195,7 +1230,7 @@ async function renderAnimatedTemplate(template, replacements = {}, photoTransfor
     animations.push({ layer, source: animationSource, ...decoded, frames });
   }
   if (!animations.length) {
-    const png = await renderTemplate(template, replacements, photoTransforms, { scale, transparent, mime: 'image/png', signal, showSlotPlaceholder });
+    const png = await renderTemplate(template, replacements, photoTransforms, { scale, transparent, mime: 'image/png', signal, showSlotPlaceholder, replacementFlips });
     return desktop.encodeGifFrames([{ dataUrl: png, delayMs: 100 }], null);
   }
   const durationOf = (animation) => animation.frames.reduce((sum, frame) => sum + Math.max(20, Number(frame.delayMs) || 100), 0);
@@ -1235,7 +1270,7 @@ async function renderAnimatedTemplate(template, replacements = {}, photoTransfor
         return frameSource && layer.type !== 'slot' ? { ...layer, src: frameSource } : layer;
       })
     };
-    const dataUrl = await renderTemplate(frameTemplate, frameReplacements, photoTransforms, { scale, transparent, mime: 'image/png', frameIndex: index + 1, showSlotPlaceholder });
+    const dataUrl = await renderTemplate(frameTemplate, frameReplacements, photoTransforms, { scale, transparent, mime: 'image/png', frameIndex: index + 1, showSlotPlaceholder, replacementFlips });
     outputFrames.push({ dataUrl, delayMs: Math.max(20, Math.round(end - start)) });
     options.onFrameProgress?.((index + 1) / Math.max(1, points.length - 1));
   }
@@ -1280,6 +1315,22 @@ function replacementBatchesForTemplate(template, slotSources = {}, slotSourceLis
   })));
 }
 
+function replacementFlipBatchesForTemplate(template, slotSources = {}, slotSourceLists = {}, slotImageFlips = {}) {
+  const slots = (template?.layers || []).filter(isReplaceableSlot);
+  const sourceLists = Object.fromEntries(slots.map((layer) => {
+    const listed = Array.isArray(slotSourceLists[layer.id]) ? slotSourceLists[layer.id].filter(Boolean) : [];
+    return [layer.id, listed.length ? listed : (slotSources[layer.id] ? [slotSources[layer.id]] : [])];
+  }));
+  const batchCount = Math.max(1, ...slots.filter((layer) => multiPhotoLayoutOf(layer) === 'none').map((layer) => sourceLists[layer.id].length));
+  return Array.from({ length: batchCount }, (_, index) => Object.fromEntries(slots.flatMap((layer) => {
+    const sources = sourceLists[layer.id];
+    if (!sources.length) return [];
+    const flips = Array.isArray(slotImageFlips[layer.id]) ? slotImageFlips[layer.id] : [];
+    if (multiPhotoLayoutOf(layer) !== 'none') return [[layer.id, sources.map((_, sourceIndex) => normalizeImageFlip(flips[sourceIndex]))]];
+    return [[layer.id, normalizeImageFlip(flips[index] || flips[0])]];
+  })));
+}
+
 async function renderAnimatedReplacementBatches(template, replacementBatches = [], photoTransforms = {}, options = {}) {
   const batches = replacementBatches.length ? replacementBatches : [{}];
   if (batches.length === 1) {
@@ -1287,14 +1338,14 @@ async function renderAnimatedReplacementBatches(template, replacementBatches = [
       compositionForBatchIndex(template, options.textValueLists, 0),
       batches[0],
       photoTransforms,
-      options
+      { ...options, replacementFlips: options.replacementFlipBatches?.[0] || options.replacementFlips }
     );
   }
   const outputFrames = [];
   for (let index = 0; index < batches.length; index += 1) {
     if (options.signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
     const batchTemplate = compositionForBatchIndex(template, options.textValueLists, index);
-    const dataUrl = await renderAnimatedTemplate(batchTemplate, batches[index], photoTransforms, options);
+    const dataUrl = await renderAnimatedTemplate(batchTemplate, batches[index], photoTransforms, { ...options, replacementFlips: options.replacementFlipBatches?.[index] || options.replacementFlips });
     if (options.signal?.aborted) throw new DOMException('导出已取消', 'AbortError');
     const decoded = await desktop.decodeGifFrames(dataUrl);
     if (decoded?.frames?.length) outputFrames.push(...decoded.frames);
@@ -5338,17 +5389,17 @@ function EditorStage({ template, selectedIds, selectedGroupId, selectLayer, sele
     </div>}</>;
 }
 
-function useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, mosaicSource, mosaicMaskSource, healSource, healMaskSource, revision) {
+function useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, mosaicSource, mosaicMaskSource, healSource, healMaskSource, revision, sourceFlip) {
   const [result, setResult] = useState(null);
   useEffect(() => {
     if (!layer.eraseSrc && !eraseSource && !layer.mosaicMaskSrc && !mosaicMaskSource && !layer.healMaskSrc && !healMaskSource) { setResult(null); return; }
     let alive = true;
     (async () => {
-      const output = await renderIsolatedLayer(layer, source, photoTransform, paintSource, eraseSource, 1, mosaicSource, mosaicMaskSource, healSource, healMaskSource);
+      const output = await renderIsolatedLayer(layer, source, photoTransform, paintSource, eraseSource, 1, mosaicSource, mosaicMaskSource, healSource, healMaskSource, true, sourceFlip);
       if (alive) setResult(output);
     })().catch(() => { if (alive) setResult(null); });
     return () => { alive = false; };
-  }, [layer, source, photoTransform, paintSource, eraseSource, mosaicSource, mosaicMaskSource, healSource, healMaskSource, revision]);
+  }, [layer, source, photoTransform, paintSource, eraseSource, mosaicSource, mosaicMaskSource, healSource, healMaskSource, revision, sourceFlip]);
   return result;
 }
 
@@ -5375,7 +5426,7 @@ function LayerBorderShape({ layer }) {
   return <Rect x={inset} y={inset} width={width} height={height} cornerRadius={shapeOf(layer) === 'rounded' ? Math.max(0, cornerRadiusOf(layer) - inset) : 0} {...props}/>;
 }
 
-function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransform, onTransformEnd, interactive = true, selectable = interactive, selected = false, source, sources, paintSource, eraseSource, mosaicSource, mosaicMaskSource, healSource, healMaskSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
+function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, onChange, onDragStart, onDragMove, onDragEnd, onTransform, onTransformEnd, interactive = true, selectable = interactive, selected = false, source, sources, sourceFlip, sourceFlips, paintSource, eraseSource, mosaicSource, mosaicMaskSource, healSource, healMaskSource, paintRevision = 0, highlight = false, cropMode = false, photoTransform, onEnterCrop, onPhotoTransform, onPhotoTransformMove, onPhotoTransformEnd }) {
   const image = useHtmlImage(layer.type === 'slot' && layer.slotFill ? '' : (source ?? layer.src));
   const multiImages = useHtmlImages(sources || EMPTY_IMAGE_SOURCES);
   const loadedPaintImage = useHtmlImage(layer.paintSrc);
@@ -5388,9 +5439,15 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
   const mosaicMaskImage = mosaicMaskSource || loadedMosaicMaskImage;
   const healImage = healSource || loadedHealImage;
   const healMaskImage = healMaskSource || loadedHealMaskImage;
-  const maskedResult = useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, mosaicImage, mosaicMaskImage, healImage, healMaskImage, paintRevision);
+  const maskedResult = useMaskedLayerCanvas(layer, source, photoTransform, paintSource, eraseSource, mosaicImage, mosaicMaskImage, healImage, healMaskImage, paintRevision, sourceFlip);
   const crop = image && layer.fit === 'cover' ? getCoverCrop(image, layer.width, layer.height) : undefined;
   const placement = image && layer.type === 'slot' && source ? getPhotoPlacement(image, layer, photoTransform) : null;
+  const imageX = placement?.x || 0;
+  const imageY = placement?.y || 0;
+  const imageWidth = placement?.width || layer.width;
+  const imageHeight = placement?.height || layer.height;
+  const normalizedSourceFlip = normalizeImageFlip(sourceFlip);
+  const singleImageFlipProps = konvaImageFlipProps(imageX, imageY, imageWidth, imageHeight, normalizedSourceFlip);
   if (!layer.visible) return null;
   const common = { ref: setRef, x: layer.x + layer.width / 2, y: layer.y + layer.height / 2, offsetX: layer.width / 2, offsetY: layer.height / 2, width: layer.width, height: layer.height, rotation: layer.rotation || 0, scaleX: layer.horizontalFlip ? -1 : 1, scaleY: layer.verticalFlip ? -1 : 1, opacity: layerOpacityOf(layer), globalCompositeOperation: layerBlendModeOf(layer), draggable: interactive, listening: selectable };
   if (selectable) Object.assign(common, { onMouseDown: onPointerDown, onTouchStart: onPointerDown, onClick: onSelect, onTap: onSelect, onDblClick: onEnterCrop, onDblTap: onEnterCrop, onContextMenu });
@@ -5417,7 +5474,7 @@ function EditorLayer({ layer, setRef, onPointerDown, onSelect, onContextMenu, on
   const multiCells = multiLayoutActive ? multiPhotoCells(layer, multiImages.length) : [];
   return <Group {...common}>
     <Group clipFunc={layer.type === 'slot' ? clipFunc : undefined}>
-    {multiLayoutActive ? multiImages.map((multiImage, index) => { const cell = multiCells[index]; const cropCell = layer.fit === 'cover' ? getCoverCrop(multiImage, cell.width, cell.height) : null; return <KonvaImage key={`${layer.id}-multi-${index}`} image={multiImage} x={cell.x} y={cell.y} width={cell.width} height={cell.height} crop={cropCell || undefined} listening={false}/>; }) : image ? <KonvaImage image={image} x={placement?.x || 0} y={placement?.y || 0} width={placement?.width || layer.width} height={placement?.height || layer.height} crop={placement ? undefined : crop} draggable={cropMode} onDragMove={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); onPhotoTransformMove ? onPhotoTransformMove({ event, x, y, placement }) : event.target.position({ x, y }); } : undefined} onDragEnd={cropMode && placement ? (event) => { const x = clamp(event.target.x(), layer.width - placement.width, 0); const y = clamp(event.target.y(), layer.height - placement.height, 0); event.target.position({ x, y }); if (onPhotoTransformEnd) onPhotoTransformEnd({ event, x, y, placement }); else onPhotoTransform?.({ offsetX: x - placement.centeredX, offsetY: y - placement.centeredY }); } : undefined}/> : shapeOf(layer) === 'circle' ? <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={layer.width / 2} radiusY={layer.height / 2} {...placeholderProps}/> : shapeOf(layer) === 'polygon' ? <Line points={polygonPixelPoints(layer)} closed {...placeholderProps}/> : <Rect width={layer.width} height={layer.height} cornerRadius={shapeOf(layer) === 'rounded' ? cornerRadiusOf(layer) : 0} {...placeholderProps}/>} 
+    {multiLayoutActive ? multiImages.map((multiImage, index) => { const cell = multiCells[index]; const cropCell = layer.fit === 'cover' ? getCoverCrop(multiImage, cell.width, cell.height) : null; const flipProps = konvaImageFlipProps(cell.x, cell.y, cell.width, cell.height, sourceFlips?.[index]); return <KonvaImage key={`${layer.id}-multi-${index}`} image={multiImage} {...flipProps} width={cell.width} height={cell.height} crop={cropCell || undefined} listening={false}/>; }) : image ? <KonvaImage image={image} {...singleImageFlipProps} width={imageWidth} height={imageHeight} crop={placement ? undefined : crop} draggable={cropMode} onDragMove={cropMode && placement ? (event) => { const x = clamp(event.target.x() - (normalizedSourceFlip.horizontalFlip ? placement.width : 0), layer.width - placement.width, 0); const y = clamp(event.target.y() - (normalizedSourceFlip.verticalFlip ? placement.height : 0), layer.height - placement.height, 0); onPhotoTransformMove ? onPhotoTransformMove({ event, x, y, placement }) : event.target.position({ x: x + (normalizedSourceFlip.horizontalFlip ? placement.width : 0), y: y + (normalizedSourceFlip.verticalFlip ? placement.height : 0) }); } : undefined} onDragEnd={cropMode && placement ? (event) => { const x = clamp(event.target.x() - (normalizedSourceFlip.horizontalFlip ? placement.width : 0), layer.width - placement.width, 0); const y = clamp(event.target.y() - (normalizedSourceFlip.verticalFlip ? placement.height : 0), layer.height - placement.height, 0); event.target.position({ x: x + (normalizedSourceFlip.horizontalFlip ? placement.width : 0), y: y + (normalizedSourceFlip.verticalFlip ? placement.height : 0) }); if (onPhotoTransformEnd) onPhotoTransformEnd({ event, x, y, placement }); else onPhotoTransform?.({ offsetX: x - placement.centeredX, offsetY: y - placement.centeredY }); } : undefined}/> : shapeOf(layer) === 'circle' ? <Ellipse x={layer.width / 2} y={layer.height / 2} radiusX={layer.width / 2} radiusY={layer.height / 2} {...placeholderProps}/> : shapeOf(layer) === 'polygon' ? <Line points={polygonPixelPoints(layer)} closed {...placeholderProps}/> : <Rect width={layer.width} height={layer.height} cornerRadius={shapeOf(layer) === 'rounded' ? cornerRadiusOf(layer) : 0} {...placeholderProps}/>}
     {paintImage && <KonvaImage image={paintImage} width={layer.width} height={layer.height} listening={false}/>}
     {mosaicImage && <KonvaImage image={mosaicImage} width={layer.width} height={layer.height} listening={false}/>}
     {cropMode && <Rect x={1} y={1} width={Math.max(0, layer.width - 2)} height={Math.max(0, layer.height - 2)} stroke="#e94e37" strokeWidth={3} dash={[10, 7]} listening={false}/>}
@@ -5673,7 +5730,7 @@ function pointInLayer(x, y, layer) {
   return nx * nx + ny * ny <= 1;
 }
 
-function UseStage({ composition, slotSources, slotSourceLists = {}, slotTransforms, selectedId, setSelectedId, updateLayer, cropModeId, setCropModeId, updatePhotoTransform, onRequestSlot, zoom, pan, panning, onPanStart, transparent, textEditingId, textSelection, onEditText, onTextChange, onTextSelectionChange, onTextDone }) {
+function UseStage({ composition, slotSources, slotSourceLists = {}, slotImageFlips = {}, slotTransforms, selectedId, setSelectedId, updateLayer, cropModeId, setCropModeId, updatePhotoTransform, onRequestSlot, zoom, pan, panning, onPanStart, transparent, textEditingId, textSelection, onEditText, onTextChange, onTextSelectionChange, onTextDone }) {
   const hostRef = useRef();
   const transformerRef = useRef();
   const nodeRefs = useRef({});
@@ -5756,6 +5813,8 @@ function UseStage({ composition, slotSources, slotSourceLists = {}, slotTransfor
              selected={selectedId === layer.id}
              source={layer.type === 'slot' ? (slotSources[layer.id] || (layer.boundLayerId ? slotSources[layer.boundLayerId] : undefined)) : undefined}
              sources={layer.type === 'slot' ? (slotSourceLists[layer.id] || (layer.boundLayerId ? slotSourceLists[layer.boundLayerId] : undefined)) : undefined}
+             sourceFlip={layer.type === 'slot' ? ((slotImageFlips[layer.id] || (layer.boundLayerId ? slotImageFlips[layer.boundLayerId] : []))[0]) : undefined}
+             sourceFlips={layer.type === 'slot' ? (slotImageFlips[layer.id] || (layer.boundLayerId ? slotImageFlips[layer.boundLayerId] : undefined)) : undefined}
             photoTransform={slotTransforms[layer.id]}
             cropMode={cropModeId === layer.id}
             interactive={isReplaceableSlot(layer) && Boolean(slotSources[layer.id]) && cropModeId !== layer.id}
@@ -5821,6 +5880,7 @@ function createUseSession(template) {
     slotNames: {},
     slotSourceLists: {},
     slotNameLists: {},
+    slotImageFlips: {},
     slotTransforms: {},
     textValueLists: {}
   };
@@ -5840,6 +5900,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
   const { composition, slotSources, slotNames, slotTransforms } = session;
   const slotSourceLists = session.slotSourceLists || {};
   const slotNameLists = session.slotNameLists || {};
+  const slotImageFlips = session.slotImageFlips || {};
   const textValueLists = session.textValueLists || {};
   const [result, setResult] = useState('');
   const [copied, setCopied] = useState(false);
@@ -5866,9 +5927,9 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
   const [textBatchOpenId, setTextBatchOpenId] = useState(null);
   const [textBatchPopoverStyle, setTextBatchPopoverStyle] = useState({});
   const templateHasGif = template.layers.some((layer) => isGifSource(layer.src));
-  const [exportFormat, setExportFormat] = useState(() => templateHasGif ? 'gif' : 'png');
+  const [exportFormat, setExportFormat] = useState('png');
   const [exportScale, setExportScale] = useState(1);
-  const [transparent, setTransparent] = useState(false);
+  const [transparent, setTransparent] = useState(true);
   const input = useRef();
   const pendingSlot = useRef(null);
   const pendingAppend = useRef(false);
@@ -5894,6 +5955,10 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
     [composition, slotSourceLists, slotSources]
   );
   const batchCount = batchReplacementSets.length;
+  const batchReplacementFlips = useMemo(
+    () => replacementFlipBatchesForTemplate(composition, slotSources, slotSourceLists, slotImageFlips),
+    [composition, slotImageFlips, slotSourceLists, slotSources]
+  );
   const gallerySources = slotGalleryId ? (slotSourceLists[slotGalleryId] || (slotSources[slotGalleryId] ? [slotSources[slotGalleryId]] : [])) : [];
   const galleryNames = slotGalleryId ? (slotNameLists[slotGalleryId] || (slotNames[slotGalleryId] ? [slotNames[slotGalleryId]] : [])) : [];
   const renderReplacements = useMemo(() => {
@@ -6006,8 +6071,10 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
     commitSession((previous) => {
       const previousSources = append ? (previous.slotSourceLists?.[slotId] || (previous.slotSources[slotId] ? [previous.slotSources[slotId]] : [])) : [];
       const previousNames = append ? (previous.slotNameLists?.[slotId] || (previous.slotNames[slotId] ? [previous.slotNames[slotId]] : [])) : [];
+      const previousFlips = append ? (previous.slotImageFlips?.[slotId] || []) : [];
       const nextSources = [...previousSources, ...incomingSources];
       const nextNames = [...previousNames, ...incomingSources.map((_, index) => names[index] || '')];
+      const nextFlips = [...previousFlips, ...incomingSources.map(() => ({}))];
       return {
         ...previous,
         composition: resizeMultiPhotoSlot(previous.composition, template, slotId, nextSources.length),
@@ -6015,6 +6082,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
         slotNames: { ...previous.slotNames, [slotId]: nextNames[0] || '' },
         slotSourceLists: { ...(previous.slotSourceLists || {}), [slotId]: nextSources },
         slotNameLists: { ...(previous.slotNameLists || {}), [slotId]: nextNames },
+        slotImageFlips: { ...(previous.slotImageFlips || {}), [slotId]: nextFlips },
         slotTransforms: { ...previous.slotTransforms, [slotId]: append && previous.slotTransforms[slotId] ? previous.slotTransforms[slotId] : { zoom: 1, offsetX: 0, offsetY: 0 } }
       };
     });
@@ -6033,12 +6101,14 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
       const slotSourceLists = { ...(previous.slotSourceLists || {}) };
       const slotNameLists = { ...(previous.slotNameLists || {}) };
       const slotTransforms = { ...previous.slotTransforms };
+      const slotImageFlips = { ...(previous.slotImageFlips || {}) };
       delete slotSources[slotId];
       delete slotNames[slotId];
       delete slotSourceLists[slotId];
       delete slotNameLists[slotId];
       delete slotTransforms[slotId];
-      return { ...previous, composition: resizeMultiPhotoSlot(previous.composition, template, slotId, 1), slotSources, slotNames, slotSourceLists, slotNameLists, slotTransforms };
+      delete slotImageFlips[slotId];
+      return { ...previous, composition: resizeMultiPhotoSlot(previous.composition, template, slotId, 1), slotSources, slotNames, slotSourceLists, slotNameLists, slotImageFlips, slotTransforms };
     });
     setSelectedId(slotId);
     setCropModeId((current) => current === slotId ? null : current);
@@ -6054,11 +6124,13 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
       const slotSourceLists = { ...(previous.slotSourceLists || {}) };
       const slotNameLists = { ...(previous.slotNameLists || {}) };
       const slotTransforms = { ...previous.slotTransforms };
+      const slotImageFlips = { ...(previous.slotImageFlips || {}) };
       delete slotSources[slotId];
       delete slotNames[slotId];
       delete slotSourceLists[slotId];
       delete slotNameLists[slotId];
       delete slotTransforms[slotId];
+      delete slotImageFlips[slotId];
       return {
         ...previous,
         composition: {
@@ -6069,6 +6141,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
         slotNames,
         slotSourceLists,
         slotNameLists,
+        slotImageFlips,
         slotTransforms
       };
     });
@@ -6081,26 +6154,31 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
     commitSession((previous) => {
       const currentSources = previous.slotSourceLists?.[slotId] || (previous.slotSources[slotId] ? [previous.slotSources[slotId]] : []);
       const currentNames = previous.slotNameLists?.[slotId] || (previous.slotNames[slotId] ? [previous.slotNames[slotId]] : []);
+      const currentFlips = previous.slotImageFlips?.[slotId] || [];
       const nextSources = currentSources.filter((_, itemIndex) => itemIndex !== index);
       const nextNames = currentNames.filter((_, itemIndex) => itemIndex !== index);
+      const nextFlips = currentFlips.filter((_, itemIndex) => itemIndex !== index);
       const next = {
         ...previous,
         composition: resizeMultiPhotoSlot(previous.composition, template, slotId, nextSources.length || 1),
         slotSources: { ...previous.slotSources },
         slotNames: { ...previous.slotNames },
         slotSourceLists: { ...(previous.slotSourceLists || {}) },
-        slotNameLists: { ...(previous.slotNameLists || {}) }
+        slotNameLists: { ...(previous.slotNameLists || {}) },
+        slotImageFlips: { ...(previous.slotImageFlips || {}) }
       };
       if (nextSources.length) {
         next.slotSources[slotId] = nextSources[0];
         next.slotNames[slotId] = nextNames[0] || '';
         next.slotSourceLists[slotId] = nextSources;
         next.slotNameLists[slotId] = nextNames;
+        next.slotImageFlips[slotId] = nextFlips;
       } else {
         delete next.slotSources[slotId];
         delete next.slotNames[slotId];
         delete next.slotSourceLists[slotId];
         delete next.slotNameLists[slotId];
+        delete next.slotImageFlips[slotId];
       }
       return next;
     });
@@ -6124,6 +6202,18 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
       };
     });
     setSelectedId(slotId);
+  }, [commitSession]);
+
+  const toggleSlotImageFlip = useCallback((slotId, index, axis) => {
+    if (!Number.isInteger(index)) return;
+    commitSession((previous) => {
+      const sources = previous.slotSourceLists?.[slotId] || (previous.slotSources[slotId] ? [previous.slotSources[slotId]] : []);
+      if (index < 0 || index >= sources.length) return previous;
+      const current = previous.slotImageFlips?.[slotId] || [];
+      const flips = sources.map((_, itemIndex) => normalizeImageFlip(current[itemIndex]));
+      flips[index] = { ...flips[index], [axis]: !flips[index][axis] };
+      return { ...previous, slotImageFlips: { ...(previous.slotImageFlips || {}), [slotId]: flips } };
+    });
   }, [commitSession]);
 
   const pasteClipboardImage = useCallback(async (targetId, append = false, replaceIndex = null) => {
@@ -6195,14 +6285,14 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
     }
     const request = ++renderRequest.current;
     let cancelled = false;
-    renderOutput(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: outputMime }).then((dataUrl) => {
+    renderOutput(composition, slotSources, slotTransforms, { scale: exportScale, transparent, mime: outputMime, replacementFlips: batchReplacementFlips[0] }).then((dataUrl) => {
       if (cancelled || request !== renderRequest.current) return;
       setResult(dataUrl);
     }).catch((error) => {
       if (!cancelled) notify(`生成失败：${error.message}`, 'error');
     });
     return () => { cancelled = true; };
-  }, [composition, exportScale, outputMime, renderOutput, slotSources, slotTransforms, templateHasGif, transparent, notify]);
+  }, [batchReplacementFlips, composition, exportScale, outputMime, renderOutput, slotSources, slotTransforms, templateHasGif, transparent, notify]);
 
   const acceptFile = useCallback(async (file, targetId) => {
     try {
@@ -6440,13 +6530,13 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
         compositionForBatchIndex(composition, textValueLists, 0),
         firstReplacements,
         slotTransforms,
-        { scale: exportScale, transparent, mime: outputMime, signal: job?.controller.signal }
+        { scale: exportScale, transparent, mime: outputMime, signal: job?.controller.signal, replacementFlips: batchReplacementFlips[0] }
       );
     if (job && isExportCancelled(job)) return '';
     if (job) updateExport(job, 68, '正在准备复制');
     setResult(dataUrl);
     return dataUrl;
-  }, [batchCount, batchReplacementSets, composition, exportScale, isExportCancelled, outputMime, renderOutput, renderReplacements, slotTransforms, textValueLists, transparent, updateExport]);
+  }, [batchCount, batchReplacementFlips, batchReplacementSets, composition, exportScale, isExportCancelled, outputMime, renderOutput, renderReplacements, slotTransforms, textValueLists, transparent, updateExport]);
 
   const copyAgain = useCallback(async () => {
     const job = beginExport(outputMime === 'image/gif' ? '正在导出 GIF' : '正在导出图片');
@@ -6462,7 +6552,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
             batchComposition,
             batchReplacementSets[index],
             slotTransforms,
-            { scale: exportScale, transparent, mime: outputMime, signal: job.controller.signal }
+            { scale: exportScale, transparent, mime: outputMime, signal: job.controller.signal, replacementFlips: batchReplacementFlips[index] }
           ));
           if (isExportCancelled(job)) return;
           updateExport(job, 8 + (index + 1) / batchCount * 70, `正在生成第 ${index + 1}/${batchCount} 张作品`);
@@ -6486,7 +6576,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
           compositionForBatchIndex(composition, textValueLists, 0),
           batchReplacementSets[0] || renderReplacements,
           slotTransforms,
-          { scale: exportScale, transparent, mime: 'image/png', signal: job.controller.signal, showSlotPlaceholder: false }
+          { scale: exportScale, transparent, mime: 'image/png', signal: job.controller.signal, showSlotPlaceholder: false, replacementFlips: batchReplacementFlips[0] }
         );
       if (isExportCancelled(job)) return;
       updateExport(job, 88, '正在复制到剪贴板');
@@ -6506,7 +6596,33 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
     } finally {
       finishExport(job);
     }
-  }, [batchCount, batchReplacementSets, beginExport, composition, currentResult, exportScale, finishExport, isExportCancelled, notify, onCopied, outputMime, renderOutput, renderReplacements, slotTransforms, template.id, textValueLists, transparent, updateExport]);
+  }, [batchCount, batchReplacementFlips, batchReplacementSets, beginExport, composition, currentResult, exportScale, finishExport, isExportCancelled, notify, onCopied, outputMime, renderOutput, renderReplacements, slotTransforms, template.id, textValueLists, transparent, updateExport]);
+  const copyGif = useCallback(async () => {
+    const job = beginExport('正在导出 GIF');
+    updateExport(job, 5);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    try {
+      const dataUrl = await renderAnimatedReplacementBatches(composition, batchReplacementSets, slotTransforms, {
+        scale: exportScale, transparent, mime: 'image/gif', signal: job.controller.signal,
+        replacementFlipBatches: batchReplacementFlips,
+        textValueLists,
+        onFrameProgress: (value) => updateExport(job, 8 + value * 58, `正在生成 GIF（${Math.round(value * 100)}%）`),
+        onBatchProgress: (value) => updateExport(job, 8 + value * 58, `正在合成 GIF（${Math.round(value * 100)}%）`)
+      });
+      if (!dataUrl || isExportCancelled(job)) return;
+      const clipboardDataUrl = await renderTemplate(compositionForBatchIndex(composition, textValueLists, 0), batchReplacementSets[0] || renderReplacements, slotTransforms, { scale: exportScale, transparent, mime: 'image/png', signal: job.controller.signal, showSlotPlaceholder: false, replacementFlips: batchReplacementFlips[0] });
+      if (isExportCancelled(job)) return;
+      updateExport(job, 88, '正在复制到剪贴板');
+      await desktop.copyImage(dataUrl, clipboardDataUrl);
+      onCopied?.(template.id);
+      setCopied(true);
+      updateExport(job, 100, '导出完成');
+      notify(batchCount > 1 ? `已按 ${batchCount} 组图片合成为 1 个 GIF 并复制` : 'GIF 已复制，可粘贴到聊天窗口或文件夹');
+    } catch (error) {
+      if (!isExportCancelled(job)) { setCopied(false); notify(`复制 GIF 失败：${error?.message || error}`, 'error'); }
+    } finally { finishExport(job); }
+  }, [batchCount, batchReplacementFlips, batchReplacementSets, beginExport, composition, exportScale, finishExport, isExportCancelled, notify, onCopied, renderReplacements, slotTransforms, template.id, textValueLists, transparent, updateExport]);
+
 
   const resetUse = useCallback(() => {
     commitSession(createUseSession(template));
@@ -6668,6 +6784,7 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
   };
 
   const slotContextLayer = slotContextMenu ? composition.layers.find((layer) => layer.id === slotContextMenu.id) : null;
+  const slotContextFlip = slotContextMenu && Number.isInteger(slotContextMenu.index) ? normalizeImageFlip(slotImageFlips[slotContextMenu.id]?.[slotContextMenu.index]) : null;
 
   return <main className="use-page">
     <header className="editor-topbar">
@@ -6683,21 +6800,22 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
             const source = slotSources[layer.id];
             const name = slotNames[layer.id];
             const sources = slotSourceLists[layer.id] || (source ? [source] : []);
+            const imageFlips = slotImageFlips[layer.id] || [];
             const extraCount = Math.max(0, sources.length - 1);
             const galleryOpen = slotGalleryId === layer.id;
             return <div key={layer.id} className={`slot-item-row ${slotDropId === layer.id ? 'dragging' : ''} ${galleryOpen ? 'gallery-open' : ''}`} onContextMenu={(event) => openSlotContextMenu(event, layer.id)} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setSlotDropId(layer.id); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setSlotDropId((current) => current === layer.id ? null : current); }} onDrop={(event) => dropOnSlotList(event, layer.id)}>
               <button type="button" className={`slot-item ${selectedId === layer.id ? 'selected' : ''}`} onClick={() => setSelectedId(layer.id)} onDoubleClick={() => { setSelectedId(layer.id); requestSlotImage(layer.id); }}>
-                <span className={`slot-item-thumb ${source ? 'has-image' : ''}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (!source) return; event.stopPropagation(); setSelectedId(layer.id); setSlotGalleryId((current) => current === layer.id ? null : layer.id); }}>{source ? <><img src={source} alt=""/>{extraCount > 0 && <b className="slot-thumb-count">+{extraCount}</b>}</> : <LayerThumb layer={layer}/>}</span>
+                <span className={`slot-item-thumb ${source ? 'has-image' : ''}`} onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { if (!source) return; event.stopPropagation(); setSelectedId(layer.id); setSlotGalleryId((current) => current === layer.id ? null : layer.id); }}>{source ? <><img src={source} alt="" style={{ transform: imageFlips[0]?.horizontalFlip || imageFlips[0]?.verticalFlip ? `scale(${imageFlips[0]?.horizontalFlip ? -1 : 1}, ${imageFlips[0]?.verticalFlip ? -1 : 1})` : undefined }}/>{extraCount > 0 && <b className="slot-thumb-count">+{extraCount}</b>}</> : <LayerThumb layer={layer}/>}</span>
                 <span className="slot-item-copy"><strong>{layer.name}</strong><small>{name || (multiPhotoLayoutLabel(layer) ? `双击选择图片（${multiPhotoLayoutLabel(layer)}）` : '双击选择照片')}</small></span>
                 {source
                   ? <span className="slot-reset-control" role="button" tabIndex={0} title="重置此可替换图层" aria-label="重置此可替换图层" onClick={(event) => { event.stopPropagation(); resetSlotLayer(layer.id); }} onDoubleClick={(event) => event.stopPropagation()} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); resetSlotLayer(layer.id); } }}><RotateCcw size={16}/></span>
                   : <ImagePlus size={16}/>}
               </button>
               {source && <IconButton label={cropModeId === layer.id ? '退出裁切' : '裁切照片'} className={cropModeId === layer.id ? 'active slot-crop-button' : 'slot-crop-button'} onClick={() => { setSelectedId(layer.id); setCropModeId((current) => current === layer.id ? null : layer.id); }}><Crop size={16}/></IconButton>}
-              {galleryOpen && <div ref={slotGalleryRef} className="slot-gallery-popover" role="dialog" tabIndex={-1} aria-label={`${layer.name} 已选择的照片`} onPointerDown={(event) => event.stopPropagation()} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setSlotContextMenu(null); }} onDragOver={(event) => { const hasFiles = Array.from(event.dataTransfer?.types || []).includes('Files') || Array.from(event.dataTransfer?.items || []).some((item) => item.kind === 'file'); if (!hasFiles) return; event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'; setSlotDropId(layer.id); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setSlotDropId((current) => current === layer.id ? null : current); }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); setSlotDropId(null); const files = Array.from(event.dataTransfer?.files || []).filter((file) => isImageFileLike(file)); if (files.length) acceptInitialFiles(files, layer.id, true); }}>
+              {galleryOpen && <div ref={slotGalleryRef} className="slot-gallery-popover" role="dialog" tabIndex={-1} aria-label={`${layer.name} 已选择的照片`} onPointerDown={(event) => { event.stopPropagation(); setSlotContextMenu(null); }} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setSlotContextMenu(null); }} onDragOver={(event) => { const hasFiles = Array.from(event.dataTransfer?.types || []).includes('Files') || Array.from(event.dataTransfer?.items || []).some((item) => item.kind === 'file'); if (!hasFiles) return; event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'; setSlotDropId(layer.id); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setSlotDropId((current) => current === layer.id ? null : current); }} onDrop={(event) => { event.preventDefault(); event.stopPropagation(); setSlotDropId(null); const files = Array.from(event.dataTransfer?.files || []).filter((file) => isImageFileLike(file)); if (files.length) acceptInitialFiles(files, layer.id, true); }}>
                 <div className="slot-gallery-heading"><div><strong>已选择的照片</strong><span>{gallerySources.length} 张</span></div><IconButton label="收起" onClick={() => setSlotGalleryId(null)}><ChevronUp size={17}/></IconButton></div>
                 <div className="slot-gallery-grid">
-                  {gallerySources.map((gallerySource, index) => <div className="slot-gallery-item" key={`${gallerySource.slice(-32)}-${index}`} title={galleryNames[index] || `第 ${index + 1} 张`} onContextMenu={(event) => openSlotContextMenu(event, layer.id, index)}><img src={gallerySource} alt={galleryNames[index] || ''}/><button type="button" aria-label={`移除第 ${index + 1} 张图片`} onClick={() => removeSlotSourceAt(layer.id, index)}><X size={13}/></button></div>)}
+                  {gallerySources.map((gallerySource, index) => <div className="slot-gallery-item" key={`${gallerySource.slice(-32)}-${index}`} title={galleryNames[index] || `第 ${index + 1} 张`} onContextMenu={(event) => openSlotContextMenu(event, layer.id, index)}><img src={gallerySource} alt={galleryNames[index] || ''} style={{ transform: imageFlips[index]?.horizontalFlip || imageFlips[index]?.verticalFlip ? `scale(${imageFlips[index]?.horizontalFlip ? -1 : 1}, ${imageFlips[index]?.verticalFlip ? -1 : 1})` : undefined }}/><button type="button" aria-label={`移除第 ${index + 1} 张图片`} onClick={() => removeSlotSourceAt(layer.id, index)}><X size={13}/></button></div>)}
                   <button type="button" className="slot-gallery-add" title="追加图片" onClick={() => requestSlotImage(layer.id, true)}><Plus size={22}/></button>
                 </div>
               </div>}
@@ -6747,14 +6865,14 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
             </div>;
           })}</div>
         </div>}
-        <div className="export-settings"><div className="slot-list-heading"><strong>导出设置</strong></div><div className="export-setting-row"><label><span>格式</span><select value={exportFormat} onChange={(event) => { const value = event.target.value; setExportFormat(value); if (value === 'jpg') setTransparent(false); }}><option value="png">PNG</option><option value="jpg">JPEG</option><option value="webp">WebP</option><option value="gif">GIF 动图</option></select></label><label title={exportScaleHint}><span title={exportScaleHint}>倍率</span><NumericInput title={exportScaleHint} value={exportScale} min={0.1} max={10} step={0.1} integer={false} presets={[0.5, 1, 2, 3]} onCommit={setExportScale}/></label></div><label className="check-row"><input type="checkbox" disabled={exportFormat === 'jpg'} checked={transparent} onChange={(event) => setTransparent(event.target.checked)}/><span>透明画布背景</span></label></div>
+        <div className="export-settings"><div className="slot-list-heading"><strong>导出设置</strong></div><div className="export-setting-row"><label><span>格式</span><select value={exportFormat} onChange={(event) => { const value = event.target.value; setExportFormat(value); if (value === 'jpg') setTransparent(false); }}><option value="png">PNG</option><option value="jpg">JPEG</option><option value="webp">WebP</option></select></label><label title={exportScaleHint}><span title={exportScaleHint}>倍率</span><NumericInput title={exportScaleHint} value={exportScale} min={0.1} max={10} step={0.1} integer={false} presets={[0.5, 1, 2, 3]} onCommit={setExportScale}/></label></div><label className="check-row"><input type="checkbox" disabled={exportFormat === 'jpg'} checked={transparent} onChange={(event) => setTransparent(event.target.checked)}/><span>透明画布背景</span></label></div>
         <button type="button" className="secondary-button group-roster-import-button" title={rosterMode === 'local' ? '选择 xlsx 群名单，按“账号”列从设置的 WeLink 本地目录读取头像；读取失败时使用中文名末字生成占位头像。' : '选择 xlsx 群名单，按“工号”列联网下载成员头像，并可替换文字图层。'} disabled={groupRosterBusy} onClick={() => groupRosterInput.current?.click()}><Upload size={16}/>{groupRosterBusy ? '正在导入群名单（xlsx）' : '导入群名单（xlsx）'}</button>
         <input ref={groupRosterInput} className="hidden-input" type="file" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) chooseGroupRosterFile(file); }}/>
       </section>
       <section className="result-area">
-        <div className="result-heading"><div><p className="eyebrow">第 2 步</p><h2>生成结果</h2></div><div className="result-heading-actions"><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>{result && <div className="result-actions"><button className="primary-button" onClick={copyAgain}>{copied ? <Check size={17}/> : <Copy size={17}/>}{exportFormat === 'gif' ? '复制 GIF' : '复制图片'}</button></div>}</div></div>
+        <div className="result-heading"><div><p className="eyebrow">第 2 步</p><h2>生成结果</h2></div><div className="result-heading-actions"><div className="zoom-control"><IconButton label="缩小" onClick={() => setZoom((current) => current - .1)}><ZoomOut size={17}/></IconButton><span>{Math.round(zoom * 100)}%</span><IconButton label="放大" onClick={() => setZoom((current) => current + .1)}><ZoomIn size={17}/></IconButton></div>{result && <div className="result-actions"><button className="primary-button" onClick={copyAgain}>{copied ? <Check size={17}/> : <Copy size={17}/>}复制 {batchCount} 张图片</button><button className="secondary-button" onClick={copyGif}><Copy size={17}/>复制 GIF</button></div>}</div></div>
         <div className="result-stage has-result" onWheel={handleResultWheel} onContextMenu={openContextMenu} onDragStart={(event) => event.preventDefault()} onDragOver={(event) => { if (Array.from(event.dataTransfer.types || []).includes('Files')) event.preventDefault(); }} onDrop={dropOnSlot}>
-          <UseStage composition={composition} slotSources={slotSources} slotSourceLists={slotSourceLists} slotTransforms={slotTransforms} selectedId={selectedId} setSelectedId={setSelectedId} updateLayer={updateLayer} cropModeId={cropModeId} setCropModeId={setCropModeId} updatePhotoTransform={updatePhotoTransform} onRequestSlot={requestSlotImage} zoom={zoom} pan={pan} panning={panning} onPanStart={beginPan} transparent={transparent} textEditingId={textEditingId} textSelection={textSelection} onEditText={editTextLayer} onTextChange={updateTextLayer} onTextSelectionChange={setTextSelection} onTextDone={finishTextEditing}/>
+          <UseStage composition={composition} slotSources={slotSources} slotSourceLists={slotSourceLists} slotImageFlips={slotImageFlips} slotTransforms={slotTransforms} selectedId={selectedId} setSelectedId={setSelectedId} updateLayer={updateLayer} cropModeId={cropModeId} setCropModeId={setCropModeId} updatePhotoTransform={updatePhotoTransform} onRequestSlot={requestSlotImage} zoom={zoom} pan={pan} panning={panning} onPanStart={beginPan} transparent={transparent} textEditingId={textEditingId} textSelection={textSelection} onEditText={editTextLayer} onTextChange={updateTextLayer} onTextSelectionChange={setTextSelection} onTextDone={finishTextEditing}/>
         </div>
       </section>
     </div>
@@ -6768,9 +6886,9 @@ function UseTemplate({ template, initialFiles, cachedSession, onSaveSession, onC
       </div>
     </div>}
     {groupRosterBusy && <div className="group-roster-busy" role="status" aria-live="polite"><div><RefreshCw size={20}/><strong>正在导入群名单</strong><span>{rosterMode === 'local' ? '正在读取本地 WeLink 头像，请稍候…' : '正在联网下载成员头像，请稍候…'}</span></div></div>}
-    {contextMenu && <div className="result-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setContextMenu(null); copyAgain(); }}><Copy size={16}/>{exportFormat === 'gif' ? '复制 GIF' : '复制图片'}</button></div>}
+    {contextMenu && <div className="result-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { setContextMenu(null); copyAgain(); }}><Copy size={16}/>复制 {batchCount} 张图片</button><button onClick={() => { setContextMenu(null); copyGif(); }}><Copy size={16}/>复制 GIF</button></div>}
     <ExportProgressOverlay progress={exportProgress} onCancel={cancelExport}/>
-    {slotContextMenu && <div className="result-context-menu" style={{ left: slotContextMenu.x, top: slotContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { const { id: slotId, index } = slotContextMenu; setSlotContextMenu(null); pasteClipboardImage(slotId, false, index); }}><Clipboard size={16}/>粘贴图片</button><button type="button" className={slotContextLayer?.verticalFlip ? 'active' : ''} onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); if (slotContextLayer) updateLayer(slotId, { verticalFlip: !slotContextLayer.verticalFlip }); }}><FlipVertical size={16}/>{slotContextLayer?.verticalFlip ? '取消垂直翻转' : '垂直翻转'}</button><button type="button" className={slotContextLayer?.horizontalFlip ? 'active' : ''} onClick={() => { const slotId = slotContextMenu.id; setSlotContextMenu(null); if (slotContextLayer) updateLayer(slotId, { horizontalFlip: !slotContextLayer.horizontalFlip }); }}><FlipHorizontal size={16}/>{slotContextLayer?.horizontalFlip ? '\u53d6\u6d88\u6c34\u5e73\u7ffb\u8f6c' : '\u6c34\u5e73\u7ffb\u8f6c'}</button><button className="danger" disabled={Number.isInteger(slotContextMenu.index) ? !(slotSourceLists[slotContextMenu.id] || [slotSources[slotContextMenu.id]]).filter(Boolean)[slotContextMenu.index] : !slotSources[slotContextMenu.id]} onClick={() => { const { id: slotId, index } = slotContextMenu; setSlotContextMenu(null); if (Number.isInteger(index)) removeSlotSourceAt(slotId, index); else removeSlotSource(slotId); }}><Trash2 size={16}/>删除图片</button></div>}
+    {slotContextMenu && <div className="result-context-menu" style={{ left: slotContextMenu.x, top: slotContextMenu.y }} onPointerDown={(event) => event.stopPropagation()}><button onClick={() => { const { id: slotId, index } = slotContextMenu; setSlotContextMenu(null); pasteClipboardImage(slotId, false, index); }}><Clipboard size={16}/>粘贴图片</button><button type="button" className={(slotContextFlip ? slotContextFlip.verticalFlip : slotContextLayer?.verticalFlip) ? 'active' : ''} onClick={() => { const { id: slotId, index } = slotContextMenu; setSlotContextMenu(null); if (Number.isInteger(index)) toggleSlotImageFlip(slotId, index, 'verticalFlip'); else if (slotContextLayer) updateLayer(slotId, { verticalFlip: !slotContextLayer.verticalFlip }); }}><FlipVertical size={16}/>{(slotContextFlip ? slotContextFlip.verticalFlip : slotContextLayer?.verticalFlip) ? '取消垂直翻转' : '垂直翻转'}</button><button type="button" className={(slotContextFlip ? slotContextFlip.horizontalFlip : slotContextLayer?.horizontalFlip) ? 'active' : ''} onClick={() => { const { id: slotId, index } = slotContextMenu; setSlotContextMenu(null); if (Number.isInteger(index)) toggleSlotImageFlip(slotId, index, 'horizontalFlip'); else if (slotContextLayer) updateLayer(slotId, { horizontalFlip: !slotContextLayer.horizontalFlip }); }}><FlipHorizontal size={16}/>{(slotContextFlip ? slotContextFlip.horizontalFlip : slotContextLayer?.horizontalFlip) ? '\u53d6\u6d88\u6c34\u5e73\u7ffb\u8f6c' : '\u6c34\u5e73\u7ffb\u8f6c'}</button><button className="danger" disabled={Number.isInteger(slotContextMenu.index) ? !(slotSourceLists[slotContextMenu.id] || [slotSources[slotContextMenu.id]]).filter(Boolean)[slotContextMenu.index] : !slotSources[slotContextMenu.id]} onClick={() => { const { id: slotId, index } = slotContextMenu; setSlotContextMenu(null); if (Number.isInteger(index)) removeSlotSourceAt(slotId, index); else removeSlotSource(slotId); }}><Trash2 size={16}/>删除图片</button></div>}
   </main>;
 }
 
