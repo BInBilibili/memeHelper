@@ -2599,6 +2599,10 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
     ...previous,
     layers: previous.layers.map((layer) => patches[layer.id] ? { ...layer, ...patches[layer.id] } : layer)
   })), [updateDraft]);
+  const commitFocusedPropertyInput = useCallback(() => {
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement && activeElement.closest('.properties-panel')) activeElement.blur();
+  }, []);
   const undoDraft = useCallback(() => { if (undo()) { setDirty(true); setAutosaveState('pending'); } }, [undo]);
   const redoDraft = useCallback(() => { if (redo()) { setDirty(true); setAutosaveState('pending'); } }, [redo]);
   const undoEditorAction = useCallback(() => {
@@ -2609,6 +2613,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
     undoDraft();
   }, [activeTool, canUndoPixelSelection, undoDraft]);
   const clearSelection = useCallback(() => {
+    commitFocusedPropertyInput();
     setSelectedIds([]);
     primarySelectionRef.current = null;
     setSelectedGroupId(null);
@@ -2617,10 +2622,11 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
     setTextEditingId(null);
     setTextSelection(null);
     setPropertyTextSelection(null);
-  }, []);
+  }, [commitFocusedPropertyInput]);
   const selectLayer = useCallback((id, event = {}) => {
     const layer = draft.layers.find((item) => item.id === id);
     if (!layer) return;
+    commitFocusedPropertyInput();
     setLayerMenu(null);
     if (event.shiftKey) event.preventDefault?.();
     setTextEditingId((current) => current === id ? current : null);
@@ -2661,10 +2667,11 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
       if (!primarySelectionRef.current || !next.includes(primarySelectionRef.current)) primarySelectionRef.current = next[0] || null;
       return next;
     });
-  }, [collapsedGroups, draft.layers]);
+  }, [collapsedGroups, commitFocusedPropertyInput, draft.layers]);
   const selectGroup = useCallback((groupId, event = {}) => {
     const memberIds = draft.layers.filter((item) => item.groupId === groupId).map((item) => item.id);
     if (!memberIds.length) return;
+    commitFocusedPropertyInput();
     setLayerMenu(null);
     if (event.shiftKey) event.preventDefault?.();
     const groupOrder = [];
@@ -2695,7 +2702,7 @@ function GifTimeline({ frames = [], frameIndex, selectedIndexes = [], playing, l
       setSelectedGroupId(next.length === 1 ? next[0] : null);
       return next;
     });
-  }, [draft.layers]);
+  }, [commitFocusedPropertyInput, draft.layers]);
   const copyLayersByIds = useCallback((ids) => {
     const layers = draft.layers.filter((item) => ids.includes(item.id));
     if (!layers.length) return;
@@ -5700,7 +5707,7 @@ function NumericInput({ value, onCommit, min, max, step = 1, integer = true, cla
   </div>;
 }
 
-function MixedValueMark({ show }) { return show ? <span className="mixed-value-mark">（混合）</span> : null; }
+function MixedValueMark({ show }) { return show ? <span className="mixed-value-mark">（多个值）</span> : null; }
 function NumberField({ label, value, onChange, suffix, min, max, step, integer, presets, menuActions, mixed = false }) { return <div className="number-field"><span>{label}<MixedValueMark show={mixed}/></span><div className="number-field-control"><NumericInput value={value} onCommit={onChange} min={min} max={max} step={step} integer={integer} presets={presets} menuActions={menuActions}/>{suffix && <em>{suffix}</em>}</div></div>; }
 function GroupProperties({ name, layers, onRename, onToggleLock, onToggleVisibility, onMove, onUngroup, onRemove, onOrder }) {
   const allLocked = layers.every((layer) => layer.locked);
@@ -5787,7 +5794,7 @@ function MultiSelectionProperties({ layers, grouped, onGroup, onUngroup, onToggl
     <div className="property-section"><h4>等距分布</h4><div className="distribution-buttons"><button disabled={unlockedCount < 3} onClick={() => onDistribute('x')}><AlignHorizontalDistributeCenter size={16}/>水平等距</button><button disabled={unlockedCount < 3} onClick={() => onDistribute('y')}><AlignVerticalDistributeCenter size={16}/>垂直等距</button></div></div>
     <div className="property-section"><h4>组合</h4><button className="wide-property-button" onClick={grouped ? onUngroup : onGroup}><Layers3 size={16}/>{grouped ? '取消组合' : '组合图层'}</button></div>
     <div className="property-section"><h4>锁定</h4><button className="wide-property-button" onClick={onToggleLock}>{allLocked ? <Unlock size={16}/> : <Lock size={16}/>} {allLocked ? '解锁所选图层' : '锁定所选图层'}</button></div>
-    <div className="multi-property-note">“（混合）”表示所选图层的值不一致，下面的控件显示第一个所选图层的值。</div>
+    <div className="multi-property-note">“（多个值）”表示所选图层的值不一致，下面的控件显示第一个所选图层的值。</div>
     {children}
   </div>;
 }
@@ -5880,7 +5887,7 @@ function Properties({ layer, layers = [], gifFrameCount = 0, gifTimeline, onGifF
   };
 
   return <div className={`property-content ${batchMode ? 'batch-layer-properties' : ''}`}>
-    {batchMode && <div className="batch-property-heading"><div><strong>{batchTitle}</strong>{batchMixed && <span>（混合：{[...batchMixedKeys].map((key) => BATCH_PROPERTY_LABELS[key] || key).join('、')}）</span>}</div><small>当前显示：{layer.name}</small></div>}
+    {batchMode && <div className="batch-property-heading"><div><strong>{batchTitle}</strong>{batchMixed && <span>（多个值：{[...batchMixedKeys].map((key) => BATCH_PROPERTY_LABELS[key] || key).join('、')}）</span>}</div><small>当前显示：{layer.name}</small></div>}
     {!batchMode && <button className={`layer-lock-button ${layer.locked ? 'active' : ''}`} onClick={toggleLock}>{layer.locked ? <Lock size={16}/> : <Unlock size={16}/>}<span>{layer.locked ? '图层已锁定' : '锁定图层'}</span></button>}
     {!batchMode && <label className="text-field"><span>图层名称</span><input value={layer.name} onChange={(event) => update({ name: event.target.value })}/></label>}
 
